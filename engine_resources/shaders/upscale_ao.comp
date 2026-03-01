@@ -1,0 +1,104 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+precision highp float;
+precision highp sampler2D;
+
+
+#include "../shader_lib/mathy.glsl"
+#include "../shader_lib/color.glsl"
+
+// https://wiki.libsdl.org/SDL3/SDL_CreateGPUComputePipeline
+// For SPIR-V shaders, use the following resource sets:
+// 0: Sampled textures, followed by read-only storage textures, followed by read-only storage buffers
+// 1: Read-write storage textures, followed by read-write storage buffers
+// 2: Uniform buffers
+
+
+
+layout(set=0, binding = 0) uniform sampler2D _min_max_depth_tex;
+
+layout(r8, set=1, binding = 0) uniform image2D _dest_tex;  // upscaled AO texture
+layout(r8, set=1, binding = 1) uniform image2D _src_tex;   // lower mip
+
+layout(set=2, binding=0) uniform ubo {
+    mat4 _inv_proj_mat;
+    uvec2 _src_dimentions;
+    uvec2 _dest_dimentions;
+    int   _dst_mip; 
+    int   _multiply_dest; // dont need this anymore
+    float _camera_near; 
+    float _camera_far; 
+};
+
+
+void main() {
+    // runs for each pixel in the dest img.
+    //groupMemoryBarrier();
+
+    ivec2 texel_coord = ivec2(gl_GlobalInvocationID.xy);
+
+    if(texel_coord.x >= int(_dest_dimentions.x) || texel_coord.y >= int(_dest_dimentions.y) ){
+        return;
+    }
+
+    const int src_mip = _dst_mip + 1;
+
+    vec2 texel_uv = vec2(vec2(texel_coord) + 0.5f) / vec2(_dest_dimentions);
+    vec2  src_texel_f = texel_uv * (vec2(_src_dimentions));
+    ivec2 src_texel  = ivec2(src_texel_f);
+
+    float high_res_depth = texelFetch(_min_max_depth_tex, texel_coord, _dst_mip).x;
+    high_res_depth = linearize_depth(high_res_depth, _camera_near, _camera_far);
+    
+    // controll the strength of the 'depth aware' upsampling    
+    float spacial_sigma = 1.0f;
+    float depth_sigma   = 10.0f;
+
+    float ao_summ = 0.0f;
+    float weight_sum = 0.0f;
+
+    int size = 2;
+
+    float max_dist = dot(vec2(size, size), vec2(size, size));
+
+    for (int x = -size; x <= size; x++){
+        for (int y = -size; y <= size; y++){
+
+            ivec2 texel_offset = ivec2(x,y);
+
+            ivec2 sample_texel = src_texel + texel_offset; // todo clamp to tex bounds
+
+            float sample_depth = texelFetch(_min_max_depth_tex, sample_texel, src_mip).x;
+            sample_depth = linearize_depth(sample_depth, _camera_near, _camera_far);
+
+            vec4 value = imageLoad(_src_tex, sample_texel);
+            float sample_ao = srgb_to_linear_float_gamma_2_2(value.r);
+
+
+             float dist = dot(vec2(texel_offset), vec2(texel_offset)) / max_dist;
+             dist = 1-dist;
+             float spacial_weight = exp(dist * spacial_sigma);
+            //float spacial_weight = exp(-dot(vec2(texel_offset), vec2(texel_offset)) * spacial_sigma);
+
+            float depth_diff = abs(high_res_depth - sample_depth);
+            float depth_weight = exp(-depth_diff * depth_sigma);
+
+            float weight = depth_weight *  spacial_weight;
+
+            weight = max(0.0001f,weight);
+
+            ao_summ += sample_ao * weight;
+            weight_sum += weight;
+        }
+    }
+
+    ao_summ /= weight_sum;
+
+    // convert back to srgb
+    ao_summ = linear_to_srgb_float_gamma_2_2(ao_summ);
+    
+    vec4 upscaled = vec4(ao_summ);
+
+    imageStore(_dest_tex, texel_coord, upscaled);
+}

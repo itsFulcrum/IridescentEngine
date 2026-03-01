@@ -1,0 +1,74 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+precision highp float;
+precision highp sampler2D;
+
+// https://wiki.libsdl.org/SDL3/SDL_CreateGPUComputePipeline
+// For SPIR-V shaders, use the following resource sets:
+// 0: Sampled textures, followed by read-only storage textures, followed by read-only storage buffers
+// 1: Read-write storage textures, followed by read-write storage buffers
+// 2: Uniform buffers
+
+
+layout(set=0, binding = 0) uniform sampler2D _depth_buffer; // original frame sized depth texture
+
+layout(rg32f, set=1, binding = 0) uniform image2D _src_mip; // the higher resoluiton mip
+layout(rg32f, set=1, binding = 1) uniform writeonly image2D _dst_mip; // the mip below at half resolution of src.
+
+layout(set=2, binding=0) uniform ubo {
+    uvec2 _src_dimentions;
+    uvec2 _dst_dimentions;
+    uint  _dst_mip_level;
+    uint  _padding1;
+    uint  _padding2;
+    uint  _padding3;
+};
+
+void main() {
+
+    // Runs for every pixel in the destination mip texture
+    // we find the 4 corresponding texels in the higher res (src) texture 
+    // and find min and max of them which will be stored in x and y channels
+    // repeat for as many mip levels as we need
+
+    ivec2 dst_texel = ivec2(gl_GlobalInvocationID.xy);
+
+
+    if(dst_texel.x >= int(_dst_dimentions.x) || dst_texel.y >= int(_dst_dimentions.y) ){
+        return;   
+    }
+    
+    // For the first iteration where dest mip is 0
+    // and has the same resolution as the frame size
+    // we instead just want to perform a copy from the depth texture     
+    if(_dst_mip_level == 0) {
+
+        float depth = texelFetch(_depth_buffer, dst_texel, 0).r;
+
+        // Flip texture here so we dont have to in all other shaders
+        dst_texel.y = int(_dst_dimentions.y) - dst_texel.y - 1;
+        imageStore(_dst_mip, dst_texel, vec4(depth, depth, 0.0f, 0.0f));
+        return;
+    }
+
+    // correspoding texel corner of the 2x2 quad in the src mip
+    ivec2 src_texel = dst_texel * 2;
+
+    ivec2 src_texel_00 = min(src_texel.xy + ivec2(0,0), ivec2(_src_dimentions.xy) -1);
+    ivec2 src_texel_01 = min(src_texel.xy + ivec2(0,1), ivec2(_src_dimentions.xy) -1);
+    ivec2 src_texel_10 = min(src_texel.xy + ivec2(1,0), ivec2(_src_dimentions.xy) -1);
+    ivec2 src_texel_11 = min(src_texel.xy + ivec2(1,1), ivec2(_src_dimentions.xy) -1);
+
+    vec2 depth_00 = imageLoad(_src_mip, src_texel_00).xy; // x = previous min, y = previous max
+    vec2 depth_01 = imageLoad(_src_mip, src_texel_01).xy;
+    vec2 depth_10 = imageLoad(_src_mip, src_texel_10).xy;
+    vec2 depth_11 = imageLoad(_src_mip, src_texel_11).xy;
+
+    float min_depth = min(min(depth_00.x,depth_01.x), min(depth_10.x, depth_11.x));
+    float max_depth = max(max(depth_00.y,depth_01.y), max(depth_10.y, depth_11.y));
+    
+    vec4 min_max = vec4(min_depth,max_depth,0.0f,0.0f);
+
+    imageStore(_dst_mip, dst_texel, min_max);
+}
