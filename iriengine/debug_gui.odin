@@ -931,16 +931,9 @@ debug_gui_draw_component_editor_light :: proc (comp : ^LightComponent){
 	}
 
 
-	manager := &get_current_universe().light_manager;
-
-
-
-
-
-	if(any_changed) {
+	if any_changed {
 		comp_light_push_changes(comp);
 	}
-
 }
 
 
@@ -958,8 +951,8 @@ debug_gui_draw_component_editor_skybox :: proc (comp : ^SkyboxComponent) {
 	changed |= imgui.ColorEdit3("Nadir", &comp.color_nadir);
 
 
-	if(changed) {
-		universe_push_skybox_changes(get_current_universe(),comp);
+	if changed {
+		comp_skybox_push_changes(comp);
 	}
 }
 

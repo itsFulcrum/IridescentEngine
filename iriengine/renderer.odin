@@ -392,7 +392,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     ren_ctx.global_fragment_buffer.camera_exposure = camera_info.camera_exposure;
 
     // reset debug counters
-    //ren_ctx.debug_counters = RenderDebugCounters{};
+    // ren_ctx.debug_counters = RenderDebugCounters{};
 
     debug_config := &ren_ctx.debug_config;
     perfs := get_performance_counters();
@@ -571,6 +571,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         return num_draw_calls, num_pipeline_switches;
     }
 
+    // Idk not ideal ?
+    any_draws_exist : bool = len(universe.ecs.drawables) > 0 ;
 
     // ============================================================================================================
     //                                      DEPTH PRE PASS
@@ -584,7 +586,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
         
         depth_pre_depth_stencil_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
-            //texture     = ren_ctx.pre_depth_stencil_target_tex,
             texture     = ren_ctx.geo_depth_stencil_target_tex,
             clear_depth = 1,                        // The value to clear the depth component with
             load_op     = sdl.GPULoadOp.CLEAR,
@@ -598,20 +599,27 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
         depth_pre_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, nil, 0, &depth_pre_depth_stencil_target_info);        
         
+        if any_draws_exist {
 
-        sdl.PushGPUVertexUniformData(cmd_buf, 0, &ren_ctx.global_vertex_ubo, size_of(GlobalVertexUBO));
-        
-        sdl.BindGPUVertexStorageBuffers(depth_pre_pass, 0, &universe.matrix_buf, 1);
+            sdl.PushGPUVertexUniformData(cmd_buf, 0, &ren_ctx.global_vertex_ubo, size_of(GlobalVertexUBO));
+            
+            // TODO: maybe we should have matrix buffer have always one identity matrix as first index.
+            // otherwise if its nil here we crash on this call. but if we dont bind anything we also crash at least in validation mode.
+            sdl.BindGPUVertexStorageBuffers(depth_pre_pass, 0, &universe.matrix_buf, 1);
+            
 
-        draws, switches := draw_depthonly_drawable_index_array(cmd_buf, depth_pre_pass, &universe.frame_opaques   , pipe_manager, mesh_manager, universe, .DepthPre);
-        perfs.depth_prepass_drawcalls += draws;
-        perfs.depth_prepass_num_pipeline_switches += switches;
-        draws, switches = draw_depthonly_drawable_index_array(cmd_buf, depth_pre_pass, &universe.frame_alpha_test, pipe_manager, mesh_manager, universe, .DepthPreAlphaTest);
-        perfs.depth_prepass_drawcalls += draws;
-        perfs.depth_prepass_num_pipeline_switches += switches;
+            draws, switches := draw_depthonly_drawable_index_array(cmd_buf, depth_pre_pass, &universe.frame_opaques   , pipe_manager, mesh_manager, universe, .DepthPre);
+            perfs.depth_prepass_drawcalls += draws;
+            perfs.depth_prepass_num_pipeline_switches += switches;
+            draws, switches = draw_depthonly_drawable_index_array(cmd_buf, depth_pre_pass, &universe.frame_alpha_test, pipe_manager, mesh_manager, universe, .DepthPreAlphaTest);
+            perfs.depth_prepass_drawcalls += draws;
+            perfs.depth_prepass_num_pipeline_switches += switches;
 
+        }
         sdl.EndGPURenderPass(depth_pre_pass);
     }
+
+
 
     // ============================================================================================================
     //                                      MIN MAX DEPTH HIERARCHY
@@ -844,6 +852,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         sampler = ren_ctx.nearest_depth_sampler, // for testings
     }
 
+
     // ============================================================================================================
     //                                     LIGHT PASS
     // ============================================================================================================
@@ -1019,7 +1028,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         // SKYBOX BUFFER SLOT 1
         sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &sky_gpu_buffer, 1);
 
-        sdl.BindGPUVertexStorageBuffers(render_pass, 0, &universe.matrix_buf, 1);
+
+
 
         //Skybox Pass
         // The skybox pass must happen before alpha blended materials.
@@ -1027,11 +1037,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             pipeline_skybox := pipe_manager_get_core_pipeline(pipe_manager, .Skybox);
             sdl.BindGPUGraphicsPipeline(render_pass, pipeline_skybox);
 
-            
             sdl.BindGPUFragmentSamplers(render_pass, 0, sky_cubemap_binding ,1);
-
-            //sdl.BindGPUFragmentStorageBuffers(render_pass,0, &ren_ctx.global_fragment_gpu_buffer, 1);
-            //sdl.BindGPUFragmentStorageBuffers(render_pass,1, &universe.skybox_gpu_buffer, 1);
 
             // bind vertex buffer
             vert_buffer_binding := sdl.GPUBufferBinding {
@@ -1043,6 +1049,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
             sdl.DrawGPUPrimitives(render_pass, ren_ctx.prim_icosphere.num_vertecies , 1, 0, 0);
         }
+
 
         bind_unlit_material_resources :: proc(render_pass : ^sdl.GPURenderPass){
 
@@ -1197,17 +1204,23 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
 
         
-        draws, switches := draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_opaques    , universe, &ao_sampler_binding, sky_cubemap_binding);
-        forward_draw_calls += draws;
-        forward_pipe_switches += switches;
+        if any_draws_exist {
 
-        draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_alpha_test , universe, &ao_sampler_binding, sky_cubemap_binding);
-        forward_draw_calls += draws;
-        forward_pipe_switches += switches;
-        
-        draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_alpha_blend, universe, &ao_sampler_binding, sky_cubemap_binding);
-        forward_draw_calls += draws;
-        forward_pipe_switches += switches;
+            // @Note: if no draws exist, matrix buffer will be nill
+            sdl.BindGPUVertexStorageBuffers(render_pass, 0, &universe.matrix_buf, 1);
+
+            draws, switches := draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_opaques    , universe, &ao_sampler_binding, sky_cubemap_binding);
+            forward_draw_calls += draws;
+            forward_pipe_switches += switches;
+
+            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_alpha_test , universe, &ao_sampler_binding, sky_cubemap_binding);
+            forward_draw_calls += draws;
+            forward_pipe_switches += switches;
+            
+            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_alpha_blend, universe, &ao_sampler_binding, sky_cubemap_binding);
+            forward_draw_calls += draws;
+            forward_pipe_switches += switches;
+        }
 
 
 
@@ -1378,7 +1391,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         perfs.forward_pass_cpu_ms = timer_end_get_miliseconds(forward_pass_timer);
 
     }
-
 
     // POST COLOR CORRECT PASS
     // Here we just color correct the scene rendered img with tonemapping and srgb convertion

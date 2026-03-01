@@ -70,6 +70,12 @@ EntityComponentData :: struct {
 	mesh_renderer_components 	: [dynamic]MeshRendererComponent,
 	custom_shader_components 	: [dynamic]CustomShaderComponent,
 
+
+	active_camera_entity : Entity,
+	active_skybox_entity : Entity,
+	active_skybox_is_dirty : bool,
+
+
 	drawables : #soa[dynamic]Drawable,
 	any_light_is_dirty : bool, // set to false each frame by light_manager after updates
 }
@@ -250,6 +256,11 @@ ecs_init :: proc(ecs : ^EntityComponentData, reserve_mem_for_n_entities : u32 = 
 
 		reserve_dynamic_array(&ecs.component_indexes[comp_type], reserve_amount);
 	}
+
+
+	ecs.active_camera_entity.id = -1;
+	ecs.active_skybox_entity.id = -1;
+	ecs.active_skybox_is_dirty  = true;
 }
 
 @(private="package")

@@ -8,6 +8,7 @@ import "odinary:picy"
 SkyboxComponent :: struct{
 	using common : ComponentCommon,
 
+	// sun stuff is not implemented yet
 	sun_direction : [3]f32,
 	sun_strength  : f32,
 	sun_color     : [3]f32,
@@ -188,4 +189,11 @@ comp_skybox_load_hdr_cubemap :: proc(comp : ^SkyboxComponent, filename : string)
 
 	submit_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
 	engine_assert(submit_ok);
+}
+
+comp_skybox_push_changes :: proc(comp : ^SkyboxComponent){
+
+	if comp.entity.id == comp.parent_ecs.active_skybox_entity.id {
+		comp.parent_ecs.active_skybox_is_dirty = true;
+	}
 }

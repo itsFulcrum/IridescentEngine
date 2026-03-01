@@ -192,7 +192,7 @@ asset_loader_load_gltf_file_as_combined_mesh :: proc(filename : string, load_fir
 	return;
 }
 
-asset_loader_load_gltf_file_as_asset_scene :: proc(filename : string, load_materials : bool = true, load_lights: bool = true) -> (asset_scene : ^AssetScene,ok : bool) {
+asset_loader_load_gltf_file_as_asset_scene :: proc(filename : string, load_materials : bool = true, load_lights: bool = true) -> (asset_scene : ^AssetScene, ok : bool) {
 
 	mesh_manager := engine.mesh_manager;
 	gpu_device := get_gpu_device();

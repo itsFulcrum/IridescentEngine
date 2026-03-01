@@ -211,12 +211,15 @@ run :: proc() {
     	// Process debug ui
     	debug_gui_process_frame();
 
+
     	universe_manager_update_universe(engine.window.gpu_device, engine.universe, engine.render_context.current_frame_size);
 
     	shader_manager_update(engine.shader_manager,engine.window.gpu_device, true_delta_time);
 
+
     	// RENDERING
     	renderer_draw_frame(engine.render_context, &engine.window, engine.universe);
+    	//log.debugf("ENGINE before frame")
 
 
     	free_all(context.temp_allocator);
@@ -347,8 +350,12 @@ set_physics_update_callback_proc :: proc(callback_procedure : proc() ){
 	engine.physics_update_callback = callback_procedure;
 }
 
-get_current_universe :: proc() -> ^Universe{
+get_active_universe :: proc() -> ^Universe{
 	return engine.universe;
+}
+
+set_active_universe :: proc(universe : ^Universe){
+	engine.universe = universe;
 }
 
 quit_application :: proc() {

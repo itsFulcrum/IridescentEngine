@@ -7,12 +7,12 @@ import sdl "vendor:sdl3"
 
 Universe :: struct {
 	ecs : EntityComponentData,
-	active_camera_entity : Entity,
-	active_skybox_entity : Entity,
+	// active_camera_entity : Entity,
+	// active_skybox_entity : Entity,
 
 	frame_camera_info : FrameCameraInfo,
 
-	skybox_data_is_dirty : bool,
+	//skybox_data_is_dirty : bool,
 	skybox_data : SkyboxGPUData,
 	skybox_transfer_buffer : ^sdl.GPUTransferBuffer, // Note maybe we should have a transfer buffer for multiple things ..?
 	skybox_gpu_buffer : ^sdl.GPUBuffer,
@@ -45,19 +45,11 @@ Universe :: struct {
 	debug_test_float : f32,
 }
 
-
-
-
-
-
 @(private="package")
 universe_init :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, reserve_mem_for_n_entities : u32 = 20) {
 	engine_assert(universe != nil);
 
 	ecs_init(&universe.ecs , reserve_mem_for_n_entities);
-	
-	universe.active_camera_entity.id = -1;
-	universe.active_skybox_entity.id = -1;
 
 	universe.cull_shadow_draws = true;
 	universe.do_frustum_culling = true;
@@ -73,8 +65,10 @@ universe_init :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, reserve
 
 	// Skybox 
 	{
-		universe.skybox_data_is_dirty = true;
+		//universe.skybox_data_is_dirty = true;
 		// skybox_gpu_data_set_defaults(&manager.skybox_data); // will happen during update
+
+		universe.ecs.active_skybox_is_dirty = true;
 
 		skybox_gpu_buffer_create_info := sdl.GPUBufferCreateInfo{
 			usage = sdl.GPUBufferUsageFlags{.GRAPHICS_STORAGE_READ, .COMPUTE_STORAGE_READ, .COMPUTE_STORAGE_WRITE},
@@ -102,9 +96,7 @@ universe_deinit :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe) {
 	engine_assert(universe != nil);
 
 	ecs_destroy(&universe.ecs);
-	universe.active_camera_entity.id = -1;
-	universe.active_skybox_entity.id = -1;
-
+	
 	// skybox buffer
 	if universe.skybox_gpu_buffer != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, universe.skybox_gpu_buffer);
@@ -146,51 +138,41 @@ universe_set_active_camera_entity :: proc(universe : ^Universe, entity : Entity)
 		return false;
 	}
 
-	universe.active_camera_entity = entity;
+	universe.ecs.active_camera_entity = entity;
 
 	return true;
 }
+
+universe_has_active_camera :: proc (universe : ^Universe) -> bool {
+
+	return ecs_component_is_attached(&universe.ecs, universe.ecs.active_camera_entity, ComponentType.Camera);
+}
+
 
 // Set an existing entity with a skybox component attached to it as the active skybox used for rendering
 universe_set_active_skybox_entity :: proc(universe : ^Universe, entity : Entity) -> bool {
 	
 	engine_assert(universe != nil);
 
-	if(!ecs_component_is_attached(&universe.ecs, entity, ComponentType.Skybox)) {
+	if !ecs_component_is_attached(&universe.ecs, entity, ComponentType.Skybox) {
 		return false;
 	}
 
-	universe.active_skybox_entity = entity;
-
-	universe.skybox_data_is_dirty = true;
+	universe.ecs.active_skybox_entity = entity;
+	universe.ecs.active_skybox_is_dirty = true;
 
 	return true;
-}
-
-universe_push_skybox_changes :: proc(universe : ^Universe, comp : ^SkyboxComponent){
-	
-	if(universe.active_skybox_entity.id != comp.entity.id){
-		return;
-	}
-
-	universe.skybox_data_is_dirty = true;
-}
-
-
-universe_has_active_camera :: proc (universe : ^Universe) -> bool {
-
-	return ecs_component_is_attached(&universe.ecs, universe.active_camera_entity, ComponentType.Camera);
 }
 
 // returns nill if no active skybox is set
 @(private="package")
 universe_get_active_skybox_component :: proc(universe : ^Universe) -> ^SkyboxComponent {
 
-	if(universe.active_skybox_entity.id >= 0){
+	if universe.ecs.active_skybox_entity.id >= 0 {
 
-		if(ecs_component_is_attached(&universe.ecs, universe.active_skybox_entity, ComponentType.Skybox)){
+		if ecs_component_is_attached(&universe.ecs, universe.ecs.active_skybox_entity, ComponentType.Skybox) {
 
-			sky_comp , err := ecs_get_component(&universe.ecs, universe.active_skybox_entity, SkyboxComponent);
+			sky_comp , err := ecs_get_component(&universe.ecs, universe.ecs.active_skybox_entity, SkyboxComponent);
 			engine_assert(sky_comp != nil);
 			return sky_comp;
 		}
@@ -198,5 +180,7 @@ universe_get_active_skybox_component :: proc(universe : ^Universe) -> ^SkyboxCom
 
 	return nil;
 }
+
+
 
 

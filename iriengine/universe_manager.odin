@@ -10,6 +10,8 @@ import sdl "vendor:sdl3"
 @(private="package")
 universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, frame_size : [2]u32){
 
+
+
 	perfs := get_performance_counters();
 
 	universe_update_timer := timer_begin();
@@ -22,7 +24,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 	universe_update_frame_camera_info(universe, frame_aspect_ratio);
 
 
-	if universe.skybox_data_is_dirty {
+	if universe.ecs.active_skybox_is_dirty {
 		
 		sky_comp := universe_get_active_skybox_component(universe);
 
@@ -70,6 +72,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 	// update non static transforms
 	universe_update_matrix_buffer(gpu_device, universe);
 
+
 	// Create a list of indexes into drawables that are inside camera frustum
 
 	// Frustum cull main camera into frame_renderables
@@ -116,6 +119,8 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 	clear(&universe.frame_alpha_test);
 	clear(&universe.frame_alpha_blend);
 
+
+
 	for i in 0..<len(universe.frame_renderables) {
         
 		drawable_index := universe.frame_renderables[i];
@@ -134,7 +139,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 
     // Sort 
 
-    when false {
+    when true {
 
     	// @Note: here we are 'bubble' sorting frame_opaques by technique hash
 
@@ -170,14 +175,13 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
     }
 
     // TODO: sort blend meshes
-
 }
 
 
 @(private="package")
 universe_query_skybox_buffer_upload :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe) -> (requires_upload: bool, transfer_buf_location : sdl.GPUTransferBufferLocation, buf_region : sdl.GPUBufferRegion) {
 
-	if(!universe.skybox_data_is_dirty){
+	if !universe.ecs.active_skybox_is_dirty {
 		return false, transfer_buf_location, buf_region;
 	}
 
@@ -196,7 +200,7 @@ universe_query_skybox_buffer_upload :: proc(gpu_device : ^sdl.GPUDevice, univers
 		size = copy_size,
 	}
 
-	universe.skybox_data_is_dirty = false;
+	universe.ecs.active_skybox_is_dirty = false;
 
 	return true, transfer_buf_location, buf_region;
 }
@@ -210,13 +214,13 @@ universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ra
 
     if universe_has_active_camera(universe) {
 
-        cam_transform := ecs_get_transform(&universe.ecs, universe.active_camera_entity);
+        cam_transform := ecs_get_transform(&universe.ecs, universe.ecs.active_camera_entity);
         info.position_ws = cam_transform.position;
         info.direction_ws = get_forward(cam_transform);
             
         info.view_mat = calc_view_matrix(cam_transform);
 
-        cam_comp, err2 := ecs_get_component(&universe.ecs, universe.active_camera_entity, CameraComponent);
+        cam_comp, err2 := ecs_get_component(&universe.ecs, universe.ecs.active_camera_entity, CameraComponent);
         info.proj_mat = comp_camera_get_projection_matrix(cam_comp, frame_aspect_ratio);
 
         info.fov_radians = linalg.to_radians(cam_comp.fov_deg);
@@ -328,6 +332,13 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 
 	drawables : ^#soa[dynamic]Drawable = &universe.ecs.drawables;
 
+	universe.matrix_upload_info.requires_upload = false;
+	universe.matrix_upload_info.transfer_buf_location = {};
+	universe.matrix_upload_info.transfer_buf_region = {};
+	
+	if len(drawables) == 0 {
+		return;
+	}
 
 	min_index : int = len(drawables);
 	max_index : int = -1;
@@ -360,9 +371,6 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 		}
 	}
 
-	universe.matrix_upload_info.requires_upload = false;
-	universe.matrix_upload_info.transfer_buf_location = {};
-	universe.matrix_upload_info.transfer_buf_region = {};
 
 	required_gpu_buf_byte_size : int = len(drawables) * size_of(matrix[4,4]f32);
 

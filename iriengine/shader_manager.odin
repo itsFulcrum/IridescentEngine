@@ -108,8 +108,10 @@ shader_manager_deinit :: proc(manager : ^ShaderManager, gpu_device : ^sdl.GPUDev
 @(private="package")
 shader_manager_update :: proc(manager : ^ShaderManager, gpu_device : ^sdl.GPUDevice, true_delta_seconds : f64){
 
+	//log.debugf("Shader manager")
 
 	when ENGINE_SHADER_HOT_RELOADING == true {
+
 
 		manager.hotreload_accumulator += cast(f32)true_delta_seconds;
 
