@@ -7,9 +7,9 @@ import "core:math/linalg"
 
 import sdl "vendor:sdl3"
 
-import imgui "extern:dear_imgui"
-import imgui_sdl3 "extern:dear_imgui/imgui_impl_sdl3"
-import imgui_sdl3gpu "extern:dear_imgui/imgui_impl_sdlgpu3"
+import imgui "odinary:dear_imguy"
+import imgui_sdl3 "odinary:dear_imguy/imgui_impl_sdl3"
+import imgui_sdl3gpu "odinary:dear_imguy/imgui_impl_sdlgpu3"
 
 
 DebugGUI_CallbackSignature :: #type proc();
