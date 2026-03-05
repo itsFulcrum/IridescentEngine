@@ -2,7 +2,7 @@ package iri
 import "core:log"
 import "core:mem"
 import "core:strings"
-import os "core:os/os2"
+import "core:os"
 import sdl "vendor:sdl3"
 import "odinary:picy"
 

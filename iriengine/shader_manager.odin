@@ -6,7 +6,7 @@ import "core:mem"
 import "core:strings"
 import "core:fmt"
 import "core:path/filepath"
-import os "core:os/os2"
+import "core:os"
 
 
 import sdl "vendor:sdl3"

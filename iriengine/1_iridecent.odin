@@ -5,7 +5,7 @@ import "core:log"
 import "core:mem"
 import "core:c"
 import "core:strings"
-import os "core:os/os2"
+import "core:os"
 
 import sdl "vendor:sdl3"
 
