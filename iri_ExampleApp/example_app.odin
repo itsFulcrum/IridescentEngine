@@ -44,7 +44,7 @@ init :: proc() -> (ok : bool) {
 	// Provide the path to the engine resources. You can copy this folder anywhere you want.
 	engine_resources_path : string = "../engine_resources"
 
-	iri.init("Iri Example App", [2]u32{1920, 1080}, engine_resources_path, start_fullscreen = false) or_return;
+	iri.init("Iri Example App", [2]u32{1014, 720}, engine_resources_path, start_fullscreen = false) or_return;
 	
 	iri.begin_init_phase();
 	defer iri.end_init_phase();
