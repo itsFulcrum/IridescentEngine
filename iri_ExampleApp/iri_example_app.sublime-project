@@ -1,0 +1,46 @@
+{
+	"folders":
+	[
+		{
+			"path": ".",
+		},
+		{
+			"path": "C:\\Users\\janis\\Documents\\cppProjects\\IridescentEngine\\iriengine",
+		},
+		{
+			"path": "C:\\Users\\janis\\Documents\\cppProjects\\libsODINary"
+		},
+	],
+	"build_systems":[
+		{
+			"name": "run_release",
+			"working_dir": "$working_directory_path",
+			"target": "terminus_exec",
+			"show_in_panel": true,
+			"auto_close": false,
+			"timeit": true,
+			"focus": true,
+			"shell_cmd": "odin run example_app.odin -file -out:IriExampleApp.exe -o:speed -collection:odinary=../../libsODINary -collection:iriengine=../../IridescentEngine",
+		},
+		{
+			"name": "run_debug",
+			"working_dir": "$working_directory_path",
+			"target": "terminus_exec",
+			"show_in_panel": true,
+			"auto_close": false,
+			"timeit": true,
+			"focus": true,
+			"shell_cmd": "odin run example_app.odin -file -out:IriExampleApp.exe -debug -o:minimal -collection:odinary=../../libsODINary -collection:iriengine=../../IridescentEngine",
+		}
+	],
+	"settings": 
+	{
+		"LSP":
+		{
+			"odin": 
+			{
+				"enabled": false,
+			},
+		},
+	},
+}

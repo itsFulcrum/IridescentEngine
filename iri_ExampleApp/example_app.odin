@@ -33,7 +33,8 @@ main :: proc() {
 		return;
 	}
 
-	// iri.run() will start the main game loop until the programm is closed (by the user, by the OS or by manually calling iri.quit_application())
+	// iri.run() will start the main game loop until the programm 
+	// is closed by the user, by the OS or by manually calling iri.quit_application()
 	iri.run();
 	deinit();
 }
@@ -60,7 +61,7 @@ init :: proc() -> (ok : bool) {
 	// all entity operations happen inside a universe.
 	// we can get a refernce to the currently active universe like this
 
-	universe : ^iri.Universe = iri.get_active_universe()
+	universe : ^iri.Universe = iri.get_active_universe();
 	assert(universe != nil);
 
 	// lets keep a pointer to the universe ourselves
@@ -78,19 +79,23 @@ init :: proc() -> (ok : bool) {
 		cam_transform_comp.position = {0.0, 10.0, 15.0}
 		cam_transform_comp.orientation = linalg.quaternion_angle_axis_f32(linalg.to_radians(f32(-45.0)), iri.TRANSFORM_WORLD_RIGHT);
 		cam_comp.fov_deg = 65.0;
+
 		// We must tell the universe that we want to use this entity with this camera component as the active camera used for rendering
-		// we can have multiply entities with cameras and switch between them any time.
+		// we can have multiple entities with camera components and switch between them any time.
 		iri.universe_set_active_camera_entity(universe, cam_ent);
 	}
 
 	// Create a skybox
 	{
 		// we can create entities directly with a set (bitset) of components
-		sky_ent := iri.entity_create({iri.ComponentType.Skybox})
+		// we can also explicitly pass the universe where we want to create the entity. 
+		// if nil or nothing is passed the active universe will be used by internally calling
+		// iri.get_active_universe(); Note that this will fail if no universe is active.
+		sky_ent := iri.entity_create({iri.ComponentType.Skybox}, app.universe);
 
 		// Get the component of type 'SkyboxComponent'
 		// this proc can return nil if the entity does not exist or the component we ask for is not attached to the entity;
-		// you may call iri.entity_is_component_attached(sky_ent) before to check.
+		// you may call iri.entity_is_component_attached(sky_ent) beforehand to verify it.
 		sky_comp := iri.entity_get_component(sky_ent, iri.SkyboxComponent);
 
 		sky_comp.color_zenith  = [3]f32{0.2, 0.0, 0.6};
@@ -102,7 +107,7 @@ init :: proc() -> (ok : bool) {
 		// sky_comp.color_nadir   = [3]f32{0.0, 0.0, 0.0};
 		sky_comp.exposure = 0.0;
 
-		// similar to cameras we must also tell the universe that that we want this entity with the skybox component to be the active skybox component used for rendering
+		// similar to cameras we must also tell the universe that we want this entity with this skybox component to be the active skybox component used for rendering
 		// we can have multiple entities with skybox compoents but only one can be active during rendering.
 		iri.universe_set_active_skybox_entity(universe, sky_ent);
 	}
@@ -113,10 +118,22 @@ init :: proc() -> (ok : bool) {
 		app.player_entity = iri.entity_create({.MeshRenderer});
 		
 		// First lets create a custom material for the player
+
 		player_mat : iri.Material;
+		// Render technique holds information for how the material should be rendered
+		// it includes things like alpha blend modes, cull options ect.
+		// try using as little variations of render techniques in your materials
+		// to minimize the number of graphics pipeline variations and shader permutations needed. 
 		player_mat.render_technique = iri.create_default_render_technique();
+		// Materials have a union variant
+		// there are 3 types of material variants currently
+		// PBR, Unlit and Custom. (although custom is not fully implemented yet)
 		player_mat.variant = iri.PbrMaterialData {
 			albedo_color = {1.0, 0.0, 0.0},
+			roughness = 0.2,
+			metallic = 0.0,
+			emissive_color = {0,0,0},
+			emissive_strength = 0.0
 		};
 
 		// Materials must be registerd so they can be applied to multiple meshes
@@ -186,6 +203,8 @@ init :: proc() -> (ok : bool) {
 		}
 	}
 
+	
+
 
 	// Setup Debug dear imgui rendering
 	iri.debug_gui_set_enable(true);
@@ -233,8 +252,8 @@ frame_update :: proc(delta_seconds : f32){
 
 	// Update pos 
 	if linalg.length(target_dir) > 0.0 {
-		move_speed : f32 = 10;
 
+		move_speed : f32 = 10;
 		speed := move_speed * delta_seconds;
 		transform.position += linalg.normalize(target_dir) * speed;
 	}
