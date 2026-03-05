@@ -5,7 +5,6 @@ import "core:log"
 import "core:mem"
 import "core:strings"
 import "core:fmt"
-import "core:path/filepath"
 import "core:os"
 
 
@@ -31,19 +30,51 @@ ShaderManager :: struct {
     hotreload_accumulator : f32,
 }
 
-SHADER_VARIANT_EMPTY :: ShaderVariant{}
+// SHADER_VARIANT_EMPTY :: ShaderVariant{}
 
-ShaderVariant :: distinct bit_set[ShaderDefines; u32]
-ShaderDefines :: enum u32 {
-	USE_ALPHA_TEST = 0,
-	USE_ALPHA_BLEND,
-	VERT_LAYOUT_MINIMAL,
-	VERT_LAYOUT_STANDARD,
-	VERT_LAYOUT_EXTENDED,
-	SMAA_PASS_EDGE_DETECTION,
+
+// ShaderVariant :: distinct bit_set[ShaderDefines; u32]
+// ShaderDefines :: enum u32 {
+// 	USE_ALPHA_TEST = 0,
+// 	USE_ALPHA_BLEND,
+// 	VERT_LAYOUT_MINIMAL,
+// 	VERT_LAYOUT_STANDARD,
+// 	VERT_LAYOUT_EXTENDED,
+// 	SMAA_PASS_EDGE_DETECTION,
+// 	SMAA_PASS_BLEND_WEIGHT,
+// 	SMAA_PASS_NEIGHBORHOOD_BLEND,
+// }
+
+ShaderVariant :: union {
+	VertShaderVariant,
+	FragShaderVariant,
+	RenderEffectShaderVariant,
+}
+
+VERT_SHADER_VARIANT_EMPTY :: VertShaderVariant{}
+FRAG_SHADER_VARIANT_EMPTY :: FragShaderVariant{}
+RENDER_EFFECT_SHADER_VARIANT_EMPTY :: RenderEffectShaderVariant{}
+
+RenderEffectShaderVariant :: distinct bit_set[RenderEffectShaderDefines; u32]
+RenderEffectShaderDefines :: enum u32 {
+	SMAA_PASS_EDGE_DETECTION = 0,
 	SMAA_PASS_BLEND_WEIGHT,
 	SMAA_PASS_NEIGHBORHOOD_BLEND,
 }
+
+VertShaderVariant :: distinct bit_set[VertShaderDefines; u32]
+VertShaderDefines :: enum u32 {
+	VERT_LAYOUT_MINIMAL = 0,
+	VERT_LAYOUT_STANDARD,
+	VERT_LAYOUT_EXTENDED,
+}
+
+FragShaderVariant :: distinct bit_set[FragShaderDefines; u32]
+FragShaderDefines :: enum u32 {
+	USE_ALPHA_TEST = 0,
+	USE_ALPHA_BLEND,
+}
+
 
 
 ShaderEntryFlags :: distinct bit_set[ShaderEntryFlag]
@@ -158,9 +189,15 @@ shader_manager_register_shader_source :: proc(manager : ^ShaderManager, source_p
 		return shader_id;
 	}
 
+	clean_path , alloc_err := os.clean_path(source_path, context.allocator);
+	if alloc_err != nil {
+		log.errorf("Faild to register shader source. Memory Allocation error");
+		return shader_id;
+	}
+
 	new_entry := ShaderEntry{
 		flags = {.EntryIsUsed},
-		path  = filepath.clean(source_path, context.allocator),
+		path  = clean_path,
 		compile_info = ShaderCompileInfo2{shader_stage = shader_stage}
 	}
 
@@ -303,9 +340,25 @@ shader_manager_get_compile_info_ptr :: proc(manager : ^ShaderManager, shader_id 
 	return &manager.entries[shader_id].compile_info;
 }
 
+@(private="package")
+shader_manager_get_shader_variant_hash :: proc(variant : ShaderVariant) -> u32 {
+
+	hash : u32 = 0;
+
+	if variant != nil {
+		switch v in variant {
+			case VertShaderVariant: 		hash = transmute(u32)v;
+			case FragShaderVariant: 		hash = transmute(u32)v;
+			case RenderEffectShaderVariant: hash = transmute(u32)v;
+		}
+	}
+
+	return hash;
+}
+
 // Only For graphics stage shader .VERTEX or .FRAGMENT, otherwise probably crash
 @(private="package")
-shader_manager_get_or_load_gfx_shader_variant :: proc(manager : ^ShaderManager, gpu_device : ^sdl.GPUDevice, shader_id : ShaderID, variant : ShaderVariant = SHADER_VARIANT_EMPTY) -> ^sdl.GPUShader{
+shader_manager_get_or_load_gfx_shader_variant :: proc(manager : ^ShaderManager, gpu_device : ^sdl.GPUDevice, shader_id : ShaderID, variant : ShaderVariant = nil) -> ^sdl.GPUShader{
 
 	engine_assert(manager != nil);
 	engine_assert(shader_manager_is_valid_shader_id(manager, shader_id));
@@ -317,7 +370,8 @@ shader_manager_get_or_load_gfx_shader_variant :: proc(manager : ^ShaderManager, 
 	shader_hash : u64;
 	shader_hash_ : [^]u32 = cast([^]u32)&shader_hash;
 	shader_hash_[0] = transmute(u32)shader_id
-	shader_hash_[1] = transmute(u32)variant;
+	shader_hash_[1] = shader_manager_get_shader_variant_hash(variant);
+	
 
 	shader, exists := manager.gfx_shader_cache[shader_hash]
 
@@ -352,7 +406,7 @@ shader_manager_get_or_load_gfx_shader_variant :: proc(manager : ^ShaderManager, 
 	// 	log.debugf("load_shader {}, compile_info:\n{}", glsl_filename, compile_info);
 	// }
 	
-	shader_variant := create_sdl_shader_from_spirv_2(gpu_device, spirv_or_err_str, compile_info)
+	shader_variant : ^sdl.GPUShader = create_sdl_shader_from_spirv_2(gpu_device, spirv_or_err_str, compile_info)
 
 	if shader_variant != nil {
 
@@ -431,7 +485,7 @@ shader_manager_clear_all_variants_for_shader_id_from_gfx_shader_cache :: proc(ma
 	}
 */
 @(private="package")
-shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, shader_id : ShaderID, variant : ShaderVariant = SHADER_VARIANT_EMPTY) -> (spirv_or_error_str : []byte, compile_info : ShaderCompileInfo2, ok : bool) {
+shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, shader_id : ShaderID, variant : ShaderVariant = nil) -> (spirv_or_error_str : []byte, compile_info : ShaderCompileInfo2, ok : bool) {
 	
 
 	if !shader_manager_is_valid_shader_id(manager, shader_id) {
@@ -444,13 +498,25 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
 
 
 	glsl_filepath : string = manager.entries.path[shader_id]; // the full path to the glsl source file.
-	glsl_filename : string = filepath.base(glsl_filepath); // the filename of the glsl source file.
+	glsl_filename : string = os.base(glsl_filepath); // the filename of the glsl source file.
 
-	variant_uint : u32 = transmute(u32)variant;
-	variant_str_extention : string = fmt.aprintf(".variant_{}",variant_uint, allocator = context.temp_allocator);
+	variant_hash : u32 = shader_manager_get_shader_variant_hash(variant);
 
-	spirv_filename := strings.join({glsl_filename, variant_str_extention ,".spv"}, "", context.temp_allocator);
-	spirv_filepath : string = filepath.clean(filepath.join({manager.spirv_folder_path, spirv_filename}, context.temp_allocator), context.temp_allocator);
+	variant_str_extention : string = fmt.aprintf("variant_{}", variant_hash, allocator = context.temp_allocator);
+
+	// add variant to filename (filename.variant_000)
+	spirv_filename, join_err := os.join_filename(glsl_filename, variant_str_extention, context.temp_allocator);
+	engine_assert(join_err == os.ERROR_NONE);
+	// add spv to filename (filename.variant_0.spv)
+	spirv_filename, join_err = os.join_filename(spirv_filename,"spv", context.temp_allocator);
+	engine_assert(join_err == os.ERROR_NONE);
+
+
+	spirv_filepath , alloc_err := os.join_path({manager.spirv_folder_path, spirv_filename}, context.temp_allocator)
+	engine_assert(alloc_err == nil);
+
+	spirv_filepath , alloc_err = os.clean_path(spirv_filepath, context.temp_allocator);
+	engine_assert(alloc_err == nil);
 
     glsl_exists  : bool = os.exists(glsl_filepath)  && os.is_file(glsl_filepath);
     spirv_exists : bool = os.exists(spirv_filepath) && os.is_file(spirv_filepath);
@@ -459,8 +525,7 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
 
         err_str : string = fmt.aprintf("Failed to load shader_id: '{}' from file, Neither glsl nor spirv filepaths exist: glsl-path: {}",cast(i32)shader_id, glsl_filepath, allocator = context.temp_allocator);
         return transmute([]u8)err_str, ShaderCompileInfo2{}, false;
-    }
-	
+    }	
 
     out_file_watcher : ^filey.FileWatcherData = shader_manager_get_file_watcher_if_exists(manager, shader_id);
 
@@ -483,7 +548,7 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
             } else {
 
                 // check if glsl file is newer then spriv file in wich case we always want to load from glsl and update our spirv compilation
-                glsl_file_time , err1 := os.modification_time_by_path(glsl_filepath);
+                glsl_file_time  , err1 := os.modification_time_by_path(glsl_filepath);
                 spirv_file_time , err2 := os.modification_time_by_path(spirv_filepath);
 
                 engine_assert(err1 == os.ERROR_NONE);
@@ -495,8 +560,6 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
             }
         }
     }
-	
-	//log.warnf("Loading shaderID {}, variant {}, loading from glsl {}", shader_id, variant, load_from_glsl);
 
     if load_from_glsl {
 
@@ -527,11 +590,32 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
         }
 
         
-        if variant != SHADER_VARIANT_EMPTY {
+        if variant != nil {
 
-        	for define_enum in variant {
-        		append(&define_strings, fmt.aprintf("{}", define_enum , allocator = context.temp_allocator));
-        	}
+        	switch &v in variant {
+        		case VertShaderVariant: {
+        			if v != VERT_SHADER_VARIANT_EMPTY {
+			        	for define_enum in v {
+			        		append(&define_strings, fmt.aprintf("{}", define_enum , allocator = context.temp_allocator));
+			        	}
+        			}
+        		}
+        		case FragShaderVariant: {
+        			if v != FRAG_SHADER_VARIANT_EMPTY {
+			        	for define_enum in v {
+			        		append(&define_strings, fmt.aprintf("{}", define_enum , allocator = context.temp_allocator));
+			        	}
+        			}
+        		}
+        		case RenderEffectShaderVariant: {
+        			if v != RENDER_EFFECT_SHADER_VARIANT_EMPTY {
+			        	for define_enum in v {
+			        		append(&define_strings, fmt.aprintf("{}", define_enum , allocator = context.temp_allocator));
+			        	}
+        			}
+        		}
+        	}        
+
         	parse_info.insert_defines = define_strings[:];
         }
 
@@ -555,26 +639,17 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
         
         WRITE_ASCI_SRC :: false
         when WRITE_ASCI_SRC {
-            spirv_filepath_Asci := strings.join({spirv_filepath, ".asci.glsl"}, "", context.temp_allocator);
-            err := os.write_entire_file_from_bytes(spirv_filepath_Asci, glsl_src_code)
+
+            spirv_filepath_Asci, join_err := os.join_filename(spirv_filepath, "asci.glsl", context.temp_allocator);
+            assert(join_err == os.ERROR_NONE)
+            write_asci_err := os.write_entire_file_from_bytes(spirv_filepath_Asci, glsl_src_code)
+        	assert(write_asci_err == os.ERROR_NONE);
         }
 
         reflect_info := shady.reflect_parse_glsl_src_code(glsl_src_code);
-
-        
-        TEST_REFLECT :: false
-        when TEST_REFLECT {
-            log.debugf("ReflectInfo: {} \n{}",src_glsl_filename, reflect_info);
-        }
-
         shady_shader_stage := get_shady_ShaderStage_from_ShaderStage(shader_stage);
         
-
-
         spriv_or_error_str, transpile_success := shady.transpile_glsl_to_SPIRV(glsl_src_code , shady_shader_stage, shady.SpirvVersion.SPV_1_3, shady.ClientVersion.VULKAN_1_2,include_files[:]);
-        
-       // log.warnf("Loading shaderID {}, variant {}", shader_id, variant);
-
 
         if !transpile_success {            
             err_str : string = fmt.aprintf("Shader Compilation Failed: {}\n{}", glsl_filepath, transmute(string)spriv_or_error_str, allocator = context.temp_allocator);
@@ -599,7 +674,7 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
 	        mem.copy(&custom_spirv[hdr_size], &spriv_or_error_str[0], spirv_size);
 
 	        write_err := os.write_entire_file_from_bytes(spirv_filepath, custom_spirv);
-	        if write_err != nil {
+	        if write_err != os.ERROR_NONE {
 	            log.errorf("Faild to write spirv file to disk after succesful compilation, Path: {}", spirv_filepath);
 	        }
         }
@@ -616,7 +691,7 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
     	delete(custom_spirv);
     }
 
-    if read_err != nil {
+    if read_err != os.ERROR_NONE {
         err_str : string = fmt.aprintf("Failed to load shader from SPIR-V file even though the file exists, path: {}", spirv_filepath, allocator = context.temp_allocator);
         return transmute([]u8)err_str,ShaderCompileInfo2{}, false;
     }

@@ -91,18 +91,16 @@ aabb_transform_by_mat4_and_get_tranform_mat :: proc "contextless"  (aabb : AABB,
 
 aabb_get_corners :: proc "contextless" (aabb : AABB) -> [8][4]f32 {
 	
-	using aabb;
-
 	corners : [8][4]f32 = ---;
 
-	corners[0] = {min.x, min.y, min.z, 1.0}
-	corners[1] = {max.x, min.y, min.z, 1.0};
-	corners[2] = {max.x, min.y, max.z, 1.0};
-	corners[3] = {min.x, min.y, max.z, 1.0};
-	corners[4] = {min.x, max.y, min.z, 1.0};
-	corners[5] = {max.x, max.y, min.z, 1.0};
-	corners[6] = {min.x, max.y, max.z, 1.0};
-	corners[7] = {max.x, max.y, max.z, 1.0};
+	corners[0] = {aabb.min.x, aabb.min.y, aabb.min.z, 1.0}
+	corners[1] = {aabb.max.x, aabb.min.y, aabb.min.z, 1.0};
+	corners[2] = {aabb.max.x, aabb.min.y, aabb.max.z, 1.0};
+	corners[3] = {aabb.min.x, aabb.min.y, aabb.max.z, 1.0};
+	corners[4] = {aabb.min.x, aabb.max.y, aabb.min.z, 1.0};
+	corners[5] = {aabb.max.x, aabb.max.y, aabb.min.z, 1.0};
+	corners[6] = {aabb.min.x, aabb.max.y, aabb.max.z, 1.0};
+	corners[7] = {aabb.max.x, aabb.max.y, aabb.max.z, 1.0};
 
 	return corners;
 }

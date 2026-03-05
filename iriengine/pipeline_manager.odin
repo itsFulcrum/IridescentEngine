@@ -134,9 +134,9 @@ pipe_manager_get_core_pipeline_shader_combination :: proc(pipeline : CorePipelin
         case .SWAPCHAIN_COMPOSIT:       return ShaderCombination{vert = .SCREENQUAD_VERT, frag = .SWAPCHAIN_COMPOSIT_FRAG};
         case .WIREFRAME_CUBE:           return ShaderCombination{vert = .UNIT_CUBE_VERT , frag = .UNLIT_BASIC_FRAG};
         case .SOLID_CUBE:               return ShaderCombination{vert = .UNIT_CUBE_VERT , frag = .UNLIT_BASIC_FRAG};
-        case .SMAA_EDGE_DETECTION:      return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_EDGE_DETECTION_FRAG    , vert_variant = {.SMAA_PASS_EDGE_DETECTION}};
-        case .SMAA_BLEND_WEIGHT:        return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_BLEND_WEIGHT_FRAG      , vert_variant = {.SMAA_PASS_BLEND_WEIGHT}};
-        case .SMAA_NEIGHBORHOOD_BLEND:  return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_NEIGHBORHOOD_BLEND_FRAG, vert_variant = {.SMAA_PASS_NEIGHBORHOOD_BLEND}};
+        case .SMAA_EDGE_DETECTION:      return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_EDGE_DETECTION_FRAG    , vert_variant = RenderEffectShaderVariant{.SMAA_PASS_EDGE_DETECTION}};
+        case .SMAA_BLEND_WEIGHT:        return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_BLEND_WEIGHT_FRAG      , vert_variant = RenderEffectShaderVariant{.SMAA_PASS_BLEND_WEIGHT}};
+        case .SMAA_NEIGHBORHOOD_BLEND:  return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_NEIGHBORHOOD_BLEND_FRAG, vert_variant = RenderEffectShaderVariant{.SMAA_PASS_NEIGHBORHOOD_BLEND}};
     }
 
     panic("invalid codepath")
@@ -990,21 +990,21 @@ pipe_manager_get_material_pipeline_shader_variants :: proc(manager : ^PipelineMa
     
     technique := &material.render_technique;
 
-    vert_shader_variant : ShaderVariant = SHADER_VARIANT_EMPTY;
+    vert_shader_variant := VertShaderVariant{};
     switch vertex_layout {
-        case .Minimal : vert_shader_variant += {.VERT_LAYOUT_MINIMAL};
-        case .Standard: vert_shader_variant += {.VERT_LAYOUT_STANDARD};
-        case .Extended: vert_shader_variant += {.VERT_LAYOUT_EXTENDED};
+        case .Minimal : vert_shader_variant += VertShaderVariant{.VERT_LAYOUT_MINIMAL};
+        case .Standard: vert_shader_variant += VertShaderVariant{.VERT_LAYOUT_STANDARD};
+        case .Extended: vert_shader_variant += VertShaderVariant{.VERT_LAYOUT_EXTENDED};
     }
 
-    frag_shader_variant : ShaderVariant = SHADER_VARIANT_EMPTY;
+    frag_shader_variant := FragShaderVariant{};
 
     if technique.alpha_mode == .Clip || technique.alpha_mode == .Hashed {
-        frag_shader_variant += {.USE_ALPHA_TEST};
+        frag_shader_variant += FragShaderVariant{.USE_ALPHA_TEST};
     }
 
     if technique.alpha_mode == .Blend {
-        frag_shader_variant += {.USE_ALPHA_BLEND};
+        frag_shader_variant += FragShaderVariant{.USE_ALPHA_BLEND};
     }
 
     vert_id : ShaderID = -1;
@@ -1030,7 +1030,10 @@ pipe_manager_get_material_pipeline_shader_variants :: proc(manager : ^PipelineMa
     engine_assert(vert_id != -1);
     engine_assert(frag_id != -1);
 
-    return vert_id, vert_shader_variant ,frag_id, frag_shader_variant;
+    v_variant : ShaderVariant = vert_shader_variant;
+    f_variant : ShaderVariant = frag_shader_variant;
+
+    return vert_id, v_variant ,frag_id, f_variant;
 }
 
 @(private="package")
@@ -1059,8 +1062,8 @@ pipe_manager_get_material_pipeline_variant :: proc(manager : ^PipelineManager, m
 
     vert_shader_id, vert_shader_variant, frag_shader_id, frag_shader_variant := pipe_manager_get_material_pipeline_shader_variants(manager, material, vertex_layout);
         
-    vert_variant_hash : u32 = transmute(u32)vert_shader_variant;
-    frag_variant_hash : u32 = transmute(u32)frag_shader_variant;
+    vert_variant_hash : u32 = shader_manager_get_shader_variant_hash(vert_shader_variant);
+    frag_variant_hash : u32 = shader_manager_get_shader_variant_hash(frag_shader_variant);
     technique_hash := material_register_get_render_technique_hash(mat_id);
 
     pipe_hash := pipe_manager_calc_material_pipeline_hash(vert_shader_id, vert_variant_hash, frag_shader_id, frag_variant_hash, technique_hash);
@@ -1094,9 +1097,6 @@ pipe_manager_clear_material_pipeline_cache :: proc(manager : ^PipelineManager, g
 @(private="package")
 pipe_manager_update_material_pipeline_cache_for_universe :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevice, universe : ^Universe){
 
-
-
-
     // First we must iterate all materials and meshes and find all unique combinations.
     // For this we can probably iterate the drawables array from teh ecs.
 
@@ -1119,8 +1119,8 @@ pipe_manager_update_material_pipeline_cache_for_universe :: proc(manager : ^Pipe
 
         vert_shader_id, vert_shader_variant, frag_shader_id, frag_shader_variant := pipe_manager_get_material_pipeline_shader_variants(manager, material, vertex_layout);
         
-        vert_variant_hash : u32 = transmute(u32)vert_shader_variant;
-        frag_variant_hash : u32 = transmute(u32)frag_shader_variant;
+        vert_variant_hash : u32 = shader_manager_get_shader_variant_hash(vert_shader_variant);
+        frag_variant_hash : u32 = shader_manager_get_shader_variant_hash(frag_shader_variant);
         technique_hash := material_register_get_render_technique_hash(mat_id);
 
         pipe_hash := pipe_manager_calc_material_pipeline_hash(vert_shader_id, vert_variant_hash, frag_shader_id, frag_variant_hash, technique_hash);
@@ -1318,8 +1318,8 @@ pipe_manager_update_depthonly_pipeline_cache_for_universe :: proc(manager : ^Pip
             vert_shader_id : ShaderID = manager.pipeline_shader_ids[shader_combination.vert];
             frag_shader_id : ShaderID = manager.pipeline_shader_ids[shader_combination.frag];                
 
-            vert_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, vert_shader_id, SHADER_VARIANT_EMPTY);
-            frag_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, frag_shader_id, SHADER_VARIANT_EMPTY);
+            vert_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, vert_shader_id, variant = nil);
+            frag_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, frag_shader_id, variant = nil);
 
             engine_assert(vert_shader != nil);
             engine_assert(frag_shader != nil);

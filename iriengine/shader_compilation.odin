@@ -4,14 +4,12 @@ import "core:log"
 
 import "core:mem"
 import "core:strings"
-import "core:path/filepath"
 import "core:fmt"
 import "core:os"
 
 import sdl "vendor:sdl3"
 import "odinary:filey"
 import "odinary:shady"
-
 
 
 ShaderStage :: enum {
@@ -123,7 +121,7 @@ get_sdl_GPUShaderStage_from_ShaderStage :: proc(stage : ShaderStage) -> sdl.GPUS
 
     assert(stage != ShaderStage.COMPUTE, "Cannot Convert Compute shader stage to sdl.GPUShaderStage");
 
-	switch (stage){
+	switch stage {
 		case .VERTEX: 	return sdl.GPUShaderStage.VERTEX;
 		case .FRAGMENT: return sdl.GPUShaderStage.FRAGMENT;
         case .COMPUTE:
@@ -135,7 +133,7 @@ get_sdl_GPUShaderStage_from_ShaderStage :: proc(stage : ShaderStage) -> sdl.GPUS
 @(private="package")
 get_shady_ShaderStage_from_ShaderStage :: proc(stage : ShaderStage) -> shady.ShaderStage {
 
-	switch (stage){
+	switch stage {
 		case .VERTEX: 	return shady.ShaderStage.VERTEX;
 		case .FRAGMENT: return shady.ShaderStage.FRAGMENT;
         case .COMPUTE:  return shady.ShaderStage.COMPUTE;
@@ -143,172 +141,6 @@ get_shady_ShaderStage_from_ShaderStage :: proc(stage : ShaderStage) -> shady.Sha
 
 	return shady.ShaderStage.VERTEX;
 }
-
-
-
-// @Note: Load a shader, given its filename, from disk and select wheather to load directly from spirv file or glsl source file. 
-// 'src_glsl_filename' should be the GLSL source file and NOT contain the full filepath only the filename itself!
-
-// If 'out_file_watcher' is not nil, the implementation will always try to load from the source glsl file and record all include files into the 'out_file_watcher' and then transpile it to spirv.
-// When 'out_file_watcher' is nil procedure will first try to find the spirv compiled version with filename 'src_glsl_filename' + '.spv' extention, in the folder path for spirv within the PipelineContext.
-// if '.spv' does not exists, or the source glsl file has been modified more recently, will instead load from glsl, transpile to spirv.
-// Every time glsl has been transpiled successfully to spirv, the spirv will be written out to disk.
-
-@(private="package")
-load_spirv_direct_or_transpile_glsl :: proc(gpu_device: ^sdl.GPUDevice, src_glsl_filename: string, glsl_folder_path : string, spirv_folder_path : string, shader_stage: ShaderStage, out_file_watcher: ^filey.FileWatcherData = nil) -> (spriv_or_error_str : []byte, ok : bool) {
-
-    spirv_filename := strings.join({src_glsl_filename, ".spv"}, "", context.temp_allocator);
-
-    spirv_filepath_clean := filepath.clean(filepath.join({spirv_folder_path, spirv_filename}, context.temp_allocator), context.temp_allocator);    
-    glsl_filepath_clean  := filepath.clean(filepath.join({glsl_folder_path, src_glsl_filename}, context.temp_allocator), context.temp_allocator);
-
-    glsl_exists  := os.exists(glsl_filepath_clean);
-    spirv_exists := os.exists(spirv_filepath_clean);
-
-    if !glsl_exists && !spirv_exists{
-
-        err_str : string = fmt.aprintf("Failed to load shader from file, Neither glsl nor spirv filepaths exist: glsl-path: {}", glsl_filepath_clean, allocator = context.temp_allocator);
-        return transmute([]u8)err_str, false;
-    }
-
-
-
-    // We want to prefer loading from spirv directly however if spirv doesn't exist yet or the glsl version is newer than spirv 
-    // we choose glsl. Also if a out_file_watcher is not nil we always want to load glsl if possible because then we want to unfold the include files and record them for hot reloading..
-
-    load_from_glsl: bool = false;
-
-    if !spirv_exists {
-        load_from_glsl = true;
-    } else {
-
-        if glsl_exists {
-
-            if out_file_watcher != nil {
-                load_from_glsl = true;
-            } else {
-
-                // check if glsl file is newer then spriv file in wich case we always want to load from glsl and update our spirv compilation
-                glsl_file_time , err1 := os.last_write_time_by_name(glsl_filepath_clean);
-                spirv_file_time , err2 := os.last_write_time_by_name(spirv_filepath_clean);
-
-                engine_assert(err1 == os.ERROR_NONE);
-                engine_assert(err2 == os.ERROR_NONE);
-
-                if(glsl_file_time > spirv_file_time){
-                    load_from_glsl = true;
-                }
-            }
-        }
-    }
-
-
-    if load_from_glsl {
-
-
-        record_include_files: bool = out_file_watcher == nil ? false : true;
-
-        include_files: [dynamic]string;
-        defer {
-            for &str in include_files{
-                delete(str);
-            }
-            delete(include_files);
-        }
-
-        parse_info := shady.ParseInfo {
-            parse_flags = {.UnfoldIncludes, .GenerateHeaderguards, .ReplaceVersionString},
-            out_include_files = record_include_files ? &include_files : nil,
-            //insert_defines = ci.insert_defines[:],
-            version_str  = "450",
-        }
-
-        glsl_src_code, parse_ok := shady.parse_glsl_file(glsl_filepath_clean, &parse_info, context.allocator); 
-        defer if glsl_src_code != nil {
-            delete(glsl_src_code);
-        }
-
-        if !parse_ok {
-            err_str : string = fmt.aprintf("Faild to parse glsl file: \n{}", parse_info.error_string, allocator = context.temp_allocator);
-            return transmute([]u8)err_str, false;
-        }
-        
-        
-        WRITE_ASCI_SRC :: false
-        when WRITE_ASCI_SRC {
-            spirv_filepath_Asci := strings.join({spirv_filepath_clean, ".asci.glsl"}, "", context.temp_allocator);
-            test := os.write_entire_file(spirv_filepath_Asci, glsl_src_code);
-        }
-
-        // if parsing succeded we want to write the include files to filewatcher even if we are later not able to transpile or create the shader succesfully so that we may hot reload it when a change (maybe typo fix) was made to one of the files.
-        if out_file_watcher != nil && len(include_files) > 0 {
-            filey.clear_contents(out_file_watcher);
-            filey.add_files(out_file_watcher, include_files[:]);
-        }
-
-
-        reflect_info := shady.reflect_parse_glsl_src_code(glsl_src_code);
-
-        TEST_REFLECT :: false
-        when TEST_REFLECT {
-            log.debugf("ReflectInfo: {} \n{}",src_glsl_filename, reflect_info);
-        }
-
-
-        shady_shader_stage := get_shady_ShaderStage_from_ShaderStage(shader_stage);
-        
-        files : []string = nil;
-        if out_file_watcher != nil{
-            files = out_file_watcher._filepaths[:];
-        }
-        
-        spriv_or_error_str, transpile_success := shady.transpile_glsl_to_SPIRV(glsl_src_code , shady_shader_stage, shady.SpirvVersion.SPV_1_3, shady.ClientVersion.VULKAN_1_2,files);
-        defer if transpile_success {
-            delete(spriv_or_error_str);
-        }
-
-        if !transpile_success {            
-            err_str : string = fmt.aprintf("Shader Compilation Failed: {}\n{}", glsl_filepath_clean, transmute(string)spriv_or_error_str, allocator = context.temp_allocator);
-            return transmute([]u8)err_str, false;
-            //@Note: We don't free spriv_or_error_str here because when its an error message it was allocated using temp_allocator
-        }
-
-        hdr := create_custom_spirv_header(reflect_info, shader_stage);
-
-        hdr_size : int = size_of(CustomSpirvHeader);
-        spirv_size : int = len(spriv_or_error_str);
-        byte_size : int = hdr_size + spirv_size;
-
-        custom_spirv := make_slice([]byte,  byte_size , context.allocator);
-        //custom_spirv := make_slice([]byte,  spirv_size , context.allocator);
-
-        mem.copy(&custom_spirv[0],&hdr, hdr_size);
-        mem.copy(&custom_spirv[hdr_size], &spriv_or_error_str[0], spirv_size);
-        //mem.copy(&custom_spirv[0], &spriv_or_error_str[0], spirv_size);
-
-        write_success := os.write_entire_file(spirv_filepath_clean, custom_spirv);
-        if !write_success {
-            log.warnf("Faild to write spirv file to disk after succesful compilation, Path: {}", spirv_filepath_clean);
-        }
-
-        return custom_spirv, true;
-
-    } else { // Load from spir-v file
-
-        spirv_code, read_success := os.read_entire_file_from_filename(spirv_filepath_clean);
-
-        if !read_success {
-
-            err_str : string = fmt.aprintf("Failed to load shader from SPIR-V file even though the file exists, path: {}", spirv_filepath_clean, allocator = context.temp_allocator);
-            return transmute([]u8)err_str, false;
-        }
-
-        return spirv_code, true;
-    }
-
-    panic("Invalid Codepath")
-}
-
 
 @(private="package")
 create_custom_spirv_header :: proc(reflect_info : shady.ReflectInfo, shader_stage : ShaderStage) -> CustomSpirvHeader {

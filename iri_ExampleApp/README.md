@@ -20,5 +20,5 @@ To run the example app, run the following command inside this folder and modify 
 IriEngien requires currently assimp dll and SDL3.dll which are found in this folder.
 
 
-// nocheckin
+// irgnore this. my build command.
 "odin run example_app.odin -file -out:IriExampleApp.exe -debug -o:speed -collection:odinary=../../libsODINary -collection:iriengine=../../IridescentEngine"
