@@ -35,12 +35,16 @@ uint count_bits(uint value) {
 
 // https://cdrinmatane.github.io/posts/ssaovb-code/
 #define SECTOR_COUNT 32u
+#define SECTOR_COUNT_F 32.0f
 #define ONE_OVER_SECTOR_COUNT 1.0f / 32.0f
 
 uint update_sectors(float minHorizon, float maxHorizon, uint outBitfield) {
-    uint startBit = uint(minHorizon * float(SECTOR_COUNT));
-    uint horizonAngle = uint(ceil((maxHorizon - minHorizon) * float(SECTOR_COUNT)));
+    uint startBit = uint(minHorizon * SECTOR_COUNT_F);
+    uint horizonAngle = uint(floor((maxHorizon - minHorizon) * SECTOR_COUNT_F));
+    
     uint angleBit = horizonAngle > 0u ? uint(0xFFFFFFFFu >> (SECTOR_COUNT - horizonAngle)) : 0u;
+    //uint angleBit = horizonAngle > 0u ?  0u : uint(0xFFFFFFFFu >> (SECTOR_COUNT - horizonAngle));
+
     uint currentBitfield = angleBit << startBit;
     return outBitfield | currentBitfield;
 }
@@ -53,7 +57,8 @@ float sample_depth(vec2 uv) {
     // @Note Linear sampling depth fixes acne with small radiuses but introduces dark borders at object edges
     // so we use point sampling for now. Its also much faster.
 
-    return textureLod(_min_max_depth, uv, float(_min_max_depth_mip_level)).x;
+    vec2 direct_sample = textureLod(_min_max_depth, uv, float(_min_max_depth_mip_level)).xy;
+    return direct_sample.x;
 
     vec2 texel_f = uv * vec2(_ao_tex_size);
     ivec2 texel = ivec2(texel_f);
@@ -86,7 +91,7 @@ float sample_depth(vec2 uv) {
 
     // //depth = max(depth, depth_00);
     // depth = depth_00;
-    return depth_00.x;
+    return depth_00.y;
 }
 
 vec3 reconstruct_normal_from_depth(uvec2 depth_tex_dimentions, vec2 uv_center, float depth_at_uv_center, vec3 pos_at_uv_center, mat4 inv_matrix) {
@@ -140,6 +145,8 @@ vec3 reconstruct_normal_from_depth(uvec2 depth_tex_dimentions, vec2 uv_center, f
 // Maybe some day fix it?
 // #define BENT_NORMALS
 
+#define BITMASKS
+
 void main() {
     
     if(gl_GlobalInvocationID.x >= _ao_tex_size.x || gl_GlobalInvocationID.y >= _ao_tex_size.y) {
@@ -149,9 +156,10 @@ void main() {
     ivec2 texel_coord = ivec2(gl_GlobalInvocationID.xy);
     vec2 tex_dimentions = vec2(_ao_tex_size);
     vec2 texel_uv = (vec2(texel_coord) + 0.5f) / tex_dimentions;
+    vec2 texel_size = 1.0f / vec2(tex_dimentions);
 
     // depth, position and normal for the current pixel
-    float depth     = sample_depth(texel_uv);
+    float depth = sample_depth(texel_uv);
 
     // return early if there is no geometry.
     if(depth >= 0.99999999f){
@@ -163,7 +171,7 @@ void main() {
     vec3 normal     = reconstruct_normal_from_depth(_ao_tex_size, texel_uv, depth, position, _inv_proj_mat);
     
     float z_distance = -position.z;
-    vec3 view_vec = -normalize(position);
+    vec3 view_vec = normalize(-position);
 
     // Constants
     const float one_over_sample_count = 1.0f / float(_sample_count );
@@ -173,6 +181,7 @@ void main() {
     // Radius is scaled by distance so we get a world space uniform radius
     // as opposed to screen space uniform radius
     const float sample_radius = _sample_radius / z_distance;
+    //const float sample_radius = _sample_radius;
     
 
     const float one_over_slice_count = 1.0f / float(_slice_count);
@@ -182,8 +191,8 @@ void main() {
     float slice_angle_jitter = blue_noise_2D_to_1D(uvec2(texel_coord)) * 1.0f;
     float sample_jitter = blue_noise_2D_to_1D(uvec2(texel_coord.yx)) * 1.0f;
 
-    slice_angle_jitter = 0.0f;
-    sample_jitter = 0.0;
+    //slice_angle_jitter = 0.0f;
+    //sample_jitter = 0.0;
 
 #ifdef BENT_NORMALS
     vec3 bent_normal = normal;
@@ -210,7 +219,7 @@ void main() {
     float thickness_lerp = inverse_lerp(thickness_range_min, thickness_range_max, clamp(z_distance, thickness_range_min, thickness_range_max));
     float hit_thickness = mix(_hit_thickness, _hit_thickness * thickness_scalar, thickness_lerp);
 
-    //hit_thickness = _hit_thickness;
+    hit_thickness = _hit_thickness * max(1.0f, 0.2f *  z_distance);
     // premultiply here, need in loop
     vec3 scaled_view_vec = view_vec * hit_thickness;
 
@@ -236,33 +245,40 @@ void main() {
         
         float cos_norm = dot(projected_normal / projected_length, view_vec);
         
-        // integral += projected_length;
-        // continue;
-        
         vec3 tangent = normalize(cross(view_vec, slice_n)) ; // The slice tangent (perpendicular to view_vec and slice_n)
-        //vec3 tangent = normalize(cross(slice_n, view_vec)) ; // The slice tangent (perpendicular to view_vec and slice_n)
         
         float n = -sign(dot(projected_normal, tangent)) * fast_acos(cos_norm); // The angle in radians from view_vec to projected_normal
-        //float n = -sign(dot(projected_normal1, tangent)) * fast_acos(cos_norm); // The angle in radians from view_vec to projected_normal
 
 
-        // Visibility/Occlusion bitflied for this slice
-        // which we will update in the loop below
-        uint occluded_bitflied = 0u;
+        #ifdef BITMASKS
+            // Visibility/Occlusion bitflied for this slice
+            // which we will update in the loop below
+            uint occluded_bitflied = 0u;
+        #else
+            const float lowHorizonCos0 = cos(n+HALF_PI);
+            const float lowHorizonCos1 = cos(n-HALF_PI);
 
+            float max_horizonCos0 = lowHorizonCos0;
+            float max_horizonCos1 = lowHorizonCos1;
+        #endif
         // == Horizon loop
         // we efectivly do everything twice here but in opposite directions
         for (uint curr_sample = 0; curr_sample < _sample_count; curr_sample += 1) {
             // Add small offset and jitter to current sample and normalize to 0..1 range
-            float step_size = float(float(curr_sample) + sample_jitter + 0.5f) * one_over_sample_count;
+            float step_size = float(float(curr_sample) + sample_jitter + 0.0f) * one_over_sample_count;
             
             // @Note: Take step_size^2 to have more samples closer to origin.
             // so step size increases exponentially with distance from origin.
             //float sample_offset = step_size * sample_radius + sample_bias;
             float sample_offset = step_size * step_size * sample_radius + sample_bias;
 
+            
+            // TODO: test snapping to pixel centers like in XeGTAO
+            //sampleOffset = round(sampleOffset) * (lpfloat2)consts.ViewportPixelSize;
             vec2 uv_offset = omega * sample_offset;
             
+            //uv_offset = round(uv_offset + texel_size);// * texel_size;
+
             vec2 sample_uv0 = texel_uv + uv_offset;
             vec2 sample_uv1 = texel_uv - uv_offset;
 
@@ -276,82 +292,79 @@ void main() {
             vec3 delta_pos0 = sample_position0 - position;
             vec3 delta_pos1 = sample_position1 - position;
 
-            vec3 delta_pos_backface0 = delta_pos0 - scaled_view_vec;
-            vec3 delta_pos_backface1 = delta_pos1 - scaled_view_vec;
+            /////
+            #ifdef BITMASKS
+                vec3 delta_pos_backface0 = delta_pos0 - scaled_view_vec;
+                vec3 delta_pos_backface1 = delta_pos1 - scaled_view_vec;
 
-            vec2 front_back_horizon_0 = vec2(dot(normalize(delta_pos_backface0), view_vec), dot(normalize(delta_pos0), view_vec));
-            // idk why its not between -1..1 since the dot products above are with normalized vectors.. but it fixes artifacts
-            front_back_horizon_0 = clamp(front_back_horizon_0,-1.0f,1.0f);            
-            front_back_horizon_0 = fast_acos(front_back_horizon_0);
-            front_back_horizon_0 = (-front_back_horizon_0 - n + HALF_PI) * ONE_OVER_PI;
-            front_back_horizon_0 = max(front_back_horizon_0, vec2(0.0f));
-            // front_back_horizon_0 = clamp(front_back_horizon_0,0.0f,1.0f);            
+                vec2 front_back_horizon_0 = vec2(dot(normalize(delta_pos_backface0), view_vec), dot(normalize(delta_pos0), view_vec));
+                // idk why its not between -1..1 since the dot products above are with normalized vectors.. but it fixes artifacts
+                front_back_horizon_0 = clamp(front_back_horizon_0,-1.0f,1.0f);            
+                front_back_horizon_0 = fast_acos(front_back_horizon_0);
+                front_back_horizon_0 = (-front_back_horizon_0 - n + HALF_PI) * ONE_OVER_PI;
+                front_back_horizon_0 = max(front_back_horizon_0, vec2(0.0f));
+                
+                // front_back_horizon_0 = clamp(front_back_horizon_0,0.0f,1.0f);            
 
-            vec2 front_back_horizon_1 = vec2(dot(normalize(delta_pos1), view_vec), dot(normalize(delta_pos_backface1), view_vec));
-            front_back_horizon_1 = clamp(front_back_horizon_1,-1.0f,1.0f);
-            front_back_horizon_1 = fast_acos(front_back_horizon_1);
-            front_back_horizon_1 = (front_back_horizon_1 - n + HALF_PI) * ONE_OVER_PI;
-            front_back_horizon_1 = min(front_back_horizon_1, vec2(1.0f));
-            
+                vec2 front_back_horizon_1 = vec2(dot(normalize(delta_pos1), view_vec), dot(normalize(delta_pos_backface1), view_vec));
+                front_back_horizon_1 = clamp(front_back_horizon_1,-1.0f,1.0f);
+                front_back_horizon_1 = fast_acos(front_back_horizon_1);
+                front_back_horizon_1 = (front_back_horizon_1 - n + HALF_PI) * ONE_OVER_PI;
+                front_back_horizon_1 = min(front_back_horizon_1, vec2(1.0f));
+                
+                occluded_bitflied = update_sectors(front_back_horizon_0.x, front_back_horizon_0.y, occluded_bitflied);
+                occluded_bitflied = update_sectors(front_back_horizon_1.x, front_back_horizon_1.y, occluded_bitflied);
+            #else
+                float deltaLenSq0 = dot(delta_pos0, delta_pos0);
+                float deltaLenSq1 = dot(delta_pos1, delta_pos1);
 
-            occluded_bitflied = update_sectors(front_back_horizon_0.x, front_back_horizon_0.y, occluded_bitflied);
-            occluded_bitflied = update_sectors(front_back_horizon_1.x, front_back_horizon_1.y, occluded_bitflied);
-        }
+                float currHorizon0 = dot(delta_pos0, view_vec) * inversesqrt(deltaLenSq0);
+                float currHorizon1 = dot(delta_pos1, view_vec) * inversesqrt(deltaLenSq1);
 
+                float falloff0 = saturate(deltaLenSq0 * (2 / pow(sample_radius, 1.0f)));
+                float falloff1 = saturate(deltaLenSq1 * (2 / pow(sample_radius, 1.0f)));
 
-        integral += 1.0f - float(count_bits(occluded_bitflied)) * ONE_OVER_SECTOR_COUNT;
+                max_horizonCos0 = (currHorizon0 > max_horizonCos0) ? mix(currHorizon0, max_horizonCos0, falloff0) : mix(currHorizon0, max_horizonCos0, hit_thickness);
+                max_horizonCos1 = (currHorizon1 > max_horizonCos1) ? mix(currHorizon1, max_horizonCos1, falloff1) : mix(currHorizon1, max_horizonCos1, hit_thickness);
+            #endif
 
-#ifdef BENT_NORMALS
-        // It looks mostly correct but idk if its any good... not super happy tbh
+        } //
+
+        #ifdef BITMASKS 
+
+            integral += 1.0f - float(count_bits(occluded_bitflied)) * ONE_OVER_SECTOR_COUNT;
         
-         // consider only SECTOR_COUNT lower bits
-        uint occluded = occluded_bitflied & valid_mask;
-        uint unoccluded_mask = (~occluded) & valid_mask;
+        #else 
+        
+            float h0 = -acos(max_horizonCos0);
+            float h1 =  acos(max_horizonCos1);
 
-        // small weight for this slice (you can choose 1.0 or weight by slice importance)
-        float slice_weight = 1.0;
+            h0 = n + max(h0 - n, -HALF_PI);
+            h1 = n + min(h1 - n,  HALF_PI);
 
-        // accumulate per-sector directions
-        for (int si = 0; si < SECTOR_COUNT; si++) {
-            uint bit = 1u << si;
-            if ((unoccluded_mask & bit) == 0u) {
-                continue; // sector is occluded, skip
+            // integrate arc cos weighted
+            float iarc0 = (cos_norm + 2.0f * h0 * sin(n) - cos( 2.0f * h0-n) ) / 4.0f;
+            float iarc1 = (cos_norm + 2.0f * h1 * sin(n) - cos( 2.0f * h1-n) ) / 4.0f;
+            
+            float localVisibility = (iarc0+iarc1);
+            integral += localVisibility;
+        #endif
 
-            }
-
-            // azimuth for this sector (center of sector)
-            float phi = (float(si) + 0.5) * (1.0 * PI / float(SECTOR_COUNT))  - (HALF_PI / 2) ;
-            vec3 azimuth_dir = rotate_around_axis_radians( normalize(projected_normal), tangent, phi);
-
-            // accumulate
-            bent_accum +=  azimuth_dir;
-            bent_weight_sum += 1.0f;
-        }
-#endif
     } // Slice Loop
 
 
     integral *= one_over_slice_count;
+    //integral = max(0.03,integral); // disallow complete occlusion;
     integral = saturate(pow(integral, _strength));
 
     // We store in R8_UNORM so convert to srgb to avoid banding
-    integral = linear_to_srgb_float_gamma_2_2(integral);
+    //integral = linear_to_srgb_float_gamma_2_2(integral);
+    integral = linear_to_srgb_float(integral);
 
-#ifdef BENT_NORMALS
 
-    bent_normal = normalize(bent_accum / bent_weight_sum);
-
-    // For some reason our normals are fliped in y idk
-    bent_normal.y = -bent_normal.y;
-    // @Note: Convert to world space
-    // Thechnically we should be able to do this in fragment shader
-    // but it doesn't work properly for some reason so i convert here..
-    // For this we need to pass in _inv_view_matrix
-    bent_normal = mat3(_inv_view_mat) * bent_normal.xyz;
-    bent_normal = bent_normal * 0.5f + 0.5f; // map to 0..1 range
-#endif
 
     vec4 store = vec4(integral);
+    //store = vec4(1.0f);
 
     imageStore(_gtao_tex, texel_coord, store);
 }

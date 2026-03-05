@@ -336,12 +336,12 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             offset = 0,
         };
 
-        // Normal_Tangent_oct_encoded
-        norm_tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+        // Normal_oct_encoded
+        norm : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
             location = 1,
-            format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(VertexDataMinimal, normal_tangent),
+            format = sdl.GPUVertexElementFormat.FLOAT2,
+            offset = cast(u32)offset_of(VertexDataMinimal, normal),
         };
 
         // Texcoord_0
@@ -352,9 +352,18 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             offset = cast(u32)offset_of(VertexDataMinimal, texcoord_0),
         };
 
+        // tan oct_encoded + .z sign bit
+        tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+            buffer_slot = 1,
+            location = 3,
+            format = sdl.GPUVertexElementFormat.FLOAT3,
+            offset = cast(u32)offset_of(VertexDataMinimal, tangent),
+        };
+
         append(array, pos);
-        append(array, norm_tan);
+        append(array, norm);
         append(array, tc0);
+        append(array, tan);
     }
 
     pm_append_attr_layout_standard :: proc(array: ^[dynamic]sdl.GPUVertexAttribute){
@@ -367,34 +376,44 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             offset = 0,
         };
 
-        // Normal_Tangent_oct_encoded
-        norm_tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+        // Normal_oct_encoded
+        norm : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
             location = 1,
-            format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(VertexDataStandard, normal_tangent),
-        };
-
-        // Color_0
-        col0 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
-            buffer_slot = 1,
-            location = 2,
-            format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(VertexDataStandard, color_0),
+            format = sdl.GPUVertexElementFormat.FLOAT2,
+            offset = cast(u32)offset_of(VertexDataMinimal, normal),
         };
 
         // Texcoord_0
         tc0 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
-            location = 3,
+            location = 2,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataStandard, texcoord_0),
+            offset = cast(u32)offset_of(VertexDataMinimal, texcoord_0),
+        };
+
+        // tan oct_encoded + .z sign bit
+        tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+            buffer_slot = 1,
+            location = 3,
+            format = sdl.GPUVertexElementFormat.FLOAT3,
+            offset = cast(u32)offset_of(VertexDataMinimal, tangent),
+        };
+
+
+        // Color_0
+        col0 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+            buffer_slot = 1,
+            location = 4,
+            format = sdl.GPUVertexElementFormat.FLOAT4,
+            offset = cast(u32)offset_of(VertexDataStandard, color_0),
         };
 
         append(array, pos);
-        append(array, norm_tan);
-        append(array, col0);
+        append(array, norm);
         append(array, tc0);
+        append(array, tan);
+        append(array, col0);
     }
 
     pm_append_attr_layout_extended :: proc(array: ^[dynamic]sdl.GPUVertexAttribute){
@@ -407,18 +426,34 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             offset = 0,
         };
 
-        // Normal_Tangent_oct_encoded
-        norm_tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+        // Normal_oct_encoded
+        norm : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
             location = 1,
-            format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(VertexDataExtended, normal_tangent),
+            format = sdl.GPUVertexElementFormat.FLOAT2,
+            offset = cast(u32)offset_of(VertexDataMinimal, normal),
+        };
+
+        // Texcoord_0
+        tc0 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+            buffer_slot = 1,
+            location = 2,
+            format = sdl.GPUVertexElementFormat.FLOAT2,
+            offset = cast(u32)offset_of(VertexDataMinimal, texcoord_0),
+        };
+
+        // tan oct_encoded + .z sign bit
+        tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+            buffer_slot = 1,
+            location = 3,
+            format = sdl.GPUVertexElementFormat.FLOAT3,
+            offset = cast(u32)offset_of(VertexDataMinimal, tangent),
         };
 
         // Color_0
         col0 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
-            location = 2,
+            location = 4,
             format = sdl.GPUVertexElementFormat.FLOAT4,
             offset = cast(u32)offset_of(VertexDataExtended, color_0),
         };
@@ -426,32 +461,25 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
         // Color_1
         col1 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
-            location = 3,
+            location = 5,
             format = sdl.GPUVertexElementFormat.FLOAT4,
             offset = cast(u32)offset_of(VertexDataExtended, color_1),
-        };
-
-        // Texcoord_0
-        tc0 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
-            buffer_slot = 1,
-            location = 4,
-            format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataExtended, texcoord_0),
         };
 
         // Texcoord_1
         tc1 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
-            location = 5,
+            location = 6,
             format = sdl.GPUVertexElementFormat.FLOAT2,
             offset = cast(u32)offset_of(VertexDataExtended, texcoord_1),
         };
 
         append(array, pos);
-        append(array, norm_tan);
+        append(array, norm);
+        append(array, tc0);
+        append(array, tan);
         append(array, col0);
         append(array, col1);
-        append(array, tc0);
         append(array, tc1);
     }
 
@@ -774,7 +802,7 @@ pipe_manager_rebuild_all_pipelines_for_render_pass_types :: proc(manager : ^Pipe
 
         pipe_render_pass_type := pipe_manager_get_core_pipeline_render_pass_type(pipe);
         if pipe_render_pass_type in render_pass_set {
-
+            //log.warnf("rebuilding core pipe {}", pipe)
             pipe_manager_rebuild_core_pipeline(manager, gpu_device, pipe);
         }
     }
@@ -834,8 +862,10 @@ pipe_manager_rebuild_core_pipeline :: proc(manager : ^PipelineManager, gpu_devic
     vert_id := manager.pipeline_shader_ids[shader_combination.vert];
     frag_id := manager.pipeline_shader_ids[shader_combination.frag];
 
+    
     vert := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, vert_id, shader_combination.vert_variant);
     frag := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, frag_id, shader_combination.frag_variant);
+    //log.debugf("Build Graphics Pipline: {}", pipe);
 
     if vert == nil {
         log.errorf("Failed to Create Graphics Pipline: {} - vertex shader not loaded", pipe);
@@ -844,6 +874,7 @@ pipe_manager_rebuild_core_pipeline :: proc(manager : ^PipelineManager, gpu_devic
         log.errorf("Failed to Create Graphics Pipline: {} - fragment shader not loaded", pipe);
         return;
     }
+
 
     vert_buf_descpt_type := pipe_manager_get_core_pipeline_vertex_buf_descriptor_type(pipe);
 
@@ -860,7 +891,7 @@ pipe_manager_rebuild_core_pipeline :: proc(manager : ^PipelineManager, gpu_devic
         sdl.ReleaseGPUGraphicsPipeline(gpu_device, manager.core_pipelines[pipe]);
     }
 
-     log.debugf("Build Graphics Pipline: {}", pipe);
+    log.debugf("Build Graphics Pipline: {}", pipe);
 
     manager.core_pipelines[pipe] = pipeline;
 }

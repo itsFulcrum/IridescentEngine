@@ -354,8 +354,6 @@ renderer_deinit :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice) {
     delete(ren_ctx.shadowmap_depth_textures);
 }
 
-
-
 @(private="package")
 renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, universe : ^Universe) {
 
@@ -401,9 +399,11 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     // COPY DATA PASS
     // ============================================================================================================
     {
+
         upload_cmd_buf := sdl.AcquireGPUCommandBuffer(gpu_device);    
         engine_assert(upload_cmd_buf != nil);
 
+        renderer_push_debug_group(upload_cmd_buf, "Data Upload Command Buffer");
         // ============================================================================================================
         // Query Data uploads and perform transfer buffer updates
         // ============================================================================================================
@@ -414,6 +414,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
         // NOTE: We want to perform data uploads as early in the frame as possible.
         copy_pass :  ^sdl.GPUCopyPass = sdl.BeginGPUCopyPass(upload_cmd_buf);
+
+
 
         // Global Fragment Buffer
         {
@@ -471,28 +473,29 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             }
         }
 
-
-
         // Upload changed material data
-        if(mats_requires_upload_unlit) {
+        if mats_requires_upload_unlit {
             sdl.UploadToGPUBuffer(copy_pass, mats_transfer_buf_loc_unlit, mats_buf_region_unlit, false);
         }
 
-        if(mats_requires_upload_pbr) {
+        if mats_requires_upload_pbr {
             sdl.UploadToGPUBuffer(copy_pass, mats_transfer_buf_loc_pbr, mats_buf_region_pbr, false);
         }
 
-        if(skybox_requires_upload){
+        if skybox_requires_upload {
             sdl.UploadToGPUBuffer(copy_pass, skybox_transfer_buf_loc, skybox_buf_region, false);
         }
 
         sdl.EndGPUCopyPass(copy_pass);
 
+
         // @Note: Imgui has its own copy pass but we still want to perform our data upload early in the frame.
-        if(debug_gui_is_enabled()){
+        if debug_gui_is_enabled() {
             debug_gui_prepare_and_upload_draw_data(upload_cmd_buf);
         }
 
+
+        renderer_pop_debug_group(upload_cmd_buf);
 
         upload_cmd_buf_ok := sdl.SubmitGPUCommandBuffer(upload_cmd_buf);
         engine_assert(upload_cmd_buf_ok);
@@ -579,11 +582,13 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     // ============================================================================================================
     
     {
+        renderer_push_debug_group(cmd_buf, "Depth Pre Pass");
+        defer renderer_pop_debug_group(cmd_buf);
+
         timer := timer_begin()
         defer perfs.depth_prepass_cpu_ms = timer_end_get_miliseconds(timer);
         perfs.depth_prepass_drawcalls = 0;
         perfs.depth_prepass_num_pipeline_switches = 0;
-
         
         depth_pre_depth_stencil_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
             texture     = ren_ctx.geo_depth_stencil_target_tex,
@@ -630,6 +635,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     // iteration we will just perform a copy from the depth stencil target.
     // otherwise we use the previous mip level to construct a min and max depth for the current mip level
     {
+        renderer_push_debug_group(cmd_buf, "MinMax Depth Compute");
+        defer renderer_pop_debug_group(cmd_buf);
 
         // ubo layout in shader
         MinMaxDepthHierary_UBO :: struct {
@@ -720,12 +727,17 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     gtao_enabled : bool = .GTAO in ren_ctx.config.ren_effect_flags && !ren_ctx.effects.gtao.settings.temporary_disabled;
 
     if gtao_enabled {
+        renderer_push_debug_group(cmd_buf, "Render Effect: GTAO Compute");
+        defer renderer_pop_debug_group(cmd_buf);
+
         gtao := ren_ctx.effects.gtao;
 
         engine_assert(gtao != nil)
         engine_assert(gtao.target_tex != nil);
 
-        ao_dimentions : [2]u32 = renderer_calculate_frame_size_from_swapchain_size(frame_size, RenderResolution.Half);
+        full_res_ao : bool = gtao.settings.full_res;
+
+        ao_tex_dimentions : [2]u32 = full_res_ao ? frame_size : renderer_calculate_frame_size_from_swapchain_size(frame_size, RenderResolution.Half);
 
         // GTAO Compute pass
         {            
@@ -733,13 +745,12 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             
             ao_tex_storage_rw_binding := sdl.GPUStorageTextureReadWriteBinding{
                 texture   = gtao.target_tex,
-                mip_level = 1,
+                mip_level = full_res_ao ? 0 : 1, // if full res we write directly into mip 0
                 layer     = 0,
-                cycle = false,
+                cycle = true,
             }
 
-            dimentions := ao_dimentions;
-
+            //dimentions := ao_dimentions;
 
             //log.debugf("Ran GTAO, is nil ? {}", gtao.target_tex)
             compute_pass := sdl.BeginGPUComputePass(cmd_buf, &ao_tex_storage_rw_binding, 1, nil, 0);
@@ -765,23 +776,21 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
                 _strength  : f32,
             }
 
-            // should also prob move aout of this loop
-            // and only change stuff that changes..
             ubo : GTAO_UBO = {
                 _inv_proj_mat  = camera_info.inv_proj_mat,            
-                _ao_tex_size   = dimentions,
+                _ao_tex_size   = ao_tex_dimentions,
                 _sample_count  = gtao.settings.sample_count ,
                 _slice_count   = gtao.settings.slice_count  ,
                 _sample_radius = gtao.settings.sample_radius,
                 _hit_thickness = gtao.settings.hit_thickness,
 
-                _min_max_depth_mip_level = 1,
+                _min_max_depth_mip_level = full_res_ao ? 0 : 1,
                 _strength = gtao.settings.strength,
             }
 
             sdl.PushGPUComputeUniformData(cmd_buf,0, &ubo, size_of(ubo))
 
-            work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(thread_count, [3]u32{dimentions.x, dimentions.y, 1});
+            work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(thread_count, [3]u32{ao_tex_dimentions.x, ao_tex_dimentions.y, 1});
 
             sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
 
@@ -789,7 +798,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
         
         // Upscale AO Pass
-        {
+        // @Note we only need to upscale if we dont do full resolution ao
+        if !full_res_ao {
             UpscaleUBO :: struct {
                 _inv_proj_mat : matrix[4,4]f32,     
                 _src_dimentions  : [2]u32,
@@ -831,7 +841,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
             upscale_ubo : UpscaleUBO = {
                 _inv_proj_mat = camera_info.inv_view_proj_mat,
-                _src_dimentions  = ao_dimentions,
+                _src_dimentions  = ao_tex_dimentions,
                 _dest_dimentions = frame_size,
                 _dst_mip         = 0,
                 _multiply_dest   = 0, // dont need this anymore
@@ -854,12 +864,14 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
 
     // ============================================================================================================
-    //                                     LIGHT PASS
+    //                                     SHADOWMAP PASS
     // ============================================================================================================
 
     // TODO maybe move ligth pass after depth pre and ao so while ao is doing compute workload, 
     // gemetry gpu parts can do depht buffer stuff.
     {   
+        light_manager : ^LightManager = &universe.light_manager;
+        
         draw_calls : u32 = 0;
         num_rendered_shadowmaps : u32 = 0;
         num_pipe_switches : u32 = 0;
@@ -871,113 +883,119 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             perfs.shadowmap_pass_num_rendered_shadowmaps = num_rendered_shadowmaps;
             perfs.shadowmap_pass_num_pipeline_switches = num_pipe_switches;
         }
+        
+        if len(light_manager.gpu_shadowmap_infos) > 0 {
+        
+            renderer_push_debug_group(cmd_buf, "Shadowmaps");
+            defer renderer_pop_debug_group(cmd_buf);
+        
+            for &sinfo, index in light_manager.gpu_shadowmap_infos {
 
-
-
-        light_manager : ^LightManager = &universe.light_manager;
-
-
-        for &sinfo, index in light_manager.gpu_shadowmap_infos {
-
-            if sinfo.array_layer <= -1 {
-                continue; // skip unused shadowmap infos.
-            }
-
-            //log.debugf("Rendering sinfo {},   array_layer {}, mip {}", index, cast(u32)sinfo.array_layer, sinfo.mip_level);
-
-            color_target := sdl.GPUColorTargetInfo {
-                texture =  light_manager.shadowmap_array_binding.texture,
-                mip_level = sinfo.mip_level,
-                layer_or_depth_plane = cast(u32)sinfo.array_layer,
-                clear_color = sdl.FColor{1.0,1.0,1.0,1.0},
-                load_op  = sdl.GPULoadOp.CLEAR,
-                store_op = .STORE,
-                cycle = false,
-            }
-
-            depth_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
-                texture     = ren_ctx.shadowmap_depth_textures[sinfo.mip_level],
-                clear_depth = 1,                        // The value to clear the depth component with
-                load_op     = sdl.GPULoadOp.CLEAR,
-                store_op    = sdl.GPUStoreOp.DONT_CARE,
-
-
-                stencil_load_op = sdl.GPULoadOp.DONT_CARE,
-                stencil_store_op = sdl.GPUStoreOp.DONT_CARE,
-                cycle = false,         // true cycles the texture if the texture is bound and any load ops are not LOAD */
-                clear_stencil = 0,    // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. */
-            }
-
-            shadowmap_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target_info);
-
-            sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 0, &universe.matrix_buf, 1);
-            sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 1, &light_manager.gpu_shadowmap_infos_buf, 1);
-
-            // Note we souldn't do all but exclude blend meshes and probably also frustum cull from light!
-            
-            last_shadow_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
-
-            for drawable_index in 0..<len(ecs.drawables) {
-
-                mesh_id := ecs.drawables[drawable_index].mesh_instance.mesh_id;
-                mat_id := ecs.drawables[drawable_index].mesh_instance.mat_id;
-
-                mat  := register_get_material(mat_id);
-
-                if mat.render_technique.alpha_mode == .Blend {
-                    continue;
+                if sinfo.array_layer <= -1 {
+                    continue; // skip unused shadowmap infos.
                 }
 
-                if universe.cull_shadow_draws {
-                    render_draw : bool = test_shadow_draw(sinfo.view_proj, ecs.drawables[drawable_index].world_obb, sinfo.resolution)
-                    if !render_draw {
+                renderer_push_debug_group(cmd_buf, "Shadowmap Pass");
+                defer renderer_pop_debug_group(cmd_buf);
+
+                //log.debugf("Rendering sinfo {},   array_layer {}, mip {}", index, cast(u32)sinfo.array_layer, sinfo.mip_level);
+
+                color_target := sdl.GPUColorTargetInfo {
+                    texture =  light_manager.shadowmap_array_binding.texture,
+                    mip_level = sinfo.mip_level,
+                    layer_or_depth_plane = cast(u32)sinfo.array_layer,
+                    clear_color = sdl.FColor{1.0,1.0,1.0,1.0},
+                    load_op  = sdl.GPULoadOp.CLEAR,
+                    store_op = .STORE,
+                    cycle = false,
+                }
+
+                depth_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
+                    texture     = ren_ctx.shadowmap_depth_textures[sinfo.mip_level],
+                    clear_depth = 1,                        // The value to clear the depth component with
+                    load_op     = sdl.GPULoadOp.CLEAR,
+                    store_op    = sdl.GPUStoreOp.DONT_CARE,
+
+
+                    stencil_load_op = sdl.GPULoadOp.DONT_CARE,
+                    stencil_store_op = sdl.GPUStoreOp.DONT_CARE,
+                    cycle = false,         // true cycles the texture if the texture is bound and any load ops are not LOAD */
+                    clear_stencil = 0,    // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. */
+                }
+
+                shadowmap_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target_info);
+
+                sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 0, &universe.matrix_buf, 1);
+                sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 1, &light_manager.gpu_shadowmap_infos_buf, 1);
+
+                // Note we souldn't do all but exclude blend meshes and probably also frustum cull from light!
+                
+                last_shadow_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
+
+                for drawable_index in 0..<len(ecs.drawables) {
+
+                    mesh_id := ecs.drawables[drawable_index].mesh_instance.mesh_id;
+                    mat_id := ecs.drawables[drawable_index].mesh_instance.mat_id;
+
+                    mat  := register_get_material(mat_id);
+
+                    if mat.render_technique.alpha_mode == .Blend {
                         continue;
                     }
+
+                    if universe.cull_shadow_draws {
+                        render_draw : bool = test_shadow_draw(sinfo.view_proj, ecs.drawables[drawable_index].world_obb, sinfo.resolution)
+                        if !render_draw {
+                            continue;
+                        }
+                    }
+
+                    technique_hash := material_register_get_render_technique_hash(mat_id);
+
+                    pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
+
+                    if mat.render_technique.alpha_mode == .Opaque {
+                        pipeline_variant = pipe_manager_get_depthonly_pipeline_variant(pipe_manager, DepthOnlyPipelineShaders.Shadowmap, technique_hash);
+                    } else {
+                        pipeline_variant = pipe_manager_get_depthonly_pipeline_variant(pipe_manager, DepthOnlyPipelineShaders.ShadowmapAlphaTest, technique_hash);
+                    }
+
+                    if pipeline_variant != last_shadow_pipeline_variant {
+
+                        sdl.BindGPUGraphicsPipeline(shadowmap_pass, pipeline_variant);
+                        last_shadow_pipeline_variant = pipeline_variant;
+                        num_pipe_switches += 1;
+                    }
+
+                    
+                    draw_instance_ubo := VertexDrawInstanceUBO{
+                        drawable_index = cast(u32)drawable_index,
+                        padding1 = cast(u32)index,
+                    }
+                    
+                    sdl.PushGPUVertexUniformData(cmd_buf, 0, &draw_instance_ubo, size_of(VertexDrawInstanceUBO));
+
+                    mesh_gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id);
+
+                    renderer_DRAW_CALL_draw_mesh_instance_gpu_data(shadowmap_pass, mesh_gpu_data, true);
+                    
+                    draw_calls += 1;
                 }
 
-                technique_hash := material_register_get_render_technique_hash(mat_id);
-
-                pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
-
-                if mat.render_technique.alpha_mode == .Opaque {
-                    pipeline_variant = pipe_manager_get_depthonly_pipeline_variant(pipe_manager, DepthOnlyPipelineShaders.Shadowmap, technique_hash);
-                } else {
-                    pipeline_variant = pipe_manager_get_depthonly_pipeline_variant(pipe_manager, DepthOnlyPipelineShaders.ShadowmapAlphaTest, technique_hash);
-                }
-
-                if pipeline_variant != last_shadow_pipeline_variant {
-
-                    sdl.BindGPUGraphicsPipeline(shadowmap_pass, pipeline_variant);
-                    last_shadow_pipeline_variant = pipeline_variant;
-                    num_pipe_switches += 1;
-                }
-
-                
-                draw_instance_ubo := VertexDrawInstanceUBO{
-                    drawable_index = cast(u32)drawable_index,
-                    padding1 = cast(u32)index,
-                }
-                
-                sdl.PushGPUVertexUniformData(cmd_buf, 0, &draw_instance_ubo, size_of(VertexDrawInstanceUBO));
-
-                mesh_gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id);
-
-                renderer_DRAW_CALL_draw_mesh_instance_gpu_data(shadowmap_pass, mesh_gpu_data, true);
-                
-                draw_calls += 1;
+                num_rendered_shadowmaps += 1;
+                sdl.EndGPURenderPass(shadowmap_pass);
             }
 
-            num_rendered_shadowmaps += 1;
-            sdl.EndGPURenderPass(shadowmap_pass);
         }
-
-
     }
 
     // ============================================================================================================
     //                                      MAIN FORWARD RENDER PASS
     // ============================================================================================================
     {
+        renderer_push_debug_group(cmd_buf, "Main Forward Pass");
+        defer renderer_pop_debug_group(cmd_buf);
+
         forward_draw_calls : u32 = 0;
         forward_pipe_switches : u32 = 0;
         forward_pass_timer := timer_begin();
@@ -1027,9 +1045,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
         // SKYBOX BUFFER SLOT 1
         sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &sky_gpu_buffer, 1);
-
-
-
 
         //Skybox Pass
         // The skybox pass must happen before alpha blended materials.
@@ -1088,7 +1103,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             sdl.BindGPUFragmentStorageBuffers(render_pass, 3, &universe.light_manager.gpu_lights_data_buf, 1);
             sdl.BindGPUFragmentStorageBuffers(render_pass, 4, &universe.light_manager.gpu_shadowmap_infos_buf, 1);
         }
-
 
         draw_drawable_index_array :: proc(ren_ctx : ^RenderContext, 
                                         cmd_buf : ^sdl.GPUCommandBuffer, 
@@ -1202,7 +1216,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
             return draw_calls, pipeline_switches;
         }
-
         
         if any_draws_exist {
 
@@ -1222,9 +1235,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             forward_pipe_switches += switches;
         }
 
-
-
-        // 
         draw_debug_lights_vis :: true
 
         when draw_debug_lights_vis {
@@ -1396,6 +1406,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     // Here we just color correct the scene rendered img with tonemapping and srgb convertion
 
     {
+        renderer_push_debug_group(cmd_buf, "Post Process Color Correction");
+        defer renderer_pop_debug_group(cmd_buf);
+
         post_correct_color_target := sdl.GPUColorTargetInfo {
                 texture = ren_ctx.post_correct_color_target_tex,
                 // clear_color = sdl.FColor{0,0,0,1},
@@ -1433,6 +1446,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     smaa_pass_enabled : bool = .SMAA in ren_ctx.config.ren_effect_flags && !ren_ctx.effects.smaa.settings.temporary_disabled
     //smaa_pass_enabled = false; // force off rn
     if smaa_pass_enabled {
+
+        renderer_push_debug_group(cmd_buf, "Render Effect: SMAA");
+        defer renderer_pop_debug_group(cmd_buf);
 
         smaa := ren_ctx.effects.smaa;
 
@@ -1578,6 +1594,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     // UI (DearImgui) RENDER PASS
     if debug_gui_is_enabled() {
 
+        renderer_push_debug_group(cmd_buf, "Debug GUI Pass");
+        defer renderer_pop_debug_group(cmd_buf);
+
         ui_color_target := sdl.GPUColorTargetInfo {
             texture = ren_ctx.debug_gui_color_target_tex,
             clear_color = sdl.FColor{0,0,0,0},
@@ -1596,6 +1615,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
     // FINAL COMPOSIT INTO SWAPCHAIN
     {
+        renderer_push_debug_group(cmd_buf, "Swapchain Composit Pass");
+        defer renderer_pop_debug_group(cmd_buf);
+
         swapchain_target := sdl.GPUColorTargetInfo {
                 texture = swapchain_texture,
                 // clear_color = sdl.FColor{0,0,0,1},
@@ -1699,4 +1721,20 @@ renderer_DRAW_CALL_draw_unit_cube :: proc "contextless" (command_buffer : ^sdl.G
     sdl.PushGPUVertexUniformData(command_buffer, 1, &mesh_vertex_ubo, size_of(MeshVertexUBO));
 
     sdl.DrawGPUPrimitives(render_pass, 36 * 3, 1, 0,0)
+}
+
+@(private="file")
+renderer_push_debug_group :: proc(command_buffer : ^sdl.GPUCommandBuffer, name : cstring) {
+
+    when ENGINE_DEVELOPMENT {
+        sdl.PushGPUDebugGroup(command_buffer, name);
+    }
+}
+
+@(private="file")
+renderer_pop_debug_group :: proc(command_buffer : ^sdl.GPUCommandBuffer){
+
+    when ENGINE_DEVELOPMENT {
+        sdl.PopGPUDebugGroup(command_buffer);
+    }
 }

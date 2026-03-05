@@ -101,7 +101,7 @@ ren_effect_GTAO_create_default_settings :: proc() -> RenEffectGTAOSettings {
 
 	return RenEffectGTAOSettings{
 		temporary_disabled = false,
-		full_res = false,
+		full_res 		= false,
 		strength        = 2.5,
         sample_count    = 8,
         slice_count     = 8,

@@ -2,13 +2,18 @@ package app
 
 import "base:runtime"
 import "core:log"
+import "core:c"
 
 import "core:math/linalg"
 
 import iri "iriengine:iriengine"
+import imgui "odinary:dear_imguy"
 
 ExampleApp :: struct {
 	player_entity : iri.Entity,
+	universe : ^iri.Universe,
+	draw_debug_ui_window : bool,
+	debug_ui_selected_entity : iri.Entity,
 }
 
 app : ExampleApp;
@@ -58,6 +63,8 @@ init :: proc() -> (ok : bool) {
 	universe : ^iri.Universe = iri.get_active_universe()
 	assert(universe != nil);
 
+	// lets keep a pointer to the universe ourselves
+	app.universe = universe;
 
 	// Create a camera
 	{
@@ -180,6 +187,15 @@ init :: proc() -> (ok : bool) {
 	}
 
 
+	// Setup Debug dear imgui rendering
+	iri.debug_gui_set_enable(true);
+	iri.debug_gui_set_callback_procedure(debug_dear_imgui_callback);
+	app.debug_ui_selected_entity.id = -1;
+	app.draw_debug_ui_window = true;
+
+	// register a callback proc when ALT+F is pressed
+	iri.input_register_keyboard_callback(toggle_debug_ui_window   , iri.Key.F   , {.PRESS}, {.LEFT_ALT} );
+
 	return true;
 }
 
@@ -227,4 +243,59 @@ frame_update :: proc(delta_seconds : f32){
 // physics update callback, called in fixed timestep intervalls.
 physics_update :: proc(){
 
+}
+
+
+toggle_debug_ui_window :: proc(is_press: bool, is_repeat: bool){
+	app.draw_debug_ui_window = !app.draw_debug_ui_window;
+}
+
+// callback for debug DearImgui rendering.
+debug_dear_imgui_callback :: proc(){
+	// dear imgui setup is already done by the engine
+	// in this callback you can just do everything you know from imgui. 
+
+	if !app.draw_debug_ui_window {
+		return;
+	}
+
+	// Iri engine provides some procedure to draw example settings and stuff.
+	if imgui.Begin("Debug UI", &app.draw_debug_ui_window) {
+		
+		if imgui.TreeNode("Render Settings")  {
+			iri.debug_gui_draw_render_settings();
+			imgui.TreePop();
+		}
+
+		if imgui.TreeNode("Universe Settings") {
+
+
+			iri.debug_gui_draw_universe_settings(app.universe);
+			
+			imgui.TreePop();
+		}
+
+
+		if imgui.TreeNode("ECS Table") {
+
+			iri.debug_gui_draw_entity_component_table(app.universe);
+
+			imgui.TreePop();
+		}
+
+		if imgui.TreeNode("Entity Viewer") {
+
+			ent_id := cast(c.int)app.debug_ui_selected_entity.id; 
+
+			if imgui.DragInt("Entity Selection", &ent_id, 1.0, -1, c.INT32_MAX) {
+				app.debug_ui_selected_entity.id = cast(i32)ent_id;
+			}
+
+			imgui.Spacing();
+
+			iri.debug_gui_draw_entity_viewer(app.universe, app.debug_ui_selected_entity);
+			imgui.TreePop();
+		}	
+	}
+	imgui.End();
 }

@@ -8,21 +8,26 @@ VertexDataLayout :: enum {
 }
 
 VertexDataMinimal :: struct {
-	normal_tangent 	: [4]f32, // Octahedral Encoded, Normal.xy , Tangent.zw
-	texcoord_0 	    : [2]f32,
+	normal 		: [2]f32,  // Octahedral Encoded, .xy
+	texcoord_0 	: [2]f32,
+	tangent     : [3]f32,  // Octahedral Encoded, .xy , .z is sign bit
 }
 
 VertexDataStandard :: struct {
-	normal_tangent 	: [4]f32, // Octahedral Encoded
-	color_0 	    : [4]f32,
-	texcoord_0 	    : [2]f32,
+	normal 		: [2]f32,  // Octahedral Encoded, .xy
+	texcoord_0 	: [2]f32,
+	tangent     : [3]f32,  // Octahedral Encoded, .xy , .z is sign bit
+	// we have 1 f32 padding here..
+	color_0 	: [4]f32,
 }
 
 VertexDataExtended :: struct {
-	normal_tangent 	: [4]f32, // Octahedral Encoded
+	normal 		: [2]f32,  // Octahedral Encoded, .xy
+	texcoord_0 	: [2]f32,
+	tangent     : [3]f32,  // Octahedral Encoded, .xy , .z is sign bit
+	// we have 1 f32 padding here..
 	color_0 		: [4]f32,
 	color_1 		: [4]f32,
-	texcoord_0 		: [2]f32,
 	texcoord_1 		: [2]f32,
 }
 
@@ -34,7 +39,7 @@ MeshData :: struct {
 	num_vertecies : u32,
 	positions	: [^][3]f32,
 	normals  	: [^][3]f32,
-	tangents 	: [^][3]f32,
+	tangents 	: [^][4]f32,
 	colors_0 	: [^][4]f32,
 	colors_1 	: [^][4]f32,
 	texcoords_0 : [^][2]f32,

@@ -204,12 +204,13 @@ mesh_manager_make_interleaved_vertex_buffer :: proc(mesh_data: ^MeshData) -> (da
 
 			buf : [^]VertexDataMinimal = cast([^]VertexDataMinimal)interleaved_vertex_buffer;
 			for i in 0..<num_vertecies {
-				normal_oct  : [2]f32 = mathy.oct_encode(mesh_data.normals[i]);
-				tangent_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i]);
+				//normal_oct  : [2]f32 = mathy.oct_encode(mesh_data.normals[i]);
+				tan_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i].xyz);
 
 				buf[i] = VertexDataMinimal {
-					normal_tangent = [4]f32{normal_oct.x, normal_oct.y, tangent_oct.x, tangent_oct.y},
+					normal = mathy.oct_encode(mesh_data.normals[i]),
 					texcoord_0 = mesh_data.texcoords_0[i],
+					tangent = [3]f32{tan_oct.x, tan_oct.y, mesh_data.tangents[i].w},
 				}
 			}
 		}
@@ -217,13 +218,14 @@ mesh_manager_make_interleaved_vertex_buffer :: proc(mesh_data: ^MeshData) -> (da
 			buf : [^]VertexDataStandard = cast([^]VertexDataStandard)interleaved_vertex_buffer;
 
 			for i in 0..<num_vertecies {
-				normal_oct  : [2]f32 = mathy.oct_encode(mesh_data.normals[i]);
-				tangent_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i]);
+				tan_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i].xyz);
 
 				buf[i] = VertexDataStandard {
-					normal_tangent 	= [4]f32{normal_oct.x, normal_oct.y, tangent_oct.x, tangent_oct.y},
+					normal = mathy.oct_encode(mesh_data.normals[i]),
+					texcoord_0 = mesh_data.texcoords_0[i],
+					tangent = [3]f32{tan_oct.x, tan_oct.y, mesh_data.tangents[i].w},
+
 					color_0 	   	= mesh_data.colors_0[i],
-					texcoord_0 		= mesh_data.texcoords_0[i],
 				}
 			}
 		}
@@ -231,14 +233,15 @@ mesh_manager_make_interleaved_vertex_buffer :: proc(mesh_data: ^MeshData) -> (da
 			buf : [^]VertexDataExtended = cast([^]VertexDataExtended)interleaved_vertex_buffer;
 
 			for i in 0..<num_vertecies {
-				normal_oct  : [2]f32 = mathy.oct_encode(mesh_data.normals[i]);
-				tangent_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i]);
+				tan_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i].xyz);
 
 				buf[i] = VertexDataExtended {
-					normal_tangent 	= [4]f32{normal_oct.x, normal_oct.y, tangent_oct.x, tangent_oct.y},
+					normal = mathy.oct_encode(mesh_data.normals[i]),
+					texcoord_0 = mesh_data.texcoords_0[i],
+					tangent = [3]f32{tan_oct.x, tan_oct.y, mesh_data.tangents[i].w},
+					
 					color_0 	   	= mesh_data.colors_0[i],
 					color_1 	   	= mesh_data.colors_1[i],
-					texcoord_0 		= mesh_data.texcoords_0[i],
 					texcoord_1 		= mesh_data.texcoords_1[i],
 				}
 			}

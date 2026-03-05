@@ -319,14 +319,16 @@ shader_manager_get_or_load_gfx_shader_variant :: proc(manager : ^ShaderManager, 
 	shader_hash_[0] = transmute(u32)shader_id
 	shader_hash_[1] = transmute(u32)variant;
 
-
 	shader, exists := manager.gfx_shader_cache[shader_hash]
 
 	if exists && shader != nil {
 		return shader;
 	}
 
+
 	spirv_or_err_str, compile_info, load_ok := shader_manager_load_or_compile_spirv_variant(manager, shader_id, variant);
+
+	//log.warnf("Loading shaderID {}, variant {}", shader_id, variant);
 
 	defer if load_ok {
 		delete(spirv_or_err_str);
@@ -339,6 +341,8 @@ shader_manager_get_or_load_gfx_shader_variant :: proc(manager : ^ShaderManager, 
 	}
 
 	engine_assert(compile_info.shader_stage != .COMPUTE);
+
+
 
 	// {
 
@@ -456,6 +460,7 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
         err_str : string = fmt.aprintf("Failed to load shader_id: '{}' from file, Neither glsl nor spirv filepaths exist: glsl-path: {}",cast(i32)shader_id, glsl_filepath, allocator = context.temp_allocator);
         return transmute([]u8)err_str, ShaderCompileInfo2{}, false;
     }
+	
 
     out_file_watcher : ^filey.FileWatcherData = shader_manager_get_file_watcher_if_exists(manager, shader_id);
 
@@ -490,6 +495,8 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
             }
         }
     }
+	
+	//log.warnf("Loading shaderID {}, variant {}, loading from glsl {}", shader_id, variant, load_from_glsl);
 
     if load_from_glsl {
 
@@ -518,6 +525,8 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
             // }
             delete(define_strings);
         }
+
+        
         if variant != SHADER_VARIANT_EMPTY {
 
         	for define_enum in variant {
@@ -552,6 +561,7 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
 
         reflect_info := shady.reflect_parse_glsl_src_code(glsl_src_code);
 
+        
         TEST_REFLECT :: false
         when TEST_REFLECT {
             log.debugf("ReflectInfo: {} \n{}",src_glsl_filename, reflect_info);
@@ -559,7 +569,12 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
 
         shady_shader_stage := get_shady_ShaderStage_from_ShaderStage(shader_stage);
         
+
+
         spriv_or_error_str, transpile_success := shady.transpile_glsl_to_SPIRV(glsl_src_code , shady_shader_stage, shady.SpirvVersion.SPV_1_3, shady.ClientVersion.VULKAN_1_2,include_files[:]);
+        
+       // log.warnf("Loading shaderID {}, variant {}", shader_id, variant);
+
 
         if !transpile_success {            
             err_str : string = fmt.aprintf("Shader Compilation Failed: {}\n{}", glsl_filepath, transmute(string)spriv_or_error_str, allocator = context.temp_allocator);
@@ -569,6 +584,7 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
 
 
         hdr := create_custom_spirv_header(reflect_info, shader_stage);
+        
 
         // Write Spirv with custom header to file.
         {
@@ -587,7 +603,6 @@ shader_manager_load_or_compile_spirv_variant :: proc(manager : ^ShaderManager, s
 	            log.errorf("Faild to write spirv file to disk after succesful compilation, Path: {}", spirv_filepath);
 	        }
         }
-        
 
         update_shader_compile_info2_with_custom_spirv_header(&manager.entries.compile_info[shader_id], hdr);
 

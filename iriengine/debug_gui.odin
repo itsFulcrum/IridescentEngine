@@ -465,6 +465,7 @@ debug_gui_draw_render_settings :: proc(){
 			any_changed : bool = false;
 
 			any_changed |= imgui.Checkbox("Temporary Disable", &ao_settings.temporary_disabled)
+			any_changed |= imgui.Checkbox("Full Resolution", &ao_settings.full_res)
 			
 			imgui.Spacing();
 

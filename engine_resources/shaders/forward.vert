@@ -4,22 +4,25 @@
 layout (location=0) in vec3 a_pos;
 
 #ifdef VERT_LAYOUT_MINIMAL
-layout (location=1) in vec4 a_normal_tangent; // oct encoded.
+layout (location=1) in vec2 a_normal; // oct encoded .xy
 layout (location=2) in vec2 a_texcoord_0;
+layout (location=3) in vec3 a_tangent; // oct .xy, .z sign bit
 #endif 
 
 #ifdef VERT_LAYOUT_STANDARD
-layout (location=1) in vec4 a_normal_tangent; // oct encoded.
-layout (location=2) in vec4 a_color_0;
-layout (location=3) in vec2 a_texcoord_0;
+layout (location=1) in vec2 a_normal; // oct encoded .xy
+layout (location=2) in vec2 a_texcoord_0;
+layout (location=3) in vec3 a_tangent; // oct .xy, .z sign bit
+layout (location=4) in vec4 a_color_0;
 #endif 
 
 #ifdef VERT_LAYOUT_EXTENDED
-layout (location=1) in vec4 a_normal_tangent; // oct encoded.
-layout (location=2) in vec4 a_color_0;
-layout (location=3) in vec4 a_color_1;
-layout (location=4) in vec2 a_texcoord_0;
-layout (location=5) in vec2 a_texcoord_1;
+layout (location=1) in vec2 a_normal; // oct encoded .xy
+layout (location=2) in vec2 a_texcoord_0;
+layout (location=3) in vec3 a_tangent; // oct .xy, .z sign bit
+layout (location=4) in vec4 a_color_0;
+layout (location=5) in vec4 a_color_1;
+layout (location=6) in vec2 a_texcoord_1;
 #endif
 
 #include "../shader_lib/mathy.glsl"
@@ -67,14 +70,14 @@ void main() {
 	
 	mat3 normal_mat = adjoint(mat3(world_mat));
 
-	vec3 a_normal  = oct_decode(a_normal_tangent.xy);
-	vec3 a_tangent = oct_decode(a_normal_tangent.zw);
+	vec3 normal_os  = oct_decode(a_normal.xy);
+	vec3 tangent_os = oct_decode(a_tangent.xy);
 
-	vec3 bitangent_os = cross(a_normal, a_tangent);
+	vec3 bitangent_os = cross(normal_os, tangent_os) * a_tangent.z; // tan.z sign bit encodes handedness of tangent space
 
-	vec3 tangent_ws   = normalize(vec3(normal_mat * a_tangent   ));
+	vec3 tangent_ws   = normalize(vec3(normal_mat * tangent_os   ));
   	vec3 bitangent_ws = normalize(vec3(normal_mat * bitangent_os));
-	vec3 normal_ws    = normalize(vec3(normal_mat * a_normal    ));
+	vec3 normal_ws    = normalize(vec3(normal_mat * normal_os    ));
 	
 
   	vert_data.tbn_mat = mat3(tangent_ws, bitangent_ws, normal_ws);

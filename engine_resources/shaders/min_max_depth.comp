@@ -25,6 +25,19 @@ layout(set=2, binding=0) uniform ubo {
     uint  _padding3;
 };
 
+
+// We do a custom max operation because if a value in the depth buffer is 1 it means nothing was rendered there, aka it will be sky
+// but what we really want is the max of a valid rendered to pixel. 
+float max_c(float a, float b){
+    
+    float m = max(a, b);
+    //return m;
+    if(m == 1.0f){
+        return min(a,b);
+    }
+    return m;
+}
+
 void main() {
 
     // Runs for every pixel in the destination mip texture
@@ -67,6 +80,8 @@ void main() {
 
     float min_depth = min(min(depth_00.x,depth_01.x), min(depth_10.x, depth_11.x));
     float max_depth = max(max(depth_00.y,depth_01.y), max(depth_10.y, depth_11.y));
+    // @Note: currently dont see any diference in the output AO but maybe for other effects?
+    //float max_depth = max_c(max_c(depth_00.y,depth_01.y), max_c(depth_10.y, depth_11.y));
     
     vec4 min_max = vec4(min_depth,max_depth,0.0f,0.0f);
 

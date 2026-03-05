@@ -20,9 +20,6 @@ layout (location = 0) in vertex_data {
 	mat3 tbn_mat;
 } vert_data;
 
-
-
-
 // ========= Storage Buffers
 
 // in SDL GPU storage buffers in vertex shader must be bound to 'set=0' in fragment shader it is 'set=2'
@@ -71,19 +68,26 @@ layout(set=3, binding=0) uniform mat_ubo {
 } _mat_ubo;
 
 
-float sample_shadow_map(sampler2DArray _shadowmap, ShadowmapInfo info, float do_perspective_0_or_1, vec3 frag_pos_ws, vec3 normal_ws, float NdotL) {
+float sample_shadow_map(sampler2DArray _shadowmap, ShadowmapInfo info, float do_perspective_0_or_1, vec3 frag_pos_ws, vec3 normal_ws, float NdotL, float screen_noise) {
 
-	// Note we cant use texel size in world space. we need texels_per_world unit for that
+	
+	// @Note: we can't use texel_size which is in pixel size unit as world space modifier for normal bias. 
+	// We need info.texels_per_world unit for that which indicates how many texels there are for a world unit of 1.0
+	// so 1/info.texels_per_world gives us how much we can offset the position along the normal to go one texel unit in world space
+	// However this only works directly for directional light shadomaps which have an orthographics proj matrix so this value doesn't scale with distance to light source.
+	// For point and spot lights this value represents the world space texel number at the far end of the frustum (far clip plane) so idealy we 
+	// would need to scale it by the distance to fragment position. the problem is we dont have that before the transform the position to 
+	// light space unless convert the position to light space twice which i would like to avoid.
+	// so instead we will offset along the normal by a small constant just to get some extra acne avoidance but it will never work in all cases.  
 
-	// texels per world unit only makes sense for directional lights with orthographic projections
-	// for point and spot lights they represent texel_per_world_unit at the far clip plane of the frustum.
-	// so the still provide some measure of proportionality but yea..
 
-	// idk yet how to do this better, for spot light (and prob point lights)
-	// using texels_per_world_unit like this for normal biasing doesn't work very well..
-	// maybe we do need some manual, per light source control over this..
-    float NdotL_scale = mix(info.texels_per_world_unit , 0.05f, do_perspective_0_or_1);
-    float normal_bias = clamp( (1-NdotL) * NdotL_scale, 0.0f, 1.0f);
+    float inv_texels_per_unit = 1.0f/info.texels_per_world_unit;
+    float normal_bias_scale = mix(inv_texels_per_unit + 0.002f, 0.02f, do_perspective_0_or_1);
+    
+    float inv_NdotL = 1.0f - NdotL;
+
+    float normal_bias = mix(0.1, 1.0, inv_NdotL) * normal_bias_scale;
+    normal_bias = 0.05f;
 
 	vec3 pos = frag_pos_ws + normal_ws * normal_bias;
 	
@@ -94,30 +98,29 @@ float sample_shadow_map(sampler2DArray _shadowmap, ShadowmapInfo info, float do_
     vec2 shadow_uv = proj_coords.xy * 0.5f + 0.5f;
     shadow_uv.y = 1 - shadow_uv.y;
 
-    float compare = proj_coords.z; // current depth of pixel.
 
+    // Depth bias
     float texel_size = (1.0f/float(info.resolution));
-    float bias = texel_size * (1 - NdotL); // should be texel size
+    float depth_bias = (texel_size + 0.0025f) * max(0.75f, NdotL);
+    depth_bias = mix(depth_bias, depth_bias / proj_coords.w, do_perspective_0_or_1);
 
-    bias = mix(bias, bias / proj_coords.w, do_perspective_0_or_1);
+    float compare = proj_coords.z - depth_bias; // current depth of pixel.
 
-	// float light_depth = textureLod(_shadowmap, vec3(shadow_uv, float(info.array_layer)), float(info.mip_level)).r;
-	// float shadow = step(compare - bias, light_depth);
 
-	// TODO dont do this per shadowmap ..!!
-	float rand = randf(int(gl_FragCoord.x), int(gl_FragCoord.y));
-
+	float noise = (screen_noise * 2.0f - 1.0f) * 1.25f;
+	noise = noise;
 
     int kernel_size = 1;
-    float num_samples = float(kernel_size * 2 + 1) * float(kernel_size * 2 + 1); 
+    float num_samples = float(kernel_size * 2 + 1) * float(kernel_size * 2 + 1);
+
     float shadow = 0.0f;
     for (int x = -kernel_size; x <= kernel_size; x++){
     	for (int y = -kernel_size; y <= kernel_size; y++){
     		
-    		vec2 uv_offset = vec2(float(x)+ rand, float(y)+ rand) * texel_size ;
+    		vec2 uv_offset = vec2(float(x)+ noise, float(y)+ noise) * texel_size;
 
     		float light_depth = textureLod(_shadowmap, vec3(shadow_uv + uv_offset, float(info.array_layer)), float(info.mip_level)).r;
-    		shadow += step(compare - bias, light_depth);
+    		shadow += step(compare, light_depth);
     	}
     }
 
@@ -137,6 +140,7 @@ float sample_shadow_map(sampler2DArray _shadowmap, ShadowmapInfo info, float do_
 	return mix(1.0f,shadow, bounds);
 }
 
+// Not used right now..
 void attenuate_roughness_to_reduce_specular_aliasing(float roughness,float NdotV_unclammped, vec3 normal, vec3 view_dir,out float atten_rougness, out float env_brdf_roughness){
 	
 	vec3 ddxN = dFdx(normal);
@@ -184,6 +188,8 @@ void main() {
 	vec2 screen_uv = (vec2(gl_FragCoord.xy) ) / vec2(_global.frame_size);
 	screen_uv.y = 1.0f - screen_uv.y;
 
+	float screen_noise = randf(int(gl_FragCoord.x), int(gl_FragCoord.y));
+
 	//vec3 ndc = vec3(screen_uv.xy * 2.0f - 1.0f, gl_FragCoord.z);
 	
 	float scene_ao = 1.0f;
@@ -193,6 +199,9 @@ void main() {
 		scene_ao = srgb_to_linear_float_gamma_2_2(ao_tex_sample.r);
 	#endif
 
+
+	//frag_color.rgb = vec3(scene_ao);
+	//return;
 
 	//frag_color.rgb = vert_data.normal_ws.xyz;
 	//return;
@@ -255,7 +264,7 @@ void main() {
 
   	vec3 direct_radiance = vec3(0.0f); 
 
-  	vec3 debug_color = vec3(1.0f);
+  	vec3 debug_color = vec3(0.0f);
 
   	// TODO: do this on the cpu!
   	// TODO: try doing it with gl_fragcoord.z and linearize_depth()
@@ -287,7 +296,7 @@ void main() {
 
 			float NdotL  = max(dot(vert_data.normal_ws.xyz, light.direction), 0.0f);
 
-			shadow = sample_shadow_map(_main_light_shadowmap, shadow_info, 0.0f, vert_data.position_ws.xyz, vert_data.normal_ws.xyz, NdotL);
+			shadow = sample_shadow_map(_main_light_shadowmap, shadow_info, 0.0f, vert_data.position_ws.xyz, vert_data.normal_ws.xyz, NdotL, screen_noise);
  		}
 
  		vec3 to_light_vec = light.direction;
@@ -297,9 +306,12 @@ void main() {
 
  		light_radiance *= shadow; 		
  		direct_radiance += light_radiance;
+
+ 		debug_color += shadow;
 	}
 
 	// POINT LIGHTS
+	#if 0
 	for (uint i = _lights_buffer.directional_lights_end; i < _lights_buffer.point_lights_end; i++){
  		
  		LightData light = _lights_buffer.lights[i];
@@ -312,7 +324,7 @@ void main() {
 
     	if(light.shadowmap_index >= 0) {
     		uint face_index = direction_to_cubemap_face_index(-to_light_vec);
-    		shadow = sample_shadow_map(_main_light_shadowmap, _shadowmap_buffer.infos[light.shadowmap_index + face_index], 1.0f,  vert_data.position_ws.xyz, vert_data.normal_ws.xyz, NdotL);
+    		shadow = sample_shadow_map(_main_light_shadowmap, _shadowmap_buffer.infos[light.shadowmap_index + face_index], 1.0f,  vert_data.position_ws.xyz, vert_data.normal_ws.xyz, NdotL, screen_noise);
     	}
 
 
@@ -323,9 +335,13 @@ void main() {
  		light_radiance *= shadow;
 
  		direct_radiance += light_radiance;
+
+ 		debug_color += shadow;
 	}
+	#endif
 
 	// SPOT LIGHTS
+	#if 1
 	for (uint i = _lights_buffer.point_lights_end; i < _lights_buffer.num_lights; i++){
  		
     	float shadow = 1.0f;
@@ -345,15 +361,19 @@ void main() {
 			// casts shadow
 			ShadowmapInfo shadow_info = _shadowmap_buffer.infos[light.shadowmap_index];
 			float NdotL  = max(dot(vert_data.normal_ws.xyz, to_light_vec), 0.0f);
-			shadow = sample_shadow_map(_main_light_shadowmap, shadow_info, 1.0f,  vert_data.position_ws.xyz, vert_data.normal_ws.xyz, NdotL);
+			shadow = sample_shadow_map(_main_light_shadowmap, shadow_info, 1.0f,  vert_data.position_ws.xyz, vert_data.normal_ws.xyz, NdotL, screen_noise);
  		}
 
  		vec3 light_radiance =  DiffuseSpecularBRDF(lighting_data.frag_position, lighting_data.view_direction, NdotV, F0, attenuated_radiance, to_light_vec, surf_data, alias_mask_fine);
  		
  		light_radiance *= shadow; 		
  		direct_radiance += light_radiance;
+ 		debug_color += shadow;
 	}
+	#endif
 
+	//frag_color.rgb = debug_color.rgb * 1.0f;
+	//return;
 	////// EMISSIVE RADIANCE ======================================================================================== ////
   	//// ============================================================================================================ ////
 

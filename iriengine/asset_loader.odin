@@ -35,7 +35,16 @@ asset_loader_load_gltf_file_as_separate_meshes :: proc(filename : string, load_m
 	mesh_manager := engine.mesh_manager;
 	gpu_device := get_gpu_device();
 
-	poly_scene := poly.load_gltf_from_file(filename, load_materials = load_materials, load_lights = false, fill_missing_vertex_attributes = false) or_return;
+	
+	load_flags := poly.LoadFlags{.LogErrors};
+	if load_materials {
+		load_flags += poly.LoadFlags{.LoadMaterials};
+	}
+
+	poly_scene := poly.load_gltf_from_path(filename, load_flags) or_return;
+
+	//poly_scene := poly.load_assimp_gltf_from_file(filename, load_materials = load_materials, load_lights = false, fill_missing_vertex_attributes = false) or_return;
+
 
 	defer {
 		poly.destroy_scene(poly_scene);
@@ -130,7 +139,13 @@ asset_loader_load_gltf_file_as_combined_mesh :: proc(filename : string, load_fir
 
 	ok = false;
 
-	poly_scene := poly.load_gltf_from_file(filename, load_materials = load_first_material, load_lights = false, fill_missing_vertex_attributes = false) or_return;
+	load_flags := poly.LoadFlags{.LogErrors};
+	if load_first_material {
+		load_flags += poly.LoadFlags{.LoadMaterials};
+	}
+
+	poly_scene := poly.load_gltf_from_path(filename, load_flags) or_return;
+	//poly_scene := poly.load_assimp_gltf_from_file(filename, load_materials = load_first_material, load_lights = false, fill_missing_vertex_attributes = false) or_return;
 
 	defer {
 		poly.destroy_scene(poly_scene);
@@ -181,7 +196,6 @@ asset_loader_load_gltf_file_as_combined_mesh :: proc(filename : string, load_fir
 			metallic = poly_mat.metallic,
 
 			alpha_value = poly_mat.alpha_value,
-			//alpha_mode = get_AlphaBlendMode_from_poly_AlphaBlendModes(poly_mat.alpha_mode),
 		}
 
 		mesh_instance.mat_id = register_add_material(mat);
@@ -197,11 +211,17 @@ asset_loader_load_gltf_file_as_asset_scene :: proc(filename : string, load_mater
 	mesh_manager := engine.mesh_manager;
 	gpu_device := get_gpu_device();
 
-	luma_linear :: proc(rgb : [3]f32) ->f32 {
-    	return linalg.dot(rgb, [3]f32{0.2126729,  0.7151522, 0.0721750});
+	load_flags := poly.LoadFlags{.LogErrors};
+	if load_materials {
+		load_flags += poly.LoadFlags{.LoadMaterials};
+	}
+	if load_lights {
+		load_flags += poly.LoadFlags{.LoadLights};
 	}
 
-	poly_scene := poly.load_gltf_from_file(filename, load_materials = load_materials, load_lights = load_lights, fill_missing_vertex_attributes = false) or_return;
+	poly_scene := poly.load_gltf_from_path(filename, load_flags) or_return;
+
+	//poly_scene := poly.load_assimp_gltf_from_file(filename, load_materials = load_materials, load_lights = load_lights, fill_missing_vertex_attributes = false) or_return;
 
 	defer {
 		poly.destroy_scene(poly_scene);
@@ -220,27 +240,13 @@ asset_loader_load_gltf_file_as_asset_scene :: proc(filename : string, load_mater
 
 	for &poly_light, index in poly_scene.lights {
 
-		//@Note: Assimp only give us a single color value for lights. Which is light_color * light_intensity.
-		// Below we attempt to recover the original values but it only works correctly when light brightness was 
-		// fully given by the original light_intensity values. Meaning that the color part had full luminance (not darkend)
-		// By taking the max channel we still get a decent approximation of the original values even if color was not full luminance 
-		// but I belive in that case its impossible to restore it correctly.
-		// Another option would be to use luminance of color as a denominator but in my test it was not better compared to taking the max.
-		color : [3]f32 = poly_light.color;
-		intensity : f32 = max(max(color.r, color.g), color.b);
-		//luma : f32 = luma_linear(poly_light.color);
-
-		if intensity > 0.0 {
-			color /= intensity;	
-		}
-
 		out_scene.lights[index] = AssetLight {
 
 			type = get_LightType_from_poly_LightType(poly_light.type),
-			color = color, 
-			strength = intensity,
-			spot_angle_inner_deg = linalg.to_degrees(poly_light.spot_angle_inner),
-			spot_angle_outer_deg = linalg.to_degrees(poly_light.spot_angle_outer),
+			color    = poly_light.color, 
+			strength = poly_light.intensity,
+			spot_angle_inner_deg = linalg.to_degrees(poly_light.spot_inner_cone_angle_radians),
+			spot_angle_outer_deg = linalg.to_degrees(poly_light.spot_outer_cone_angle_radians),
 
 			transform = Transform{
 				scale = {1.0,1.0,1.0},
@@ -347,7 +353,7 @@ asset_loader_copy_poly_MeshData_to_MeshData :: proc(poly_mesh : ^poly.MeshData, 
 	mesh_data.aabb_min = poly_mesh.aabb_min;
 	mesh_data.aabb_max = poly_mesh.aabb_max;
 		
-	mesh_data.num_indecies = poly_mesh.num_indecies;
+	mesh_data.num_indecies  = poly_mesh.num_indecies;
 	mesh_data.num_vertecies = poly_mesh.num_vertecies;	
 
 	num_indecies  : int = cast(int)poly_mesh.num_indecies;
@@ -375,12 +381,12 @@ asset_loader_copy_poly_MeshData_to_MeshData :: proc(poly_mesh : ^poly.MeshData, 
 	// Minimal Layout.
 	mesh_data.positions   = make_multi_pointer([^][3]f32, num_vertecies);
 	mesh_data.normals     = make_multi_pointer([^][3]f32, num_vertecies);
-	mesh_data.tangents    = make_multi_pointer([^][3]f32, num_vertecies);
+	mesh_data.tangents    = make_multi_pointer([^][4]f32, num_vertecies);
 	mesh_data.texcoords_0 = make_multi_pointer([^][2]f32, num_vertecies);
 
 	if poly_mesh.positions   != nil do mem.copy(&mesh_data.positions[0]  , &poly_mesh.positions[0]  , num_vertecies * size_of([3]f32));
 	if poly_mesh.normals     != nil do mem.copy(&mesh_data.normals[0]    , &poly_mesh.normals[0]    , num_vertecies * size_of([3]f32));
-	if poly_mesh.tangents    != nil do mem.copy(&mesh_data.tangents[0]   , &poly_mesh.tangents[0]   , num_vertecies * size_of([3]f32));
+	if poly_mesh.tangents    != nil do mem.copy(&mesh_data.tangents[0]   , &poly_mesh.tangents[0]   , num_vertecies * size_of([4]f32));
 	if poly_mesh.texcoords_0 != nil do mem.copy(&mesh_data.texcoords_0[0], &poly_mesh.texcoords_0[0], num_vertecies * size_of([2]f32));
 
 	if layout == .Standard || layout == .Extended {

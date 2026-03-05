@@ -78,12 +78,8 @@ init :: proc(window_title : cstring, window_size : [2]u32, engine_resources_path
 	}
 
 	// create a SDL window
-	validation_layers : bool = false;
-    when ODIN_DEBUG || ENGINE_DEVELOPMENT {
-        validation_layers = true;
-    }
 
-	engine.window, success = window_create_context(window_title, window_size, start_fullscreen, validation_layers);
+	engine.window, success = window_create_context(window_title, window_size, start_fullscreen, ENGINE_ENABLE_VALIDATION_LAYERS);
 	if !success {
 
 		sdl.Quit();
@@ -273,6 +269,7 @@ deinit :: proc() {
 	event_manager_deinit(engine.event_manager);
 	free(engine.event_manager);
 
+	delete_string(engine.resources_path);
 
 	window_destroy_context(&engine.window);
 
@@ -290,9 +287,10 @@ begin_init_phase :: proc() {
 
 end_init_phase :: proc() {
 
+	free_all(context.temp_allocator);
 	engine.in_init_phase = false;
-	
 	pipe_manager_rebuild_all_pipelines_for_render_pass_types(engine.pipeline_manager, engine.window.gpu_device, RENDER_PASS_SET_ALL);
+	//log.warnf("ending init phase")
 
 	//pipe_manager_update_graphics_pipeline_cache_for_universe(engine.universe);
 
