@@ -33,10 +33,19 @@ renderer_create_depth_stencil_texture :: proc(gpu_device : ^sdl.GPUDevice, frame
 renderer_create_render_target_texture :: proc(gpu_device : ^sdl.GPUDevice, frame_size : [2]u32, format : RenderTargetFormat = RenderTargetFormat.RGBA16_FLOAT, msaa: MSAA = MSAA.OFF, usage_flags : sdl.GPUTextureUsageFlags = {.COLOR_TARGET}) -> ^sdl.GPUTexture{
 
 	// TODO: we may have to quary support for certain format idk
+    
+    gpu_tex_format : sdl.GPUTextureFormat;
+
+    if format != .SWAPCHAIN {
+        gpu_tex_format = get_sdl_GPUTextureFormat_from_RenderTargetFormat(format)
+    } else {
+        window := get_window_context()
+        gpu_tex_format = sdl.GetGPUSwapchainTextureFormat(gpu_device, window.handle);
+    }
 
     create_info : sdl.GPUTextureCreateInfo = {
         type = sdl.GPUTextureType.D2, 
-        format = get_sdl_GPUTextureFormat_from_RenderTargetFormat(format),
+        format = gpu_tex_format,
         usage = usage_flags, // sdl.GPUTextureUsageFlag.COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE
         width  = frame_size.x,
         height = frame_size.y,

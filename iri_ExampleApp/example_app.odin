@@ -41,11 +41,21 @@ main :: proc() {
 
 
 init :: proc() -> (ok : bool) {
-	
-	// Provide the path to the engine resources. You can copy this folder anywhere you want.
-	engine_resources_path : string = "../engine_resources"
+		
+	init_info := iri.EngineInitInfo {
+		window_title = "Iri Example App",
+		window_size = [2]u32{1024, 512},
+		start_fullscreen = false,
+		project_path = "./ExampleAppProj", 
+		// if project path is an empty directory, initialize it as an iri engine project.
+		initialize_empty_project = true, 
+		// path to 'engine_resources' sub folder, only needed when initializing an empty project (will be copied to project folder)
+		// or when developing the engine.
+		engine_resources_path = "../engine_resources",
+		enable_gpu_validation_layers = true,
+	}
 
-	iri.init("Iri Example App", [2]u32{1014, 720}, engine_resources_path, start_fullscreen = false) or_return;
+	iri.init(init_info) or_return;
 	
 	iri.begin_init_phase();
 	defer iri.end_init_phase();

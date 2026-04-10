@@ -1,14 +1,19 @@
 package iri
 
 import "core:math/linalg"
+import "core:encoding/uuid"
+import "core:strings"
+import iria "iriasset"
 
 import sdl "vendor:sdl3"
 
 
 Universe :: struct {
-	ecs : EntityComponentData,
-	// active_camera_entity : Entity,
-	// active_skybox_entity : Entity,
+	name : string, // Readonly, use 'universe_rename()' to rename
+	tag : u32,
+	asset_uuid : AssetUUID,
+
+	ecs : ECData,
 
 	frame_camera_info : FrameCameraInfo,
 
@@ -19,55 +24,72 @@ Universe :: struct {
 
 	light_manager : LightManager,
 
-	shadow_cascade_near_far_scale : f32,
-	shadow_cascade_side_scale : f32,
-	shadow_cascade_split_1 : f32,
-	shadow_cascade_split_2 : f32,
-	shadow_cascade_split_3 : f32,
+	shadow_cascade_near_far_scale 	: f32,
+	shadow_cascade_side_scale 		: f32,
+	shadow_cascade_split_1 			: f32, // percentage between near and far
+	shadow_cascade_split_2 			: f32, // percentage between near and far
+	shadow_cascade_split_3 			: f32, // percentage between near and far
 
-	cull_shadow_draws : bool,
-    do_frustum_culling : bool,
-	frustum_cull_camera_entity : Entity, // if we want to use different camera for frustum culling
+	cull_shadow_draws 			: bool,
+    do_frustum_culling 			: bool,
+	frustum_cull_camera_entity 	: Entity, // if we want to use different camera for frustum culling
 
 	matrix_buf : ^sdl.GPUBuffer,
 	matrix_transfer_buf : ^sdl.GPUTransferBuffer,
 	matrix_upload_info : QueryBufferUploadInfo,
 	matrix_buf_byte_size : int,
 
-
 	// indexes into ecs.drawables
-	frame_renderables : [dynamic]u32, // subset ecs.drawables camera culled.
+	frame_renderables 	 : [dynamic]u32, // subset ecs.drawables. only drawbles with valid data and enabled entities.
 	
-	frame_opaques : [dynamic]u32,
-	frame_alpha_test : [dynamic]u32,
-	frame_alpha_blend : [dynamic]u32,
+	frame_camera_visible : [dynamic]u32, // subset frame_renderables. camera / distance culled
+	frame_opaques 		 : [dynamic]u32, // subset frame_camera_visible. only opaques
+	frame_alpha_test 	 : [dynamic]u32, // subset frame_camera_visibly. only alpha test
+	frame_alpha_blend 	 : [dynamic]u32, // subset frame_camera_visible. only blend
 
 	debug_test_float : f32,
 }
 
-@(private="package")
-universe_init :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, reserve_mem_for_n_entities : u32 = 20) {
+universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = nil) {
+	
+	gpu_device := get_gpu_device();
+
 	engine_assert(universe != nil);
 
-	ecs_init(&universe.ecs , reserve_mem_for_n_entities);
 
-	universe.cull_shadow_draws = true;
-	universe.do_frustum_culling = true;
+	num_reserve : u32 = uni_asset == nil ? 16 : max(16, uni_asset.num_entities);
+
+	ecs_init(&universe.ecs, num_reserve);
+
+
+	if  uni_asset != nil {
+		
+		if len(uni_asset.name) >  0 {
+			universe.name = strings.clone(uni_asset.name, context.allocator);
+		}
+		
+		universe.asset_uuid = uni_asset.asset_uuid;
+		universe.tag = uni_asset.tag;
+	}
+
+	// TODO: should also be stored in uni_asset.
 	universe.frustum_cull_camera_entity.id = -1;
 	
-	universe.shadow_cascade_near_far_scale = 2.0;
-	universe.shadow_cascade_side_scale = 1.0;
+	settings : ^iria.UniverseAssetSettings = uni_asset != nil ? &uni_asset.settings : nil;
+
+	universe.cull_shadow_draws 				= settings == nil ? true : cast(bool)settings.cull_shadow_draws;
+	universe.do_frustum_culling 			= settings == nil ? true : cast(bool)settings.do_frustum_culling;
+	universe.shadow_cascade_near_far_scale 	= settings == nil ? 2.0  : settings.shadow_cascade_near_far_scale;
+	universe.shadow_cascade_side_scale 		= settings == nil ? 1.0  : settings.shadow_cascade_side_scale;
 
 	// Shadow map cascade splits for directional lights.
-	universe.shadow_cascade_split_1 = 0.05; // percentage between near and far
-	universe.shadow_cascade_split_2 = 0.25; // percentage between near and far
-	universe.shadow_cascade_split_3 = 0.60; // percentage between near and far
+	universe.shadow_cascade_split_1 = settings == nil ? 0.05 : settings.shadow_cascade_split_1;
+	universe.shadow_cascade_split_2 = settings == nil ? 0.25 : settings.shadow_cascade_split_2;
+	universe.shadow_cascade_split_3 = settings == nil ? 0.60 : settings.shadow_cascade_split_3; 
+
 
 	// Skybox 
 	{
-		//universe.skybox_data_is_dirty = true;
-		// skybox_gpu_data_set_defaults(&manager.skybox_data); // will happen during update
-
 		universe.ecs.active_skybox_is_dirty = true;
 
 		skybox_gpu_buffer_create_info := sdl.GPUBufferCreateInfo{
@@ -89,10 +111,99 @@ universe_init :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, reserve
 	light_manager_init(gpu_device, &universe.light_manager);
 
 
+	// Serialize with data stored in the unverser asset loaded from disk
+
+	if uni_asset == nil {
+		return;
+	}
+
+	num_ents : int = cast(int)uni_asset.num_entities;
+
+	if num_ents <= 0 {
+		return;
+	}
+
+	engine_assert(num_ents == len(uni_asset.entity_infos))
+	engine_assert(num_ents == len(uni_asset.entity_trans))
+	engine_assert(num_ents == len(uni_asset.entity_names))
+
+	for id in 0..<num_ents {
+
+		packed_info := &uni_asset.entity_infos[id];
+
+		name : string = len(uni_asset.entity_names[id]) > 0 ? uni_asset.entity_names[id] : string("NewEntity");
+
+		entity := entity_create(packed_info.comp_set, name, packed_info.tag, universe);
+
+		trans_comp := ecs_get_transform(&universe.ecs, entity);
+		trans_comp.transform = uni_asset.entity_trans[id];
+
+		ent_comp_indexes : iria.CompIndexes = uni_asset.entity_comp_indexes[id];
+
+		for comp_type in packed_info.comp_set {
+			#partial switch comp_type {
+				case .Camera: {
+					comp, err := ecs_get_component(&universe.ecs, entity, CameraComponent);
+					engine_assert(comp != nil);
+					engine_assert(ent_comp_indexes.camera_index > -1)
+					comp_data := uni_asset.camera_comp_data[ent_comp_indexes.camera_index];
+
+					comp.data = comp_data;
+				}
+				case .Skybox: {
+					comp, err := ecs_get_component(&universe.ecs, entity, SkyboxComponent);
+					engine_assert(comp != nil);
+					engine_assert(ent_comp_indexes.skybox_index > -1)
+					comp_data := uni_asset.skybox_comp_data[ent_comp_indexes.skybox_index];
+					comp.data = comp_data;
+				}
+				case .Light: {
+					comp, err := ecs_get_component(&universe.ecs, entity, LightComponent);
+					engine_assert(comp != nil);
+					engine_assert(ent_comp_indexes.light_index > -1)
+					
+					comp_light_init_from_light_asset(comp, uni_asset.light_comp_data[ent_comp_indexes.light_index] , true)
+				}
+				case .MeshRenderer: {
+					comp, err := ecs_get_component(&universe.ecs, entity, MeshRendererComponent);
+					engine_assert(comp != nil);
+					engine_assert(ent_comp_indexes.meshren_index > -1)
+
+					meshren_data := uni_asset.meshren_comp_data[ent_comp_indexes.meshren_index];
+
+					num : int = cast(int)meshren_data.num_drawable_assets;
+					offset : int = cast(int)meshren_data.array_offset;
+
+					if num > 0 {
+						comp_meshrenderer_append_drawable_assets(comp, uni_asset.drawable_assets_array[offset:offset+num], build_pipeline_cache = false)
+					}
+				}
+			}
+		}
+
+		// update pipe cache for all drawables at once instead of per drawable asset we add.
+		pipe_manager := engine.pipeline_manager;
+		pipe_manager_update_material_and_depthonly_pipeline_cache_for_universe(pipe_manager, gpu_device, universe);
+	}
+	
+	// Maybe we should do validation that the corresponding entities we just created 
+	// actually have the components but if we wrote the asset file correctly these should
+	// just be correct since we just created entities now, didnt remove any and their
+	// id's should be the same as stored in the universe_asset.
+	if uni_asset.active_camera_entity > -1 {
+		universe.ecs.active_camera_entity.id = cast(i32)uni_asset.active_camera_entity;
+	}
+
+	if uni_asset.active_skybox_entity > -1 {
+		universe.ecs.active_skybox_entity.id = cast(i32)uni_asset.active_skybox_entity;
+		universe.ecs.active_skybox_is_dirty = true;
+	}
 }
 
-@(private="package")
-universe_deinit :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe) {
+universe_deinit :: proc(universe : ^Universe) {
+	
+	gpu_device := get_gpu_device();
+
 	engine_assert(universe != nil);
 
 	ecs_destroy(&universe.ecs);
@@ -119,68 +230,27 @@ universe_deinit :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe) {
 		universe.matrix_transfer_buf = nil;
 	}
 
+	if len(universe.name) > 0 {
+		delete_string(universe.name)
+	}
 
 	light_manager_deinit(gpu_device, &universe.light_manager);
 
 	delete(universe.frame_renderables)
+	delete(universe.frame_camera_visible)
 	delete(universe.frame_opaques); 
 	delete(universe.frame_alpha_test); 
 	delete(universe.frame_alpha_blend);
 }
 
-
-// Set an existing entity with a camera component attached to it as the active camera used for rendering
-universe_set_active_camera_entity :: proc(universe : ^Universe, entity : Entity) -> bool {
-	
-	engine_assert(universe != nil);
-
-	if(!ecs_component_is_attached(&universe.ecs, entity, ComponentType.Camera)) {
-		return false;
+universe_rename :: proc(universe : ^Universe, new_name : string) {
+	if universe == nil {
+		return;
 	}
 
-	universe.ecs.active_camera_entity = entity;
-
-	return true;
-}
-
-universe_has_active_camera :: proc (universe : ^Universe) -> bool {
-
-	return ecs_component_is_attached(&universe.ecs, universe.ecs.active_camera_entity, ComponentType.Camera);
-}
-
-
-// Set an existing entity with a skybox component attached to it as the active skybox used for rendering
-universe_set_active_skybox_entity :: proc(universe : ^Universe, entity : Entity) -> bool {
-	
-	engine_assert(universe != nil);
-
-	if !ecs_component_is_attached(&universe.ecs, entity, ComponentType.Skybox) {
-		return false;
+	if len(universe.name) > 0 {
+		delete(universe.name);
 	}
-
-	universe.ecs.active_skybox_entity = entity;
-	universe.ecs.active_skybox_is_dirty = true;
-
-	return true;
+	universe.name = strings.clone(new_name, context.allocator);
+	asset_manager_update_universe_name(engine.asset_manager, universe.asset_uuid, universe.name);
 }
-
-// returns nill if no active skybox is set
-@(private="package")
-universe_get_active_skybox_component :: proc(universe : ^Universe) -> ^SkyboxComponent {
-
-	if universe.ecs.active_skybox_entity.id >= 0 {
-
-		if ecs_component_is_attached(&universe.ecs, universe.ecs.active_skybox_entity, ComponentType.Skybox) {
-
-			sky_comp , err := ecs_get_component(&universe.ecs, universe.ecs.active_skybox_entity, SkyboxComponent);
-			engine_assert(sky_comp != nil);
-			return sky_comp;
-		}
-	}
-
-	return nil;
-}
-
-
-
-

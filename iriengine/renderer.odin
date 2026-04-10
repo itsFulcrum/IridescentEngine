@@ -53,16 +53,11 @@ RenderContext :: struct {
 
     prim_icosphere  : ^Primitive,
 
-
-
-
     current_frame_size      : [2]u32,
     current_swapchain_size  : [2]u32,
 
     config : RenderConfig,
     effects : RenderEffectsData,
-    
-    debug_config : RenderDebugConfig
 }
 
 
@@ -94,22 +89,6 @@ RenderPassInfo :: struct {
     depth_target_format: DepthStencilFormat,
 }
 
-RenderDebugConfig :: struct  {
-    // TODO: can make this into flags..
-    draw_bounding_box : bool,
-    draw_bounding_box_axis_aligned : bool,
-    draw_camera_frustum_box : bool, // render frustum of a camera as wireframe box if the frustum culling camera was set in universe to not be the main camera
-}
-
-renderer_debug_config_create_default :: proc() -> RenderDebugConfig {
-    return RenderDebugConfig{
-        draw_bounding_box = false,
-        draw_bounding_box_axis_aligned = false,
-        draw_camera_frustum_box = false,
-    }
-}
-
-
 @(private="package")
 renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice) {
 
@@ -117,7 +96,7 @@ renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_devic
     frame_size := ren_ctx.current_frame_size;
 
     // debug gui
-    if(ren_ctx.debug_gui_color_target_tex != nil){
+    if ren_ctx.debug_gui_color_target_tex != nil {
         sdl.ReleaseGPUTexture(gpu_device, ren_ctx.debug_gui_color_target_tex);
         ren_ctx.debug_gui_color_target_tex = nil;
     }
@@ -127,7 +106,7 @@ renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_devic
 
     post_correct_target_format := RenderTargetFormat.RGBA8_SRGB; // Hardcoded, if change here remember to change in init function too.
 
-    if(ren_ctx.post_correct_color_target_tex != nil){
+    if ren_ctx.post_correct_color_target_tex != nil {
         sdl.ReleaseGPUTexture(gpu_device,ren_ctx.post_correct_color_target_tex);
         ren_ctx.post_correct_color_target_tex = nil;
     }
@@ -135,7 +114,7 @@ renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_devic
 
 
     // depth stencil
-    if(ren_ctx.geo_depth_stencil_target_tex != nil){
+    if ren_ctx.geo_depth_stencil_target_tex != nil {
         sdl.ReleaseGPUTexture(gpu_device, ren_ctx.geo_depth_stencil_target_tex);
         ren_ctx.geo_depth_stencil_target_tex = nil;
     }
@@ -143,7 +122,7 @@ renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_devic
     
 
     // min-max depth pyramid
-    if(ren_ctx.min_max_depth != nil){
+    if ren_ctx.min_max_depth != nil {
         sdl.ReleaseGPUTexture(gpu_device, ren_ctx.min_max_depth);
         ren_ctx.min_max_depth = nil;
     }
@@ -171,10 +150,6 @@ renderer_init :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice, wind
 
     // Setup Default Render Config
     ren_ctx.config = renderer_render_config_create_default();
-
-    // debug cofnig
-    ren_ctx.debug_config = renderer_debug_config_create_default();
-
 
     // Setup initial render pass infos, 
     // Doing a for loop + switch here so i get missing switch-case compile error when adding new pass types and forgetting to set it up here.
@@ -355,14 +330,147 @@ renderer_deinit :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice) {
 }
 
 @(private="package")
+renderer_draw_frame_UI_only :: proc(ren_ctx : ^RenderContext, window: ^WindowContext) {
+
+    gpu_device   : ^sdl.GPUDevice   = window.gpu_device;
+    pipe_manager : ^PipelineManager = engine.pipeline_manager;
+
+    cmd_buf := sdl.AcquireGPUCommandBuffer(gpu_device);
+
+    swapchain_texture : ^sdl.GPUTexture;
+    swapchain_tex_size : [2]u32;
+    swapchain_ok := sdl.WaitAndAcquireGPUSwapchainTexture(cmd_buf, window.handle, &swapchain_texture, &swapchain_tex_size.x, &swapchain_tex_size.y);
+
+    if !swapchain_ok || swapchain_texture == nil {
+        
+        // when swapchain fails we submit cmd buffer imidiatly and exit.
+
+        log.errorf("failed to aquire swapchain texture: {}", sdl.GetError());
+        submited_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
+        return;
+    }
+
+    if swapchain_tex_size != ren_ctx.current_swapchain_size {
+
+        // unfortunatly updated size will happen one frame late because we already submitted the upload command buffer
+        engine_assert(swapchain_tex_size.x > 0 && swapchain_tex_size.y > 0);
+
+        ren_ctx.current_swapchain_size = swapchain_tex_size;
+        ren_ctx.current_frame_size = renderer_calculate_frame_size_from_swapchain_size(swapchain_tex_size, ren_ctx.config.render_resolution);
+        renderer_recreate_all_render_targets(ren_ctx, gpu_device);
+    }
+
+
+    // UI (DearImgui) RENDER PASS
+    {
+        
+        if debug_gui_is_enabled() {
+            
+            debug_gui_prepare_and_upload_draw_data(cmd_buf);
+
+            renderer_push_debug_group(cmd_buf, "Debug GUI Pass");
+            defer renderer_pop_debug_group(cmd_buf);
+
+            ui_color_target := sdl.GPUColorTargetInfo {
+                texture = ren_ctx.debug_gui_color_target_tex,
+                clear_color = sdl.FColor{0,0,0,0},
+                load_op  = sdl.GPULoadOp.CLEAR,
+                store_op = sdl.GPUStoreOp.STORE,
+                cycle = true,
+            }
+
+            debug_gui_render_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, &ui_color_target, 1, nil);
+
+            debug_gui_draw_frame(cmd_buf, debug_gui_render_pass, pipe_manager_get_core_pipeline(pipe_manager, .DearImGUI));
+
+            sdl.EndGPURenderPass(debug_gui_render_pass);
+        }
+    }
+
+    // Clear scene render target
+    {
+        renderer_push_debug_group(cmd_buf, "Clear Scene Render Texture");
+        defer renderer_pop_debug_group(cmd_buf);
+
+        color_target := sdl.GPUColorTargetInfo {
+                texture = ren_ctx.post_correct_color_target_tex,
+                clear_color = sdl.FColor{0.02,0.02,0.02, 1},
+                load_op  = sdl.GPULoadOp.CLEAR,
+                store_op = sdl.GPUStoreOp.STORE,
+                cycle = true,
+        }
+
+        clear_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target,1,nil);
+        
+        sdl.EndGPURenderPass(clear_pass);
+    }
+
+    // FINAL COMPOSIT INTO SWAPCHAIN
+    {
+        renderer_push_debug_group(cmd_buf, "Swapchain Composit Pass");
+        defer renderer_pop_debug_group(cmd_buf);
+
+        swapchain_target := sdl.GPUColorTargetInfo {
+            texture = swapchain_texture,
+            clear_color = sdl.FColor{1,0,1,1},
+            load_op  = sdl.GPULoadOp.CLEAR,
+            store_op = sdl.GPUStoreOp.STORE,
+            cycle = true,
+        }
+
+        swapchain_blit_pass := sdl.BeginGPURenderPass(cmd_buf, &swapchain_target,1, nil);
+        
+        sdl.BindGPUGraphicsPipeline(swapchain_blit_pass, pipe_manager_get_core_pipeline(pipe_manager, .SWAPCHAIN_COMPOSIT));
+
+        post_correct_tex_sampler_binding := sdl.GPUTextureSamplerBinding {
+            texture = ren_ctx.post_correct_color_target_tex,
+            sampler = ren_ctx.post_correct_color_target_sampler, // its just s standart sampler..
+        }
+
+        debug_gui_tex_sampler_binding := sdl.GPUTextureSamplerBinding {
+            texture = ren_ctx.debug_gui_color_target_tex,
+            sampler = ren_ctx.debug_gui_color_target_sampler,
+        }
+
+        sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 0, &post_correct_tex_sampler_binding, 1);
+        sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 1, &debug_gui_tex_sampler_binding, 1);
+        
+        SwapchainCompositUBO :: struct {
+            convert_to_srgb : u32,
+            convert_scene_tex_to_linear_on_load : u32,
+            padding1 : u32,
+            padding2 : u32,
+        }
+
+        swap_composit_ubo := SwapchainCompositUBO {
+            convert_to_srgb = window.swapchain_settings.color_space == SwapchainColorSpace.Srgb ? 1 : 0,
+            convert_scene_tex_to_linear_on_load = 0, // used only when smaa is enabled..
+        }
+
+
+        sdl.PushGPUFragmentUniformData(cmd_buf,0, &swap_composit_ubo, size_of(SwapchainCompositUBO));
+
+        // Draw 6 verts aka 2 triangles aka 1 screenquad
+        sdl.DrawGPUPrimitives(swapchain_blit_pass, 6, 1, 0,0);
+
+        sdl.EndGPURenderPass(swapchain_blit_pass);
+    }
+
+    submit_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
+    engine_assert(submit_ok);
+
+}
+
+@(private="package")
 renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, universe : ^Universe) {
 
     mesh_manager := engine.mesh_manager;
-    gpu_device: ^sdl.GPUDevice = window.gpu_device;
+    material_manager := engine.material_manager;
     pipe_manager : ^PipelineManager = engine.pipeline_manager;
+    gpu_device: ^sdl.GPUDevice = window.gpu_device;
 
     // Get a refrence to the ecs
-    ecs : ^EntityComponentData = &universe.ecs;
+    ecs : ^ECData = &universe.ecs;
 
     frame_size : [2]u32 = ren_ctx.current_frame_size;
     frame_aspect_ratio : f32 = cast(f32)frame_size.x / cast(f32)frame_size.y;
@@ -376,7 +484,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
     ren_ctx.global_fragment_buffer.camera_pos_ws = camera_info.position_ws;
     ren_ctx.global_fragment_buffer.camera_dir_ws = camera_info.direction_ws;
-    //ren_ctx.global_fragment_buffer.inv_view_proj_mat  = camera_info.inv_view_proj_mat;
 
     ren_ctx.global_fragment_buffer.time_seconds = clock_get_elapsed_time();
     ren_ctx.global_fragment_buffer.frame_size = frame_size;
@@ -389,15 +496,14 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     ren_ctx.global_fragment_buffer.cascade_frust_split_3 = universe.shadow_cascade_split_3;
     ren_ctx.global_fragment_buffer.camera_exposure = camera_info.camera_exposure;
 
-    // reset debug counters
-    // ren_ctx.debug_counters = RenderDebugCounters{};
 
-    debug_config := &ren_ctx.debug_config;
     perfs := get_performance_counters();
 
     // ============================================================================================================
     // COPY DATA PASS
     // ============================================================================================================
+    // @Note: We want to perform data uploads as early in the frame as possible.
+    // So all major data upload happen here in a seperate cmd buffer that we submit before recording frame rendering cmds.
     {
 
         upload_cmd_buf := sdl.AcquireGPUCommandBuffer(gpu_device);    
@@ -408,14 +514,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         // Query Data uploads and perform transfer buffer updates
         // ============================================================================================================
         
-        mats_requires_upload_unlit, mats_transfer_buf_loc_unlit, mats_buf_region_unlit := material_register_query_material_upload_for_type(gpu_device, MaterialShaderType.UNLIT);
-        mats_requires_upload_pbr  , mats_transfer_buf_loc_pbr  , mats_buf_region_pbr   := material_register_query_material_upload_for_type(gpu_device, MaterialShaderType.PBR);
         skybox_requires_upload, skybox_transfer_buf_loc, skybox_buf_region := universe_query_skybox_buffer_upload(gpu_device, universe);
 
-        // NOTE: We want to perform data uploads as early in the frame as possible.
         copy_pass :  ^sdl.GPUCopyPass = sdl.BeginGPUCopyPass(upload_cmd_buf);
-
-
 
         // Global Fragment Buffer
         {
@@ -441,11 +542,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
 
         // Matrix buffer
-
         if universe.matrix_upload_info.requires_upload {
             sdl.UploadToGPUBuffer(copy_pass, universe.matrix_upload_info.transfer_buf_location, universe.matrix_upload_info.transfer_buf_region, cycle = false);
         }
-
 
         // light buffers
         {
@@ -454,7 +553,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             dir_shadowmap_upload_info := light_manager.gpu_dir_lights_shadowmap_infos_upload_info;
             shadowmap_upload_info := light_manager.gpu_shadowmap_infos_upload_info;
 
-            if(lights_upload_info.requires_upload) {                
+            if lights_upload_info.requires_upload {                
                 //log.debugf("Upload to lights buffer");
                 sdl.UploadToGPUBuffer(copy_pass, lights_upload_info.transfer_buf_location, lights_upload_info.transfer_buf_region, false);
             }
@@ -473,13 +572,17 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             }
         }
 
-        // Upload changed material data
-        if mats_requires_upload_unlit {
-            sdl.UploadToGPUBuffer(copy_pass, mats_transfer_buf_loc_unlit, mats_buf_region_unlit, false);
-        }
-
-        if mats_requires_upload_pbr {
-            sdl.UploadToGPUBuffer(copy_pass, mats_transfer_buf_loc_pbr, mats_buf_region_pbr, false);
+        {
+            // Upload changed material datam
+            
+            for &upload_info in material_manager.frame_upload_info {
+                if upload_info.requires_upload {
+                    sdl.UploadToGPUBuffer(copy_pass, upload_info.transfer_buf_location, upload_info.transfer_buf_region, false);
+                    // this is important. if we dont set it to false here material buffer update will keep this true
+                    // because it will think that the uplaod hasn't happend yet.
+                    upload_info.requires_upload = false; 
+                } 
+            }
         }
 
         if skybox_requires_upload {
@@ -487,7 +590,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
 
         sdl.EndGPUCopyPass(copy_pass);
-
 
         // @Note: Imgui has its own copy pass but we still want to perform our data upload early in the frame.
         if debug_gui_is_enabled() {
@@ -503,7 +605,10 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
 
     cmd_buf := sdl.AcquireGPUCommandBuffer(gpu_device);    
-    engine_assert(cmd_buf != nil);
+    if cmd_buf == nil {
+        return; // skip frame
+    }
+
 
     swapchain_texture : ^sdl.GPUTexture;
     swapchain_tex_size : [2]u32;
@@ -512,6 +617,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     // just wait and dont do any rendering, its likely that the window was just minimized
     if !swapchain_ok || swapchain_texture == nil {
         log.errorf("Renderer failed to aquire swapchain texture: {}", sdl.GetError());
+        // submit cmd buffer imidiatly and skip frame.
+        submited_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
+        engine_assert(submited_ok);
         return;
     }
 
@@ -543,10 +651,10 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         // Draw all opaque geometry
         for drawable_index in drawable_index_array {
             
-            mesh_id := universe.ecs.drawables[drawable_index].mesh_instance.mesh_id;
-            mat_id  := universe.ecs.drawables[drawable_index].mesh_instance.mat_id;
+            mesh_id := universe.ecs.drawables[drawable_index].draw_instance.mesh_id;
+            mat_id  := universe.ecs.drawables[drawable_index].draw_instance.mat_id;
 
-            technique_hash := material_register_get_render_technique_hash(mat_id);
+            technique_hash := material_manager_get_render_technique_hash_unsafe(engine.material_manager,mat_id);
 
             pipeline_variant := pipe_manager_get_depthonly_pipeline_variant(pipe_manager, depthonly_shader_type, technique_hash);
             engine_assert(pipeline_variant != nil);
@@ -575,7 +683,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     }
 
     // Idk not ideal ?
-    any_draws_exist : bool = len(universe.ecs.drawables) > 0 ;
+    any_draws_exist : bool = len(universe.frame_renderables) > 0 ;
 
     // ============================================================================================================
     //                                      DEPTH PRE PASS
@@ -869,19 +977,24 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
     // TODO maybe move ligth pass after depth pre and ao so while ao is doing compute workload, 
     // gemetry gpu parts can do depht buffer stuff.
-    {   
+    shadowmaps: {   
+        
         light_manager : ^LightManager = &universe.light_manager;
         
         draw_calls : u32 = 0;
         num_rendered_shadowmaps : u32 = 0;
         num_pipe_switches : u32 = 0;
 
-        timer := timer_begin();
+        shadowmap_timer := timer_begin();
         defer {            
-            perfs.shadowmap_pass_cpu_ms = timer_end_get_miliseconds(timer);
+            perfs.shadowmap_pass_cpu_ms = timer_end_get_miliseconds(shadowmap_timer);
             perfs.shadowmap_pass_drawcalls = draw_calls;
             perfs.shadowmap_pass_num_rendered_shadowmaps = num_rendered_shadowmaps;
             perfs.shadowmap_pass_num_pipeline_switches = num_pipe_switches;
+        }
+
+        if !any_draws_exist {
+            break shadowmaps;
         }
         
         if len(light_manager.gpu_shadowmap_infos) > 0 {
@@ -932,25 +1045,30 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
                 
                 last_shadow_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
 
-                for drawable_index in 0..<len(ecs.drawables) {
+                for drawable_index in universe.frame_renderables {
 
-                    mesh_id := ecs.drawables[drawable_index].mesh_instance.mesh_id;
-                    mat_id := ecs.drawables[drawable_index].mesh_instance.mat_id;
+                    if .CastShadows not_in ecs.drawables[drawable_index].draw_instance.flags {
+                        continue;
+                    }
 
-                    mat  := register_get_material(mat_id);
+                    mesh_id := ecs.drawables[drawable_index].draw_instance.mesh_id;
+                    mat_id  := ecs.drawables[drawable_index].draw_instance.mat_id;
+
+                    // @Note we cant use unsafe here yet
+                    mat  := material_get_by_id(mat_id);
 
                     if mat.render_technique.alpha_mode == .Blend {
                         continue;
                     }
 
                     if universe.cull_shadow_draws {
-                        render_draw : bool = test_shadow_draw(sinfo.view_proj, ecs.drawables[drawable_index].world_obb, sinfo.resolution)
+                        render_draw : bool = test_shadow_draw(sinfo.view_proj, ecs.drawables[drawable_index].world_oobb, sinfo.resolution)
                         if !render_draw {
                             continue;
                         }
                     }
 
-                    technique_hash := material_register_get_render_technique_hash(mat_id);
+                    technique_hash := material_manager_get_render_technique_hash_unsafe(material_manager, mat_id);
 
                     pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
 
@@ -1000,10 +1118,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         forward_pipe_switches : u32 = 0;
         forward_pass_timer := timer_begin();
 
-
         color_target := sdl.GPUColorTargetInfo {
             texture = ren_ctx.geo_color_target_tex,
-            clear_color = sdl.FColor{0.4,0,0,1},
+            clear_color = sdl.FColor{1,0,0,1},
             load_op = sdl.GPULoadOp.CLEAR,
             store_op = .STORE,
 
@@ -1031,8 +1148,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         // Push global data for all pipline in this render pass
         sdl.PushGPUVertexUniformData(cmd_buf, 0, &ren_ctx.global_vertex_ubo, size_of(GlobalVertexUBO));
         
+
         sky_gpu_buffer := universe.skybox_gpu_buffer;
-        sky_comp := universe_get_active_skybox_component(universe);
+        sky_comp := ecs_get_active_skybox_component(ecs);
 
 
         sky_cubemap_binding : ^sdl.GPUTextureSamplerBinding = &ren_ctx.dummy_cubemap.binding;    
@@ -1046,9 +1164,15 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         // SKYBOX BUFFER SLOT 1
         sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &sky_gpu_buffer, 1);
 
-        //Skybox Pass
+        // === Skybox Pass
         // The skybox pass must happen before alpha blended materials.
+        // Since we already have a depth prepass, doing it as the first draw 
+        // should be just fine.
         {
+            
+            renderer_push_debug_group(cmd_buf, "Skybox Pass");
+            defer renderer_pop_debug_group(cmd_buf);
+            
             pipeline_skybox := pipe_manager_get_core_pipeline(pipe_manager, .Skybox);
             sdl.BindGPUGraphicsPipeline(render_pass, pipeline_skybox);
 
@@ -1065,12 +1189,14 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             sdl.DrawGPUPrimitives(render_pass, ren_ctx.prim_icosphere.num_vertecies , 1, 0, 0);
         }
 
-
         bind_unlit_material_resources :: proc(render_pass : ^sdl.GPURenderPass){
 
-            unlit_mat_storage_buffer := material_register_get_gpu_buffer_for_type(.UNLIT);
+            unlit_mat_storage_buffer := engine.material_manager.gpu_mat_buf[.Unlit];
+
+            // @Note: im still not sure if we need to bind this here. i think only once should be fine since it stays at the first slot.
+            sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &engine.render_context.global_fragment_gpu_buffer, 1);
             
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &unlit_mat_storage_buffer, 1);
+            sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &unlit_mat_storage_buffer, 1);
         }
 
         bind_pbr_material_resources :: proc(ren_ctx : ^RenderContext, render_pass : ^sdl.GPURenderPass, universe : ^Universe, ao_sampler_binding : ^sdl.GPUTextureSamplerBinding, sky_cubemap_binding : ^sdl.GPUTextureSamplerBinding) {
@@ -1096,7 +1222,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &universe.skybox_gpu_buffer, 1);
 
             // PBR material buffer
-            pbr_mat_storage_buffer := material_register_get_gpu_buffer_for_type(.PBR);
+            pbr_mat_storage_buffer := engine.material_manager.gpu_mat_buf[.Pbr];
             sdl.BindGPUFragmentStorageBuffers(render_pass, 2, &pbr_mat_storage_buffer, 1);
 
             // lights
@@ -1105,33 +1231,30 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
 
         draw_drawable_index_array :: proc(ren_ctx : ^RenderContext, 
-                                        cmd_buf : ^sdl.GPUCommandBuffer, 
-                                        render_pass : ^sdl.GPURenderPass, 
-                                        mesh_manager : ^MeshManager, 
-                                        pipe_manager : ^PipelineManager, 
+                                        cmd_buf             : ^sdl.GPUCommandBuffer, 
+                                        render_pass         : ^sdl.GPURenderPass, 
+                                        mesh_manager        : ^MeshManager, 
+                                        pipe_manager        : ^PipelineManager, 
+                                        material_manager    : ^MaterialManager, 
                                         drawables_index_array : ^[dynamic]u32, 
                                         universe : ^Universe, 
                                         ao_sampler_binding : ^sdl.GPUTextureSamplerBinding, 
                                         sky_cubemap_binding : ^sdl.GPUTextureSamplerBinding) ->(draw_calls : u32, pipeline_switches : u32) {
 
             last_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
-            last_material_shader_type : MaterialShaderType = .NONE; 
+            last_material_shader_type : MaterialShaderType = .None; 
 
             for drawable_index in drawables_index_array {
 
-                    mesh_id := universe.ecs.drawables[drawable_index].mesh_instance.mesh_id;
-                    mat_id  := universe.ecs.drawables[drawable_index].mesh_instance.mat_id;
+                    mesh_id := universe.ecs.drawables[drawable_index].draw_instance.mesh_id;
+                    mat_id  := universe.ecs.drawables[drawable_index].draw_instance.mat_id;
                     
-
-                    material := register_get_material(mat_id);
-                    mat_shader_type := register_get_material_shader_type(mat_id);
-
+                    mat_shader_type := material_manager_get_material_shader_type_unsafe(material_manager, mat_id);
 
                     mesh_gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id);
                     vert_layout   := mesh_gpu_data.vertex_layout;
 
-
-                    pipeline_variant := pipe_manager_get_material_pipeline_variant(pipe_manager, mat_id, vert_layout);
+                    pipeline_variant := pipe_manager_get_material_pipeline_variant(pipe_manager, material_manager, mat_id, vert_layout);
 
                     if pipeline_variant != last_pipeline_variant {
 
@@ -1143,10 +1266,10 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
                         if mat_shader_type != last_material_shader_type {
 
                             switch mat_shader_type {
-                                case .NONE:
-                                case .PBR:   bind_pbr_material_resources(ren_ctx, render_pass, universe, ao_sampler_binding, sky_cubemap_binding);
-                                case .UNLIT: bind_unlit_material_resources(render_pass);
-                                case .CUSTOM:
+                                case .None:
+                                case .Pbr:   bind_pbr_material_resources(ren_ctx, render_pass, universe, ao_sampler_binding, sky_cubemap_binding);
+                                case .Unlit: bind_unlit_material_resources(render_pass);
+                                case .Custom:
                             }
 
                             last_material_shader_type = last_material_shader_type;
@@ -1171,43 +1294,26 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
                     
                     // @Note:
-                    // this part must adapt to which shader model is in use. 
-                    // we can stick to just pushing an ID for lookup for engine shaders but still we must query the id based
-                    // on shader type atm.
-                    // for custom shaders we would instead need to bind a buffer which we will need to get from somewhere
-                    // it would probably be stored in a shader component of an entity.
-                    // however we might want to iterate custom shaders seperatly ??
-                    // fragment data
-                    switch &mat_variant in material.variant {
-                        case PbrMaterialData: {
+                    // This part must adapt to which shader is in used.
+                    // mainly because for custom shaders we probably will need to bind material specific buffers.
+                    // for engine materials that are registered with the material manager we can stick to the gpu index
+                    // into the respective material type gpu buffer.
 
-                            //sdl.PushGPUVertexUniformData(cmd_buf, 1, &mesh_vertex_ubo, size_of(MeshVertexUBO) );
+                    frag_mat_ubo: MatUBO = MatUBO{
+                        mat_index = cast(u32)material_manager.material_gpu_indexes[mat_id],
+                    };
 
-                            material_gpu_index: i32 = material_register_get_gpu_array_index_for_type(MaterialShaderType.PBR, mat_id);
-                            
-                            frag_mat_ubo: MatUBO = MatUBO{
-                                mat_index = cast(u32)material_gpu_index,
-                            };
 
-                            sdl.PushGPUFragmentUniformData(cmd_buf, 0, &frag_mat_ubo, size_of(MatUBO));
-
-                        }
-                        case UnlitMaterialData: {
-                            
-                            //sdl.PushGPUVertexUniformData(cmd_buf, 1, &mesh_vertex_ubo, size_of(MeshVertexUBO) );
-
-                            material_gpu_index: i32 = material_register_get_gpu_array_index_for_type(MaterialShaderType.UNLIT, mat_id);
-                            frag_mat_ubo: MatUBO = MatUBO{
-                                mat_index = cast(u32)material_gpu_index,
-                            };
-
+                    switch mat_shader_type {
+                        case .None:
+                        case .Pbr:   sdl.PushGPUFragmentUniformData(cmd_buf, 0, &frag_mat_ubo, size_of(MatUBO));
+                        case .Unlit: {
+                            //unlit := engine.material_manager.unlit_materials_gpu[frag_mat_ubo.mat_index];
                             sdl.PushGPUFragmentUniformData(cmd_buf, 0, &frag_mat_ubo, size_of(MatUBO));
                         }
-                        case CustomMaterialVariant: {
+                        case .Custom: {
                             unimplemented();
                         }
-
-
                     }
 
                     draw_calls += 1;
@@ -1217,177 +1323,62 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             return draw_calls, pipeline_switches;
         }
         
+        // === MAIN DRAW CALLS ====
         if any_draws_exist {
 
             // @Note: if no draws exist, matrix buffer will be nill
             sdl.BindGPUVertexStorageBuffers(render_pass, 0, &universe.matrix_buf, 1);
 
-            draws, switches := draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_opaques    , universe, &ao_sampler_binding, sky_cubemap_binding);
-            forward_draw_calls += draws;
-            forward_pipe_switches += switches;
-
-            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_alpha_test , universe, &ao_sampler_binding, sky_cubemap_binding);
+            // OPAQUES
+            draws, switches := draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, material_manager, &universe.frame_opaques    , universe, &ao_sampler_binding, sky_cubemap_binding);
             forward_draw_calls += draws;
             forward_pipe_switches += switches;
             
-            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, &universe.frame_alpha_blend, universe, &ao_sampler_binding, sky_cubemap_binding);
+            // ALPHA TESTED
+            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, material_manager, &universe.frame_alpha_test , universe, &ao_sampler_binding, sky_cubemap_binding);
+            forward_draw_calls += draws;
+            forward_pipe_switches += switches;
+            
+            // ALPHA BLENDING
+            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, material_manager, &universe.frame_alpha_blend, universe, &ao_sampler_binding, sky_cubemap_binding);
             forward_draw_calls += draws;
             forward_pipe_switches += switches;
         }
 
-        draw_debug_lights_vis :: true
+        // EXECUTE DEBUG DRAW COMMANDS
+        DO_DEBUG_DISPLAY :: true
+        if engine.debug_draw_manager.is_enabled {
+            line_cube_pipe   := pipe_manager_get_core_pipeline(pipe_manager, .LINE_CUBE);
+            line_line_pipe   := pipe_manager_get_core_pipeline(pipe_manager, .LINE_LINE);
+            line_circle_pipe := pipe_manager_get_core_pipeline(pipe_manager, .LINE_CIRCLE);
 
-        when draw_debug_lights_vis {
+            last_pipe : ^sdl.GPUGraphicsPipeline = nil;
 
-            // Draw lights as solid meshes..
-            if(len(ecs.light_components) > 0) {
-
-                pipe_solid_cube := pipe_manager_get_core_pipeline(pipe_manager, .SOLID_CUBE);
-                sdl.BindGPUGraphicsPipeline(render_pass, pipe_solid_cube);
-
-
-                for &light_comp in ecs.light_components {
-
-                    transform := ecs_get_transform(ecs, light_comp.entity);
-
-                    transform_mod := transform^;
-
-                    light_type := comp_light_get_type(&light_comp);
-                    switch light_type {
-                        case .DIRECTIONAL:  transform_mod.scale = {0.25, 0.25, 3.0};
-                        case .POINT:        transform_mod.scale = {0.10, 0.10, 0.10};
-                        case .SPOT:         transform_mod.scale = {0.25, 0.25, 3.0};
-                    }
-
-                    color: [4]f32 = {light_comp.color.r , light_comp.color.g, light_comp.color.b, 1.0} * light_comp.strength;
-                    sdl.PushGPUFragmentUniformData(cmd_buf, 0, &color , size_of([4]f32));
-
-                    mat := calc_transform_matrix(transform_mod);
-
-                    renderer_DRAW_CALL_draw_unit_cube(cmd_buf, render_pass, mat);
-                }
-            }
-
-            light_manager := &universe.light_manager;
-
-            wire_cube_pipe := pipe_manager_get_core_pipeline(pipe_manager, .WIREFRAME_CUBE);
-            sdl.BindGPUGraphicsPipeline(render_pass, wire_cube_pipe);
-            wire_color : [4]f32 = {0.0,0.0,0.0,1.0} // black
-
-            sdl.PushGPUFragmentUniformData(cmd_buf, 0, &wire_color , size_of([4]f32));
-
-            for &light_comp, comp_index in ecs.light_components {
-
-                transform := ecs_get_transform(ecs, light_comp.entity);
-
-                switch &variant in light_comp.variant {
-
-                    case DirectionalLightVariant:
-                    case PointLightVariant:
-                    {
-                        if !variant.draw_cone do continue;
-                        gpu_index := light_manager.gpu_lights_indexes[comp_index];
-                        gpu_light := &light_manager.gpu_lights[gpu_index];
-
-                        if gpu_light.shadowmap_index <= -1 do continue;
-
-                        if variant.draw_cone_index < 0 || variant.draw_cone_index > 5 { // DRAW ALL OF THEM
-
-                            for i in 0..<6{
-                                shadow_info := &light_manager.gpu_shadowmap_infos[gpu_light.shadowmap_index + cast(i32)i];
-                                mat := linalg.inverse(shadow_info.view_proj);
-                                renderer_DRAW_CALL_draw_unit_cube(cmd_buf, render_pass, mat);
-                            }
-
-                        } else { // only draw the specified index
-
-                            shadow_info := &light_manager.gpu_shadowmap_infos[gpu_light.shadowmap_index + variant.draw_cone_index];
-                            mat := linalg.inverse(shadow_info.view_proj);
-                            renderer_DRAW_CALL_draw_unit_cube(cmd_buf, render_pass, mat);
-                        }
-
-                    }
-                    case SpotLightVariant:
-                    {
-                        if !variant.draw_cone do continue;
-
-                        gpu_index := light_manager.gpu_lights_indexes[comp_index];
-                        gpu_light := &light_manager.gpu_lights[gpu_index];
-
-                        if gpu_light.shadowmap_index <= -1 do continue;
-
-                        shadow_info := &light_manager.gpu_shadowmap_infos[gpu_light.shadowmap_index];
-
-                        mat := linalg.inverse(shadow_info.view_proj);
-                        renderer_DRAW_CALL_draw_unit_cube(cmd_buf, render_pass, mat);
-                    }
-
-                }
-            }
-        }
-
-
-        // AABB WIREFRAME
-
-        // @Note maybe expose this as debug config setting
-        render_view_frustum_box : bool = ren_ctx.debug_config.draw_camera_frustum_box && universe.frustum_cull_camera_entity.id >= 0 ? true : false; 
-
-        if ren_ctx.debug_config.draw_bounding_box || ren_ctx.debug_config.draw_bounding_box_axis_aligned || render_view_frustum_box {
-
-            pipeline_wire_cube := pipe_manager_get_core_pipeline(pipe_manager, .WIREFRAME_CUBE);
-
-            sdl.BindGPUGraphicsPipeline(render_pass, pipeline_wire_cube);
-
-
-            // Render view frustum in ws
-            if(render_view_frustum_box){
+            for &debug_cmd, cmd_index in engine.debug_draw_manager.commands {
                 
-                wire_color: [4]f32 = {1.0,1.0,0.0,1.0}; // yellow
-                sdl.PushGPUFragmentUniformData(cmd_buf,0, &wire_color , size_of([4]f32));
-
-                // using the inv_view_proj matrix of the frustum camera we can transform a unit cube into world space
-                // which will then be rendered from the point of view of the rendering camera.
-                model_mat := linalg.matrix4_inverse(camera_info.frustum_proj_mat * camera_info.frustum_view_mat);
-
-                renderer_DRAW_CALL_draw_unit_cube(cmd_buf, render_pass, model_mat);
-            }
-
-            // Draw aabbs but as object-aligned bounding box by just transforming with tranform mat.
-            if(ren_ctx.debug_config.draw_bounding_box) {
-            //when false {
-                
-                wire_color: [4]f32 = {0.0,0.0,1.0,1.0};
-                sdl.PushGPUFragmentUniformData(cmd_buf,0, &wire_color , size_of([4]f32));
-
-                for drawable_index in universe.frame_renderables {
-
-                    mesh_id := ecs.drawables[drawable_index].mesh_instance.mesh_id;
-
-                    aabb := mesh_manager_get_aabb(mesh_manager, mesh_id);
-
-                    // Note maybe can construct transform mat directly from obb stored in drawable ??
-                    model_mat := ecs.drawables.world_mat[drawable_index] * aabb_get_transform_matrix(aabb)
-
-                    renderer_DRAW_CALL_draw_unit_cube(cmd_buf,render_pass, model_mat);
+                curr_pipe : ^sdl.GPUGraphicsPipeline = nil; 
+                #partial switch debug_cmd.type {
+                    case .Box:      curr_pipe = line_cube_pipe;
+                    case .Circle:   curr_pipe = line_circle_pipe;
+                    case .Line:     curr_pipe = line_line_pipe;
+                    //case .Sphere:   continue; // sphere draws are currently drawnn as 3 circle draws
                 }
-            }  
+                if curr_pipe != last_pipe{
+                    last_pipe = curr_pipe;
+                    sdl.BindGPUGraphicsPipeline(render_pass, curr_pipe);
+                }
+                
+                sdl.PushGPUFragmentUniformData(cmd_buf, 0, &debug_cmd.color , size_of(debug_cmd.color));
+                
+                sdl.PushGPUVertexUniformData(cmd_buf, 1, &debug_cmd.mat, size_of(debug_cmd.mat));
 
-            if(ren_ctx.debug_config.draw_bounding_box_axis_aligned) {
-            
-                // draw propper AABBS
-                wire_color: [4]f32 = {1.0,0.0,0.0,1.0};
-                sdl.PushGPUFragmentUniformData(cmd_buf,0, &wire_color , size_of([4]f32));
-
-                for drawable_index in universe.frame_renderables {
-
-                    mesh_id : MeshID = ecs.drawables[drawable_index].mesh_instance.mesh_id;
-
-                    aabb := mesh_manager_get_aabb(mesh_manager, mesh_id);
-
-                    // Note maybe can construct transform mat directly from obb stored in drawable ??
-                    model_mat := aabb_transform_by_mat4_and_get_tranform_mat(aabb, ecs.drawables.world_mat[drawable_index]);
-
-                    renderer_DRAW_CALL_draw_unit_cube(cmd_buf,render_pass, model_mat);
+                #partial switch debug_cmd.type {
+                    case .Box:      sdl.DrawGPUPrimitives(render_pass, 24, 1, 0, 0);
+                    case .Circle:   sdl.DrawGPUPrimitives(render_pass, 33, 1, 0, 0); // 33 verts is correct
+                    case .Line: {
+                        verts : u32 = debug_cmd.mat[3][3] > 3.0 ? 4 : 2;
+                        sdl.DrawGPUPrimitives(render_pass,  verts, 1, 0, 0);
+                    }
                 }
             }
         }
@@ -1589,27 +1580,28 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
     }
 
-
-
     // UI (DearImgui) RENDER PASS
-    if debug_gui_is_enabled() {
+    {
 
-        renderer_push_debug_group(cmd_buf, "Debug GUI Pass");
-        defer renderer_pop_debug_group(cmd_buf);
+        if debug_gui_is_enabled() {
 
-        ui_color_target := sdl.GPUColorTargetInfo {
-            texture = ren_ctx.debug_gui_color_target_tex,
-            clear_color = sdl.FColor{0,0,0,0},
-            load_op  = sdl.GPULoadOp.CLEAR,
-            store_op = sdl.GPUStoreOp.STORE,
-            cycle = true,
+            renderer_push_debug_group(cmd_buf, "Debug GUI Pass");
+            defer renderer_pop_debug_group(cmd_buf);
+
+            ui_color_target := sdl.GPUColorTargetInfo {
+                texture = ren_ctx.debug_gui_color_target_tex,
+                clear_color = sdl.FColor{0,0,0,0},
+                load_op  = sdl.GPULoadOp.CLEAR,
+                store_op = sdl.GPUStoreOp.STORE,
+                cycle = true,
+            }
+
+            debug_gui_render_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, &ui_color_target, 1, nil);
+
+            debug_gui_draw_frame(cmd_buf, debug_gui_render_pass, pipe_manager_get_core_pipeline(pipe_manager, .DearImGUI));
+
+            sdl.EndGPURenderPass(debug_gui_render_pass);
         }
-
-        debug_gui_render_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, &ui_color_target, 1, nil);
-
-        debug_gui_draw_frame(cmd_buf, debug_gui_render_pass, pipe_manager_get_core_pipeline(pipe_manager, .DearImGUI));
-
-        sdl.EndGPURenderPass(debug_gui_render_pass);
     }
 
 
@@ -1620,13 +1612,14 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
         swapchain_target := sdl.GPUColorTargetInfo {
                 texture = swapchain_texture,
-                // clear_color = sdl.FColor{0,0,0,1},
-                load_op  = sdl.GPULoadOp.DONT_CARE,
+                clear_color = sdl.FColor{1,0,1,1},
+                load_op  = sdl.GPULoadOp.CLEAR,
                 store_op = sdl.GPUStoreOp.STORE,
-                cycle = false,
+                cycle = true,
         }
 
         swapchain_blit_pass := sdl.BeginGPURenderPass(cmd_buf, &swapchain_target,1, nil);
+        
         sdl.BindGPUGraphicsPipeline(swapchain_blit_pass, pipe_manager_get_core_pipeline(pipe_manager, .SWAPCHAIN_COMPOSIT));
 
 
@@ -1666,8 +1659,12 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         sdl.EndGPURenderPass(swapchain_blit_pass);
     }
 
+    
     submit_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
     engine_assert(submit_ok);
+    //log.debugf("Submitted")
+    
+
 }
 
 

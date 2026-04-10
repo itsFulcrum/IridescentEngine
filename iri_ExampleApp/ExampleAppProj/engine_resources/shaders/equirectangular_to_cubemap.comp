@@ -1,0 +1,229 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+precision highp float;
+precision highp sampler2D;
+
+
+layout(set=0, binding = 0) uniform sampler2D _equirectangular_tex; 
+
+
+layout(rgba32f, set=1, binding = 0) uniform writeonly image2D _dst_img;
+
+
+layout(set=2, binding=0) uniform ubo {
+    uint _cube_face_resolution; // in x and y
+    uint _current_cube_face;
+    uint _mode;
+    float _roughness;
+};
+
+
+#define PI 3.14159265359f
+#define ONE_OVER_PI 0.31830988618f
+
+vec3 oct_decode(vec2 f) {
+    f = f * 2.0f - 1.0f; // map from 0..1 to -1..1 range 
+    // https://twitter.com/Stubbesaurus/status/937994790553227264
+    vec3 n = vec3( f.x, f.y, 1.0f - abs( f.x ) - abs( f.y ) );
+    float t = max( -n.z, 0.0f );
+    n.x += n.x >= 0.0f ? -t : t;
+    n.y += n.y >= 0.0f ? -t : t;
+    return normalize(n);
+}
+
+vec3 uv_to_xyz(uint face, vec2 uv) {
+    // the minus is there because oterwise skyboxes are inverted
+    if(face == 0){
+        return -vec3(     1.0f,   uv.y,    -uv.x);    
+    } 
+    else if(face == 1) {
+        return -vec3(    -1.0f,   uv.y,     uv.x);    
+    } 
+    else if(face == 2){
+        return -vec3(   +uv.x,   -1.0f,    +uv.y);
+    }
+    else if(face == 3){
+        return -vec3(   +uv.x,    1.0f,    -uv.y);
+    }
+    else if(face == 4){
+        return -vec3(   +uv.x,   uv.y,      1.0f);
+    }
+    else  {   
+        return -vec3(    -uv.x,  +uv.y,     -1.0f);
+    }
+}
+
+// 3D direction to equirectangular mapping uv coordinates
+vec2 dir_to_equirectangular_uv(vec3 dir) {
+    return vec2( 0.5f + 0.5f * atan(dir.z, dir.x) * ONE_OVER_PI, 1.0f - acos(dir.y) * ONE_OVER_PI);
+}
+
+float radical_inverse_VdC(uint bits){
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+
+vec2 hammersley(uint i, uint N) {
+    return vec2(float(i)/float(N), radical_inverse_VdC(i));
+}
+
+vec3 importance_sample_GGX(vec2 Xi, vec3 N, float roughness) {
+    float a = roughness*roughness;
+
+    float phi = 2.0 * PI * Xi.x;
+    float cosTheta = sqrt((1.0f - Xi.y) / (1.0f + (a*a - 1.0f) * Xi.y));
+    float sinTheta = sqrt(1.0f - cosTheta*cosTheta);
+
+    // from spherical coordinates to cartesian coordinates
+    vec3 H;
+    H.x = cos(phi) * sinTheta;
+    H.y = sin(phi) * sinTheta;
+    H.z = cosTheta;
+
+    // from tangent-space vector to world-space sample vector
+    vec3 up        = abs(N.z) < 0.999f ? vec3(0.0f, 0.0f, 1.0f) : vec3(1.0f, 0.0f, 0.0f);
+    vec3 tangent   = normalize(cross(up, N));
+    vec3 bitangent = cross(N, tangent);
+
+    vec3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;
+    return normalize(sampleVec);
+    
+}
+
+// normal distribution function TrowbridgeReitzGGX
+float normal_distribution_GGX(float NdotH, float roughness) {
+  // disney and epic concluded that squaring roughness looks more acurate
+  float a = roughness*roughness;
+  float a2 = a*a;
+  //float NdotH = max(dot(N,H),0.0f);
+  //float NdotH2 = NdotH * NdotH;
+
+  float num = a2;
+  float denom = (NdotH * (a2 - 1.0f) + 1.0f);
+  denom = PI * denom * denom;
+  return num / denom;
+}
+
+vec3 prefilter_convolute(vec3 direction, float roughness) {
+
+    const uint prefilter_SAMPLE_COUNT = 1200u;
+    const float prefilter_RESOLUTION = 8000.0f; // improves quality
+
+    //vec2 texCoordNew = texCoord*2.0-1.0;
+    //vec3 scan = uv_to_xyz(face, texCoordVecRange);
+
+    vec3 N = direction;
+    vec3 V = direction;
+
+    //const uint SAMPLE_COUNT = 2000u;
+    //float resolution = 4000.0; // resolution of source map (per face)
+
+    float totalWeight = 0.0;
+    vec3 prefilteredColor = vec3(0.0);
+
+    for (uint i = 0u; i < prefilter_SAMPLE_COUNT; ++i)
+    {
+
+        vec2 Xi = hammersley(i, prefilter_SAMPLE_COUNT);
+        vec3 H = importance_sample_GGX(Xi,N,roughness);
+        vec3 L = normalize(2.0 * dot(V,H) * H -V);
+        float NdotL = max(dot(N,L),0.0);
+
+        if(NdotL > 0.0f) {
+            
+            float NdotH= max(dot(N,H),0.0);
+            float HdotV = max(dot(H,V),0.0);
+
+            // used to determine a mip level to sample the invironment texture with in cases where we get artifacts.
+            float D   = normal_distribution_GGX(NdotH, roughness);
+            float pdf = (D * NdotH / (4.0 * HdotV)) + 0.0001;
+            float saTexel  = 4.0 * PI / (6.0 * prefilter_RESOLUTION * prefilter_RESOLUTION);
+            float saSample = 1.0 / (float(prefilter_SAMPLE_COUNT) * pdf + 0.0001);
+
+            //float mip_level = 0.0f;
+            float mip_level = roughness == 0.0 ? 0.0 : 0.5 * log2(saSample / saTexel);
+
+
+            vec2 uv_sample = dir_to_equirectangular_uv(L);
+            prefilteredColor += textureLod(_equirectangular_tex, uv_sample, mip_level).rgb * NdotL;
+            totalWeight += NdotL;
+        }
+    }
+
+    prefilteredColor = prefilteredColor / totalWeight;
+
+    return prefilteredColor;
+}
+
+//
+vec3 irradiance_convolute(vec3 direction) {
+
+    vec3 normal = -direction;
+
+    vec3 irradiance = vec3(0.0);
+
+    vec3 up    = vec3(0.0,1.0,0.0);
+    vec3 right = normalize(cross(up, normal));
+    up         = normalize(cross(normal, right));
+
+    //float sampleDelta = 0.0125; // subsample detail
+    float nrSamples = 0.0;
+    const float irradiance_sampleDelta = 0.0125; // subsample detail - default 0.0125;
+
+    for(float phi = 0.0; phi < 2.0 * PI; phi += irradiance_sampleDelta) {
+
+        for(float theta = 0.0; theta < 0.5 * PI; theta += irradiance_sampleDelta) {
+
+            vec3 tangentSample = vec3(sin(theta)*cos(phi),sin(theta) * sin(phi),cos(theta));
+            // tanget space to world
+            vec3 sampleVec = tangentSample.x * right + tangentSample.y * up + tangentSample.z * normal;
+
+            vec2 sampleUV = dir_to_equirectangular_uv(sampleVec); // we could bind cubemap and sample color not from the quirectangular but from cubemap directly
+            irradiance += textureLod(_equirectangular_tex, sampleUV, 0.0f).rgb * cos(theta) * sin(theta);
+            nrSamples++;
+        }
+    }
+
+    irradiance = PI * irradiance / float(nrSamples);
+
+    return irradiance;
+}
+
+
+void main() {
+
+    uvec2 texel_coord = gl_GlobalInvocationID.xy;
+    
+    if(texel_coord.x >= _cube_face_resolution || texel_coord.y >= _cube_face_resolution) {
+        return;
+    }
+    
+    vec2 texel_uv = vec2(vec2(texel_coord) + 0.5f) / vec2(_cube_face_resolution);
+
+    // Note: we dont need these for _mood == 2, irradiance convolute 
+    vec2 uv_vector_range = fma(texel_uv, vec2(2.0f),vec2(-1.0f)); // to vector range
+    vec3 dir = normalize(uv_to_xyz(_current_cube_face , uv_vector_range));
+    
+    vec4 out_color = vec4(0.0f,0.0f,0.0f,1.0);
+
+    if (_mode == 0){
+        // map equirectangular texture to cubemap direction.
+        vec2 equi_uv = dir_to_equirectangular_uv(dir);
+        out_color.rgb = texture(_equirectangular_tex, equi_uv).rgb;
+    } else if (_mode == 1) {
+
+        out_color.rgb = prefilter_convolute(dir, _roughness);
+    
+    } else if (_mode == 2) {
+        vec2 oct_uv = vec2(texel_uv.x, 1.0f - texel_uv.y);
+        vec3 direction = oct_decode(oct_uv);
+        out_color.rgb =  irradiance_convolute(direction);
+    }
+
+    imageStore(_dst_img, ivec2(texel_coord), out_color);
+}

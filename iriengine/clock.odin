@@ -32,10 +32,9 @@ ClockData :: struct {
 
 	// Physics time stuff
 	fixed_delta_accumulator : f64,
-	fixed_delta_timestep : f64,
-	fixed_elapsed_time : f64,
-	should_advance_fixed : bool, // a variable for error handling
-
+	fixed_delta_timestep    : f64,
+	fixed_elapsed_time      : f64,
+	should_advance_fixed    : bool, // a variable for error handling
 
  	// FPS stuff
 	second_accumulator: f64,
@@ -65,8 +64,7 @@ clock_init :: proc(){
 	// physics
 	clock_data.fixed_elapsed_time 		= 0.0;
 	clock_data.fixed_delta_accumulator 	= 0.0;
-	clock_data.fixed_delta_timestep 	= 0.01666; // 1 / 60 fps
-	//clock_data.fixed_delta_timestep 	= 0.00606; // 1 / 165 fps
+	clock_data.fixed_delta_timestep 	= 1.0 / 60.0; // 60 times per second
 	clock_data.should_advance_fixed = false;
 }
 
@@ -148,10 +146,15 @@ clock_get_fps :: proc() -> u32{
 	return clock_data.current_fps;
 }
 
-// how often do we want to do physics updates
-// for example timestep may be '1/60' to update 60 times per second;
+// How often do we want to do physics updates
+// For example timestep may be '1/60' to update 60 times per second,
+// while we may still render at more or less then 60 frames per second.
 clock_set_physics_timestep :: proc(timestep : f64){
 	clock_data.fixed_delta_timestep = timestep;
+}
+
+clock_get_physics_timestep :: proc() -> f64{
+	return clock_data.fixed_delta_timestep;
 }
 
 clock_set_max_delta_time :: proc(max_delta_time : f64){
@@ -161,6 +164,7 @@ clock_set_max_delta_time :: proc(max_delta_time : f64){
 clock_set_timescale :: proc(timescale : f64){
 	clock_data.timescale = timescale;
 }
+
 
 clock_get_ticks_seconds :: proc() -> f64 {
 	return cast(f64)sdl.GetTicks() / 1000.0;

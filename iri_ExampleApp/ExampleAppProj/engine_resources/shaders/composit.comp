@@ -1,0 +1,55 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+precision highp float;
+
+#include "../shader_lib/color.glsl"
+
+// https://wiki.libsdl.org/SDL3/SDL_CreateGPUComputePipeline
+// For SPIR-V shaders, use the following resource sets:
+// 0: Sampled textures, followed by read-only storage textures, followed by read-only storage buffers
+// 1: Read-write storage textures, followed by read-write storage buffers
+// 2: Uniform buffers
+
+
+layout(set=0, binding = 0) uniform sampler2D _render_tex;
+layout(set=0, binding = 1) uniform sampler2D _ui_tex; // this could be a readonly image2D as its the same size as composit tex
+
+layout(rgba8, set=1, binding = 0) uniform writeonly image2D _composit_tex;
+
+layout(set=2, binding=0) uniform composit_ubo {
+	uvec2 _composit_tex_size;
+	uint _convert_to_srgb;
+	uint _padding1;
+};
+
+void main() {
+    
+    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+
+    if(texelCoord.x >= int(_composit_tex_size.x) || texelCoord.y >= int(_composit_tex_size.y) ){
+        return;   
+    }
+
+    vec2 uv = (vec2(texelCoord) + 0.5f) / vec2(_composit_tex_size);
+
+    vec4 render_tex = texture(_render_tex, uv);
+    vec4 ui_tex = texture(_ui_tex, uv);
+
+    if(_convert_to_srgb == 1) {
+    	//ui_tex.rgb = linear_to_srgb(ui_tex.rgb);
+    	
+
+    }else{
+    	ui_tex.rgb = srgb_to_linear(ui_tex.rgb);
+    	render_tex.rgb = srgb_to_linear(render_tex.rgb);
+    }
+
+    vec4 comp = vec4(render_tex.rgb, 1.0f);
+
+    comp.rgb = mix(render_tex.rgb, ui_tex.rgb, ui_tex.a);
+
+    comp.rgb = linear_to_srgb(comp.rgb);
+
+    imageStore(_composit_tex, texelCoord, comp);
+}

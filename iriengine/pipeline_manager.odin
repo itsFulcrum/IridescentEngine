@@ -3,7 +3,11 @@ package iri
 import "core:log"
 import "core:hash"
 import "core:strings"
+
+import iria "iriasset"
+
 import sdl "vendor:sdl3"
+
 
 MaterialPipelineHash :: u32
 
@@ -23,6 +27,10 @@ PipelineShader :: enum {
     SWAPCHAIN_COMPOSIT_FRAG,
     UNIT_CUBE_VERT,
     UNLIT_BASIC_FRAG,
+    LINE_BASIC_UNLIT_FRAG,
+    LINE_CUBE_VERT,
+    LINE_LINE_VERT,
+    LINE_CIRCLE_VERT,
     DEPTH_ONLY_VERT,
     DEPTH_ONLY_FRAG,
     DEPTH_ONLY_ALPHATEST_FRAG,
@@ -55,6 +63,9 @@ CorePipeline :: enum u32 {
     PostColorCorrect,
     SWAPCHAIN_COMPOSIT,
     WIREFRAME_CUBE,
+    LINE_CUBE,   // LineList
+    LINE_LINE,   // LineStrip
+    LINE_CIRCLE, // LineStrip
     SOLID_CUBE,
     SMAA_EDGE_DETECTION,
     SMAA_BLEND_WEIGHT,
@@ -82,6 +93,8 @@ PipelineConfig :: struct {
     raster_fill_mode : FillMode,
     raster_cull_mode : CullMode,
     raster_disable_depth_clip : bool,
+
+    primitive_type : PrimitiveType,
 
     // Depth Stencil
     enable_depth_test   : bool,
@@ -128,12 +141,15 @@ VertexBufDescriptorInfo :: struct{
 pipe_manager_get_core_pipeline_shader_combination :: proc(pipeline : CorePipeline) -> ShaderCombination {
 
     switch pipeline {
-        case .Skybox:                   return ShaderCombination{vert = .SKYBOX_VERT    , frag = .SKYBOX_FRAG};
-        case .DearImGUI:                return ShaderCombination{vert = .DEAR_IMGUI_VERT, frag = .DEAR_IMGUI_FRAG};
-        case .PostColorCorrect:         return ShaderCombination{vert = .SCREENQUAD_VERT, frag = .POST_COLOR_CORRECT_FRAG};
-        case .SWAPCHAIN_COMPOSIT:       return ShaderCombination{vert = .SCREENQUAD_VERT, frag = .SWAPCHAIN_COMPOSIT_FRAG};
-        case .WIREFRAME_CUBE:           return ShaderCombination{vert = .UNIT_CUBE_VERT , frag = .UNLIT_BASIC_FRAG};
-        case .SOLID_CUBE:               return ShaderCombination{vert = .UNIT_CUBE_VERT , frag = .UNLIT_BASIC_FRAG};
+        case .Skybox:                   return ShaderCombination{vert = .SKYBOX_VERT      , frag = .SKYBOX_FRAG};
+        case .DearImGUI:                return ShaderCombination{vert = .DEAR_IMGUI_VERT  , frag = .DEAR_IMGUI_FRAG};
+        case .PostColorCorrect:         return ShaderCombination{vert = .SCREENQUAD_VERT  , frag = .POST_COLOR_CORRECT_FRAG};
+        case .SWAPCHAIN_COMPOSIT:       return ShaderCombination{vert = .SCREENQUAD_VERT  , frag = .SWAPCHAIN_COMPOSIT_FRAG};
+        case .WIREFRAME_CUBE:           return ShaderCombination{vert = .UNIT_CUBE_VERT   , frag = .UNLIT_BASIC_FRAG};
+        case .LINE_CUBE:                return ShaderCombination{vert = .LINE_CUBE_VERT   , frag = .LINE_BASIC_UNLIT_FRAG};
+        case .LINE_LINE:                return ShaderCombination{vert = .LINE_LINE_VERT   , frag = .LINE_BASIC_UNLIT_FRAG};
+        case .LINE_CIRCLE:              return ShaderCombination{vert = .LINE_CIRCLE_VERT , frag = .LINE_BASIC_UNLIT_FRAG};
+        case .SOLID_CUBE:               return ShaderCombination{vert = .UNIT_CUBE_VERT   , frag = .LINE_BASIC_UNLIT_FRAG};
         case .SMAA_EDGE_DETECTION:      return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_EDGE_DETECTION_FRAG    , vert_variant = RenderEffectShaderVariant{.SMAA_PASS_EDGE_DETECTION}};
         case .SMAA_BLEND_WEIGHT:        return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_BLEND_WEIGHT_FRAG      , vert_variant = RenderEffectShaderVariant{.SMAA_PASS_BLEND_WEIGHT}};
         case .SMAA_NEIGHBORHOOD_BLEND:  return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_NEIGHBORHOOD_BLEND_FRAG, vert_variant = RenderEffectShaderVariant{.SMAA_PASS_NEIGHBORHOOD_BLEND}};
@@ -152,6 +168,9 @@ pipe_manager_get_core_pipeline_vertex_buf_descriptor_type :: proc(pipeline : Cor
         case .PostColorCorrect:     return .None;
         case .SWAPCHAIN_COMPOSIT:   return .None;
         case .WIREFRAME_CUBE:       return .None;
+        case .LINE_CUBE:            return .None;
+        case .LINE_LINE:            return .None;
+        case .LINE_CIRCLE:          return .None;
         case .SOLID_CUBE:           return .None;
         case .SMAA_EDGE_DETECTION:  return .None;
         case .SMAA_BLEND_WEIGHT:    return .None;
@@ -166,14 +185,17 @@ pipe_manager_get_core_pipeline_vertex_buf_descriptor_type :: proc(pipeline : Cor
 pipe_manager_get_core_pipeline_render_pass_type :: proc(pipeline: CorePipeline) -> RenderPassType{
 
     switch pipeline {
-        case .Skybox:             return RenderPassType.Main;
-        case .DearImGUI:          return RenderPassType.DebugGui;
-        case .PostColorCorrect:   return RenderPassType.PostColorCorrect;
-        case .SWAPCHAIN_COMPOSIT: return RenderPassType.SWAPCHAIN_COMPOSIT;
-        case .WIREFRAME_CUBE:     return RenderPassType.Main;
-        case .SOLID_CUBE:         return RenderPassType.Main;
-        case .SMAA_EDGE_DETECTION:return RenderPassType.SMAA;
-        case .SMAA_BLEND_WEIGHT:  return RenderPassType.SMAA;
+        case .Skybox:                   return RenderPassType.Main;
+        case .DearImGUI:                return RenderPassType.DebugGui;
+        case .PostColorCorrect:         return RenderPassType.PostColorCorrect;
+        case .SWAPCHAIN_COMPOSIT:       return RenderPassType.SWAPCHAIN_COMPOSIT;
+        case .WIREFRAME_CUBE:           return RenderPassType.Main;
+        case .LINE_CUBE:                return RenderPassType.Main;
+        case .LINE_LINE:                return RenderPassType.Main;
+        case .LINE_CIRCLE:              return RenderPassType.Main;
+        case .SOLID_CUBE:               return RenderPassType.Main;
+        case .SMAA_EDGE_DETECTION:      return RenderPassType.SMAA;
+        case .SMAA_BLEND_WEIGHT:        return RenderPassType.SMAA;
         case .SMAA_NEIGHBORHOOD_BLEND:  return RenderPassType.SMAA;
     }
 
@@ -276,6 +298,36 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
                     // Color Render Target
                     enable_blend = false,
             }
+        case .LINE_CUBE:
+            return PipelineConfig {
+                    raster_fill_mode = FillMode.Line,
+                    raster_cull_mode = CullMode.None,
+                    primitive_type = PrimitiveType.LINELIST,
+                    // Depth Stencil
+                    enable_depth_test   = true,
+                    enable_depth_write  = true,
+                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+            }
+        case .LINE_LINE:
+            return PipelineConfig {
+                    raster_fill_mode = FillMode.Line,
+                    raster_cull_mode = CullMode.None,
+                    primitive_type = PrimitiveType.LINELIST,
+                    // Depth Stencil
+                    enable_depth_test   = true,
+                    enable_depth_write  = true,
+                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+            }
+        case .LINE_CIRCLE:
+            return PipelineConfig {
+                    raster_fill_mode = FillMode.Line,
+                    raster_cull_mode = CullMode.None,
+                    primitive_type = PrimitiveType.LINESTRIP,
+                    // Depth Stencil
+                    enable_depth_test   = true,
+                    enable_depth_write  = true,
+                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+            }
         case .SOLID_CUBE:
             return PipelineConfig {
                     raster_fill_mode = FillMode.Fill,
@@ -335,13 +387,12 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             format = sdl.GPUVertexElementFormat.FLOAT3,
             offset = 0,
         };
-
-        // Normal_oct_encoded
-        norm : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+        
+        qtan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
             location = 1,
-            format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataMinimal, normal),
+            format = sdl.GPUVertexElementFormat.FLOAT4,
+            offset = cast(u32)offset_of(iria.VertexDataMinimal, qtangent),
         };
 
         // Texcoord_0
@@ -349,21 +400,14 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 2,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataMinimal, texcoord_0),
-        };
-
-        // tan oct_encoded + .z sign bit
-        tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
-            buffer_slot = 1,
-            location = 3,
-            format = sdl.GPUVertexElementFormat.FLOAT3,
-            offset = cast(u32)offset_of(VertexDataMinimal, tangent),
+            offset = cast(u32)offset_of(iria.VertexDataMinimal, texcoord_0),
         };
 
         append(array, pos);
-        append(array, norm);
+        //append(array, norm);
+        append(array, qtan);
         append(array, tc0);
-        append(array, tan);
+        //append(array, tan);
     }
 
     pm_append_attr_layout_standard :: proc(array: ^[dynamic]sdl.GPUVertexAttribute){
@@ -376,12 +420,12 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             offset = 0,
         };
 
-        // Normal_oct_encoded
-        norm : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+        // quaternion tangent space
+        qtan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
             location = 1,
-            format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataMinimal, normal),
+            format = sdl.GPUVertexElementFormat.FLOAT4,
+            offset = cast(u32)offset_of(iria.VertexDataStandard, qtangent),
         };
 
         // Texcoord_0
@@ -389,30 +433,21 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 2,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataMinimal, texcoord_0),
+            offset = cast(u32)offset_of(iria.VertexDataStandard, texcoord_0),
         };
-
-        // tan oct_encoded + .z sign bit
-        tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
-            buffer_slot = 1,
-            location = 3,
-            format = sdl.GPUVertexElementFormat.FLOAT3,
-            offset = cast(u32)offset_of(VertexDataMinimal, tangent),
-        };
-
 
         // Color_0
         col0 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
-            location = 4,
+            location = 3,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(VertexDataStandard, color_0),
+            offset = cast(u32)offset_of(iria.VertexDataStandard, color_0),
         };
 
         append(array, pos);
-        append(array, norm);
+
+        append(array, qtan);
         append(array, tc0);
-        append(array, tan);
         append(array, col0);
     }
 
@@ -426,12 +461,12 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             offset = 0,
         };
 
-        // Normal_oct_encoded
-        norm : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+        // quaternion tangent space
+        qtan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
             location = 1,
-            format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataMinimal, normal),
+            format = sdl.GPUVertexElementFormat.FLOAT4,
+            offset = cast(u32)offset_of(iria.VertexDataExtended, qtangent),
         };
 
         // Texcoord_0
@@ -439,15 +474,15 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 2,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataMinimal, texcoord_0),
+            offset = cast(u32)offset_of(iria.VertexDataExtended, texcoord_0),
         };
 
-        // tan oct_encoded + .z sign bit
-        tan : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+        // Texcoord_1
+        tc1 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 1,
             location = 3,
-            format = sdl.GPUVertexElementFormat.FLOAT3,
-            offset = cast(u32)offset_of(VertexDataMinimal, tangent),
+            format = sdl.GPUVertexElementFormat.FLOAT2,
+            offset = cast(u32)offset_of(iria.VertexDataExtended, texcoord_1),
         };
 
         // Color_0
@@ -455,7 +490,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 4,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(VertexDataExtended, color_0),
+            offset = cast(u32)offset_of(iria.VertexDataExtended, color_0),
         };
 
         // Color_1
@@ -463,24 +498,16 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 5,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(VertexDataExtended, color_1),
+            offset = cast(u32)offset_of(iria.VertexDataExtended, color_1),
         };
 
-        // Texcoord_1
-        tc1 : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
-            buffer_slot = 1,
-            location = 6,
-            format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(VertexDataExtended, texcoord_1),
-        };
 
         append(array, pos);
-        append(array, norm);
+        append(array, qtan);
         append(array, tc0);
-        append(array, tan);
+        append(array, tc1);
         append(array, col0);
         append(array, col1);
-        append(array, tc1);
     }
 
     dear_imgui_draw_vert :: struct {
@@ -548,7 +575,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_1 : sdl.GPUVertexBufferDescription = {
                 slot = 1, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of(VertexDataMinimal), // vertex byte size
+                pitch = size_of(iria.VertexDataMinimal), // vertex byte size
             }
 
             append(&info.descriptors,description_0);
@@ -566,14 +593,14 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_1 : sdl.GPUVertexBufferDescription = {
                 slot = 1, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of(VertexDataStandard), // vertex byte size
+                pitch = size_of(iria.VertexDataStandard), // vertex byte size
             }
 
             append(&info.descriptors,description_0);
             append(&info.descriptors,description_1);
         }
         case .LayoutExtended: {
-            pm_append_attr_layout_standard(&info.attributes);
+            pm_append_attr_layout_extended(&info.attributes);
 
             description_0 : sdl.GPUVertexBufferDescription = {
                 slot = 0, // buffer slot
@@ -584,7 +611,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_1 : sdl.GPUVertexBufferDescription = {
                 slot = 1, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of(VertexDataExtended), // vertex byte size
+                pitch = size_of(iria.VertexDataExtended), // vertex byte size
             }
 
             append(&info.descriptors,description_0);
@@ -602,7 +629,6 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             append(&info.descriptors,description);
         }
     }
-
 
     return info;
 }
@@ -638,6 +664,10 @@ pipe_manager_init :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevic
             case .DEAR_IMGUI_FRAG:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "dear_imgui.frag"           }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
             case .SWAPCHAIN_COMPOSIT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "swapchain_composit.frag"   }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
             case .UNIT_CUBE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "unit_cube.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
+            case .LINE_CUBE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_cube.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
+            case .LINE_LINE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_line.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
+            case .LINE_CIRCLE_VERT:         id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_circle.vert"          }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
+            case .LINE_BASIC_UNLIT_FRAG:    id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_basic_unlit.frag"     }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
             case .UNLIT_BASIC_FRAG:         id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "unlit_basic.frag"          }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
             case .DEPTH_ONLY_VERT:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "depth_pre.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .DEPTH_ONLY_FRAG:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "depth_pre.frag"            }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
@@ -795,7 +825,7 @@ pipe_manager_get_core_pipeline :: proc(manager : ^PipelineManager, pipeline : Co
 }
 
 @(private="package")
-// Do a rebuild of all graphics pipelines that are associated to the specified render passes
+// Do a rebuild of all graphics pipelines that are associated to the specified render passes in the active universe
 pipe_manager_rebuild_all_pipelines_for_render_pass_types :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevice, render_pass_set: RenderPassSet){
 
     for pipe in CorePipeline {
@@ -807,43 +837,53 @@ pipe_manager_rebuild_all_pipelines_for_render_pass_types :: proc(manager : ^Pipe
         }
     }
 
+    universe := get_active_universe();
+    material_manager := engine.material_manager;
+    fallback_material : MaterialID = material_manager.fallback_material;
+      
     if RenderPassType.Main in render_pass_set {
         
         // If Main Render Pass changed, we must unfortunately rebuild all cached material pipelines.
+        pipe_manager_clear_material_pipeline_cache(manager, gpu_device);
 
-        if engine.universe != nil {
-            pipe_manager_clear_material_pipeline_cache(manager, gpu_device);
-            pipe_manager_update_material_pipeline_cache_for_universe(manager, gpu_device, engine.universe);
-        } else {
-            log.warnf("Active universe is currently nil!")
+        // Default material.
+        pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts(manager, gpu_device, material_manager, fallback_material, VERTEX_LAYOUTS_ALL);
+  
+        if universe != nil {
+            pipe_manager_update_material_pipeline_cache_for_universe(manager, gpu_device, universe);
         }
     }
 
     // IF both we update both at the same time.
     if .DEPTH_PREPASS in render_pass_set && .SHADOWMAP in render_pass_set {
 
-        if engine.universe != nil {
-                pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, DEPTHONLY_PIPELINE_SHADER_SET_ALL);
-                pipe_manager_update_depthonly_pipeline_cache_for_universe(manager, gpu_device, engine.universe)
-        } else {
-            log.warnf("Active universe is currently nil!")
+        pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, DEPTHONLY_PIPELINE_SHADER_SET_ALL);
+        pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device, material_manager, fallback_material);
+
+        
+        if universe != nil {
+            pipe_manager_update_depthonly_pipeline_cache_for_universe(manager, gpu_device, universe)
         }
+
     } else {
+        
         if RenderPassType.DEPTH_PREPASS in render_pass_set {
-            if engine.universe != nil {
-                pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, {.DepthPre, .DepthPreAlphaTest});
-                pipe_manager_update_depthonly_pipeline_cache_for_universe(manager, gpu_device, engine.universe)
-            } else {
-                log.warnf("Active universe is currently nil!")
+            pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, {.DepthPre, .DepthPreAlphaTest});
+            
+            pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device,material_manager, fallback_material);
+
+            if universe != nil {
+                pipe_manager_update_depthonly_pipeline_cache_for_universe(manager, gpu_device, universe);
             }
         }
 
         if RenderPassType.SHADOWMAP in render_pass_set {
-            if engine.universe != nil {
-                pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, {.Shadowmap, .ShadowmapAlphaTest});
-                pipe_manager_update_depthonly_pipeline_cache_for_universe(manager, gpu_device, engine.universe)
-            } else {
-                log.warnf("Active universe is currently nil!")
+            
+            pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, {.Shadowmap, .ShadowmapAlphaTest});
+            pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device, material_manager, fallback_material);
+
+            if universe != nil {
+                pipe_manager_update_depthonly_pipeline_cache_for_universe(manager, gpu_device, universe);
             }
         }
     }
@@ -909,7 +949,7 @@ pipe_manager_create_graphics_pipeline :: proc(gpu_device: ^sdl.GPUDevice, vert_s
     pipeline_info : sdl.GPUGraphicsPipelineCreateInfo;
     pipeline_info.vertex_shader     = vert_shader;
     pipeline_info.fragment_shader   = frag_shader;
-    pipeline_info.primitive_type    = sdl.GPUPrimitiveType.TRIANGLELIST;
+    pipeline_info.primitive_type    = PrimitiveType_to_sdl_GPUPrimitiveType(config.primitive_type);
 
     if vertex_buf_info.type != .None {
 
@@ -959,8 +999,19 @@ pipe_manager_create_graphics_pipeline :: proc(gpu_device: ^sdl.GPUDevice, vert_s
     has_depth_target :bool =  render_pass_info.has_depth_target;
 
 
+    col_tar_format : sdl.GPUTextureFormat;
+
+    if render_pass_info.color_target_format != .SWAPCHAIN {
+        col_tar_format = get_sdl_GPUTextureFormat_from_RenderTargetFormat(render_pass_info.color_target_format)
+    
+    } else {
+        window := get_window_context()
+        col_tar_format = sdl.GetGPUSwapchainTextureFormat(gpu_device, window.handle);
+        //log.warnf("Swapchain format: {}", col_tar_format);
+    }
+
     col_target_description : sdl.GPUColorTargetDescription = !has_color_target ? sdl.GPUColorTargetDescription{} : sdl.GPUColorTargetDescription {
-        format = get_sdl_GPUTextureFormat_from_RenderTargetFormat(render_pass_info.color_target_format),
+        format = col_tar_format,
         blend_state = sdl.GPUColorTargetBlendState{
             src_color_blendfactor   = get_sdl_GPUBlendFactor_from_BlendFactor(config.col_target_src_color_blendfactor),
             dst_color_blendfactor   = get_sdl_GPUBlendFactor_from_BlendFactor(config.col_target_dst_color_blendfactor),
@@ -986,7 +1037,7 @@ pipe_manager_create_graphics_pipeline :: proc(gpu_device: ^sdl.GPUDevice, vert_s
 }
 
 @(private="package")
-pipe_manager_get_material_pipeline_shader_variants :: proc(manager : ^PipelineManager, material : ^Material, vertex_layout : VertexDataLayout) -> (vert_shader_id : ShaderID, vert_variant : ShaderVariant, frag_shader_id : ShaderID, frag_variant : ShaderVariant) {
+pipe_manager_get_material_pipeline_shader_variants :: proc(manager : ^PipelineManager, material : ^Material, vertex_layout : iria.VertexDataLayout) -> (vert_shader_id : ShaderID, vert_variant : ShaderVariant, frag_shader_id : ShaderID, frag_variant : ShaderVariant) {
     
     technique := &material.render_technique;
 
@@ -1011,12 +1062,12 @@ pipe_manager_get_material_pipeline_shader_variants :: proc(manager : ^PipelineMa
     frag_id : ShaderID = -1;
 
     switch &mat_variant in material.variant {
-        case PbrMaterialData: {
+        case PbrMaterialVariant: {
             combi := manager.material_pipeline_shader_combinations[.PBR];
             vert_id = manager.pipeline_shader_ids[combi.vert];
             frag_id = manager.pipeline_shader_ids[combi.frag];
         }
-        case UnlitMaterialData: {
+        case UnlitMaterialVariant: {
             combi := manager.material_pipeline_shader_combinations[.UNLIT];
             vert_id = manager.pipeline_shader_ids[combi.vert];
             frag_id = manager.pipeline_shader_ids[combi.frag];
@@ -1054,21 +1105,18 @@ pipe_manager_calc_material_pipeline_hash :: proc(vert_shader_id : ShaderID, vert
 }
 
 @(private="package")
-pipe_manager_get_material_pipeline_variant :: proc(manager : ^PipelineManager, mat_id : MaterialID, vertex_layout : VertexDataLayout) -> ^sdl.GPUGraphicsPipeline {
+pipe_manager_get_material_pipeline_variant :: proc(manager : ^PipelineManager, material_manager : ^MaterialManager, mat_id : MaterialID, vertex_layout : iria.VertexDataLayout) -> ^sdl.GPUGraphicsPipeline {
 
-    engine_assert(register_contains_material_id(mat_id));
-
-    material := register_get_material(mat_id)
+    material := material_get_by_id(mat_id)
 
     vert_shader_id, vert_shader_variant, frag_shader_id, frag_shader_variant := pipe_manager_get_material_pipeline_shader_variants(manager, material, vertex_layout);
         
     vert_variant_hash : u32 = shader_manager_get_shader_variant_hash(vert_shader_variant);
     frag_variant_hash : u32 = shader_manager_get_shader_variant_hash(frag_shader_variant);
-    technique_hash := material_register_get_render_technique_hash(mat_id);
+    technique_hash     := material_manager_get_render_technique_hash_unsafe(material_manager, mat_id);
 
     pipe_hash := pipe_manager_calc_material_pipeline_hash(vert_shader_id, vert_variant_hash, frag_shader_id, frag_variant_hash, technique_hash);
     
-
     pipe, exists := manager.material_pipeline_cache[pipe_hash];
 
     if !exists {
@@ -1101,27 +1149,74 @@ pipe_manager_update_material_pipeline_cache_for_universe :: proc(manager : ^Pipe
     // For this we can probably iterate the drawables array from teh ecs.
 
     mesh_manager := engine.mesh_manager;
-    shader_manager := engine.shader_manager;
+    //shader_manager := engine.shader_manager;
+    material_manager := engine.material_manager;
 
     ecs := &universe.ecs;
 
     for i in 0..<len(ecs.drawables) {
 
-        mesh_inst := &ecs.drawables[i].mesh_instance;
+        draw_inst := &ecs.drawables[i].draw_instance;
 
-        mesh_id := mesh_inst.mesh_id;
-        mat_id  := mesh_inst.mat_id;
+        mesh_id := draw_inst.mesh_id;
+        mat_id  := draw_inst.mat_id;
+        if mesh_gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id); mesh_gpu_data != nil {
+            vertex_layout := mesh_gpu_data.vertex_layout;
+            pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts(manager, gpu_device, material_manager, mat_id, {vertex_layout});
+        }
+    }
+}
 
-        vertex_layout : VertexDataLayout = mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id).vertex_layout;
-        material : ^Material = register_get_material(mat_id);
+@(private="package")
+pipe_manager_update_material_and_depthonly_pipeline_cache_for_universe :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevice, universe : ^Universe){
 
-        engine_assert(material != nil)
+    // First we must iterate all materials and meshes and find all unique combinations.
+    // For this we can probably iterate the drawables array from teh ecs.
+
+    mesh_manager := engine.mesh_manager;
+    //shader_manager := engine.shader_manager;
+    material_manager := engine.material_manager;
+
+    ecs := &universe.ecs;
+
+    for i in 0..<len(ecs.drawables) {
+
+        draw_inst := &ecs.drawables[i].draw_instance;
+
+        mat_id  := draw_inst.mat_id;
+        mesh_id := draw_inst.mesh_id;
+
+        if mesh_gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id); mesh_gpu_data != nil {
+            vertex_layout := mesh_gpu_data.vertex_layout;
+            pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts(manager, gpu_device, material_manager, mat_id, {vertex_layout});
+        }
+
+        pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device, material_manager, mat_id);
+    }
+}
+
+
+@(private="package")
+pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevice, material_manager : ^MaterialManager, mat_id : MaterialID, vertex_layout_flags : VertexDataLayoutFlags){
+
+    shader_manager := engine.shader_manager;
+    
+    if !material_manager_is_valid_id(material_manager, mat_id) {
+        return;
+    }
+
+    // unsafe procs skip the is valid check which we do manually above this ^
+    material       := material_manager_get_material_unsafe(material_manager, mat_id);
+    technique_hash := material_manager_get_render_technique_hash_unsafe(material_manager, mat_id);
+
+    engine_assert(material != nil)
+    
+    for vertex_layout in vertex_layout_flags {
 
         vert_shader_id, vert_shader_variant, frag_shader_id, frag_shader_variant := pipe_manager_get_material_pipeline_shader_variants(manager, material, vertex_layout);
         
         vert_variant_hash : u32 = shader_manager_get_shader_variant_hash(vert_shader_variant);
         frag_variant_hash : u32 = shader_manager_get_shader_variant_hash(frag_shader_variant);
-        technique_hash := material_register_get_render_technique_hash(mat_id);
 
         pipe_hash := pipe_manager_calc_material_pipeline_hash(vert_shader_id, vert_variant_hash, frag_shader_id, frag_variant_hash, technique_hash);
 
@@ -1130,7 +1225,7 @@ pipe_manager_update_material_pipeline_cache_for_universe :: proc(manager : ^Pipe
             pipe_ , exists := manager.material_pipeline_cache[pipe_hash];
 
             if exists && pipe_ != nil {
-                continue
+                return;
             }
         }
 
@@ -1170,7 +1265,6 @@ pipe_manager_update_material_pipeline_cache_for_universe :: proc(manager : ^Pipe
             log.errorf("Pipe: failed to create pipeline")
         }
     }
-
 }
 
 @(private="package")
@@ -1254,84 +1348,92 @@ pipe_manager_clear_depthonly_pipeline_cache :: proc(manager : ^PipelineManager, 
     }
 }
 
+
 @(private="package")
 pipe_manager_update_depthonly_pipeline_cache_for_universe :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevice, universe : ^Universe){
 
-    mesh_manager := engine.mesh_manager;
     shader_manager := engine.shader_manager;
+    material_manager := engine.material_manager;
 
     ecs := &universe.ecs;
 
     drawables_loop: for i in 0..<len(ecs.drawables) {
 
-        mesh_inst := &ecs.drawables[i].mesh_instance;
+        draw_inst := &ecs.drawables[i].draw_instance;
 
-        mesh_id := mesh_inst.mesh_id;
-        mat_id  := mesh_inst.mat_id;
+        mat_id  := draw_inst.mat_id;
 
-        
-        material : ^Material = register_get_material(mat_id);
+        pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device, material_manager, mat_id);
+    }
+}
 
-        engine_assert(material != nil)
 
-        mat_shader_type := register_get_material_shader_type(mat_id);
+@(private="package")
+pipe_manager_update_depthonly_pipeline_cache_with_material :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevice, material_manager : ^MaterialManager, mat_id : MaterialID){
 
-        // Compute the pipeline_hash
+    shader_manager := engine.shader_manager;
+    
+    if !material_manager_is_valid_id(material_manager, mat_id) {
+        return;
+    }
 
-        technique_hash := material_register_get_render_technique_hash(mat_id);
+    // unsafe procs skip the is valid check which we do manually above this ^
+    mat_shader_type := material_manager_get_material_shader_type_unsafe(material_manager, mat_id);
+    material        := material_manager_get_material_unsafe(material_manager, mat_id);
+    technique_hash  := material_manager_get_render_technique_hash_unsafe(material_manager, mat_id);
 
-        for depth_only_shader_type in DepthOnlyPipelineShaders {
 
-            pipe_hash : DepthOnlyPipelineHash = pipe_manager_calc_depthonly_pipeline_hash(depth_only_shader_type, technique_hash);
+    for depth_only_shader_type in DepthOnlyPipelineShaders {
 
-            pipe_ , exists := manager.depthonly_pipeline_cache[pipe_hash];
+        pipe_hash : DepthOnlyPipelineHash = pipe_manager_calc_depthonly_pipeline_hash(depth_only_shader_type, technique_hash);
 
-            if exists && pipe_ != nil {
-                continue;
+        pipe_ , exists := manager.depthonly_pipeline_cache[pipe_hash];
+
+        if exists && pipe_ != nil {
+            continue;
+        }
+
+        // Create the pipeline.
+
+        render_pass_info : RenderPassInfo;
+        pipe_config : PipelineConfig;
+
+        switch depth_only_shader_type {
+            case .DepthPre: {
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .DEPTH_PREPASS)
+                pipe_config = pipe_manager_create_pipeline_config_from_render_technique_depth_pre(material.render_technique);
             }
-
-            // Create the pipeline.
-
-            render_pass_info : RenderPassInfo;
-            pipe_config : PipelineConfig;
-
-            switch depth_only_shader_type {
-                case .DepthPre: {
-                    render_pass_info = renderer_get_render_pass_info(engine.render_context, .DEPTH_PREPASS)
-                    pipe_config = pipe_manager_create_pipeline_config_from_render_technique_depth_pre(material.render_technique);
-                }
-                case .DepthPreAlphaTest: {
-                    render_pass_info = renderer_get_render_pass_info(engine.render_context, .DEPTH_PREPASS)
-                    pipe_config = pipe_manager_create_pipeline_config_from_render_technique_depth_pre(material.render_technique);
-                }
-                case .Shadowmap: {
-                    render_pass_info = renderer_get_render_pass_info(engine.render_context, .SHADOWMAP)
-                    pipe_config = pipe_manager_create_pipeline_config_from_render_technique_shadowmap(material.render_technique);
-                }
-                case .ShadowmapAlphaTest: {
-                    render_pass_info = renderer_get_render_pass_info(engine.render_context, .SHADOWMAP)
-                    pipe_config = pipe_manager_create_pipeline_config_from_render_technique_shadowmap(material.render_technique);
-                }
+            case .DepthPreAlphaTest: {
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .DEPTH_PREPASS)
+                pipe_config = pipe_manager_create_pipeline_config_from_render_technique_depth_pre(material.render_technique);
             }
-
-            shader_combination := manager.depthonly_pipeline_shader_combinations[depth_only_shader_type];
-            vert_shader_id : ShaderID = manager.pipeline_shader_ids[shader_combination.vert];
-            frag_shader_id : ShaderID = manager.pipeline_shader_ids[shader_combination.frag];                
-
-            vert_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, vert_shader_id, variant = nil);
-            frag_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, frag_shader_id, variant = nil);
-
-            engine_assert(vert_shader != nil);
-            engine_assert(frag_shader != nil);
-
-            pipeline := pipe_manager_create_graphics_pipeline(gpu_device, vert_shader, frag_shader, &pipe_config, &manager.vertex_buf_descriptor_infos[VertexBufDescriptorType.PositionOnly], &render_pass_info);
-
-            if pipeline != nil {
-                log.debugf("Build Pipeline Variant Depthonly: shader_type: {}, depthonly_pipe_hash: {}", depth_only_shader_type, pipe_hash);
-                manager.depthonly_pipeline_cache[pipe_hash] = pipeline;
-            } else {
-                log.errorf("PipeVariantDepthonly: failed to create pipeline")
+            case .Shadowmap: {
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .SHADOWMAP)
+                pipe_config = pipe_manager_create_pipeline_config_from_render_technique_shadowmap(material.render_technique);
             }
+            case .ShadowmapAlphaTest: {
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .SHADOWMAP)
+                pipe_config = pipe_manager_create_pipeline_config_from_render_technique_shadowmap(material.render_technique);
+            }
+        }
+
+        shader_combination := manager.depthonly_pipeline_shader_combinations[depth_only_shader_type];
+        vert_shader_id : ShaderID = manager.pipeline_shader_ids[shader_combination.vert];
+        frag_shader_id : ShaderID = manager.pipeline_shader_ids[shader_combination.frag];                
+
+        vert_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, vert_shader_id, variant = nil);
+        frag_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, frag_shader_id, variant = nil);
+
+        engine_assert(vert_shader != nil);
+        engine_assert(frag_shader != nil);
+
+        pipeline := pipe_manager_create_graphics_pipeline(gpu_device, vert_shader, frag_shader, &pipe_config, &manager.vertex_buf_descriptor_infos[VertexBufDescriptorType.PositionOnly], &render_pass_info);
+
+        if pipeline != nil {
+            log.debugf("Build Pipeline Variant Depthonly: shader_type: {}, depthonly_pipe_hash: {}", depth_only_shader_type, pipe_hash);
+            manager.depthonly_pipeline_cache[pipe_hash] = pipeline;
+        } else {
+            log.errorf("PipeVariantDepthonly: failed to create pipeline")
         }
     }
 }

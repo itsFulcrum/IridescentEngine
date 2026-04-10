@@ -17,6 +17,5 @@ layout(set=3, binding=0) uniform mat_ubo {
 layout (location=0) out vec4 frag_color;
 
 void main() {
-
-	frag_color = _mat_ubo.color;
+	frag_color = vec4(_mat_ubo.color.rgb, 1.0f);
 }

@@ -9,8 +9,8 @@ struct LightData {
   
   float spot_light_angle_scale;  // Calculated as: 1.0f / max(0.001f, cos(inner_cone_angle_radians) - cos(outer_cone_angle_radians));
   float spot_light_angle_offset; // Calculated as: -cos(outer_cone_angle_radians) * spot_light_angle_scale;
-  float padding1;
-  float padding2; 
+  uint  is_disabled;
+  float range; 
   float padding3; 
 };
 

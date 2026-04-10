@@ -20,6 +20,8 @@ layout (location = 0) in vertex_data {
 	mat3 tbn_mat;
 } vert_data;
 
+
+
 // ========= Storage Buffers
 
 // in SDL GPU storage buffers in vertex shader must be bound to 'set=0' in fragment shader it is 'set=2'
@@ -199,16 +201,6 @@ void main() {
 		scene_ao = srgb_to_linear_float_gamma_2_2(ao_tex_sample.r);
 	#endif
 
-
-	//frag_color.rgb = vec3(scene_ao);
-	//return;
-
-	//frag_color.rgb = vert_data.normal_ws.xyz;
-	//return;
-
-	// frag_color.rgb = vec3(scene_ao);
-	// return;
-
 	PbrMaterial mat = _pbr_materials[_mat_ubo.mat_index];
 
 	SurfaceData surf_data;
@@ -230,7 +222,11 @@ void main() {
 
   	vec3 F0 = mix(vec3(DIALECTRIC_F0), surf_data.albedo, surf_data.metallic);
 
-	
+		
+	//frag_color.rgb = vert_data.color_0.xyz;
+	//frag_color.rgb = vert_data.color_0.xyz;
+	//frag_color.rgb = vert_data.color_1.xyz;
+	//return;
 	//surf_data.roughness = 0.3f;
 
 	float CURV_MOD = 25.0f;
@@ -289,6 +285,10 @@ void main() {
 
  		LightData light = _lights_buffer.lights[i];
 
+ 		if (light.is_disabled == 1) {
+ 			continue;
+ 		}
+
  		float shadow = 1.0f;
  		if(light.shadowmap_index >= 0 && cascade_index != -1){
 			// casts shadow
@@ -311,10 +311,15 @@ void main() {
 	}
 
 	// POINT LIGHTS
-	#if 0
+	#if 1
 	for (uint i = _lights_buffer.directional_lights_end; i < _lights_buffer.point_lights_end; i++){
- 		
+
  		LightData light = _lights_buffer.lights[i];
+ 		
+ 		if (light.is_disabled == 1) {
+ 			continue;
+ 		}
+
     	vec3 to_light_vec = light.position.xyz - lighting_data.frag_position;
     	float light_distance = length(to_light_vec);
     	to_light_vec /= light_distance; // normalize
@@ -344,9 +349,13 @@ void main() {
 	#if 1
 	for (uint i = _lights_buffer.point_lights_end; i < _lights_buffer.num_lights; i++){
  		
+    	LightData light = _lights_buffer.lights[i];
+    	if (light.is_disabled == 1) {
+ 			continue;
+ 		}
+
     	float shadow = 1.0f;
 
-    	LightData light = _lights_buffer.lights[i];
 
  		vec3 to_light_vec = light.position.xyz - lighting_data.frag_position;
     	float light_distance = length(to_light_vec);
@@ -377,9 +386,7 @@ void main() {
 	////// EMISSIVE RADIANCE ======================================================================================== ////
   	//// ============================================================================================================ ////
 
-	vec3 emissive_radiance = surf_data.emissive * surf_data.emission_strength;
-
-
+	vec3 emissive_radiance = surf_data.emissive * surf_data.emission_strength * 200;
 	////// INDIRECT RADIANCE ======================================================================================== ////
   	//// ============================================================================================================ ////
 
@@ -428,6 +435,9 @@ void main() {
   	//// ============================================================================================================
 
 	vec3 outgoing_radiance = (indirect_radiance + direct_radiance + emissive_radiance);
+
+	// frag_color.rgb = surf_data.albedo;
+	// return;
 
 	//outgoing_radiance = direct_radiance;
 	//outgoing_radiance = indirect_specular;

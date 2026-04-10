@@ -12,10 +12,10 @@ import sdl "vendor:sdl3"
 import "odinary:filey"
 import "odinary:shady"
 
+import iricom "iricommon"
 
-
-ShaderID :: distinct i32
-ShaderHash :: u64
+ShaderID 	:: iricom.ShaderID
+ShaderHash 	:: iricom.ShaderHash
 
 ShaderManager :: struct {
 

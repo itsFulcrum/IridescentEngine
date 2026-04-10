@@ -1,19 +1,12 @@
 package iri
 
-SHADOWMAP_MAX_RESOLUTION :: 4096
-SHADOWMAP_MIN_RESOLUTION :: 32
+import iricom "iricommon"
+
+SHADOWMAP_MAX_RESOLUTION :: iricom.SHADOWMAP_MAX_RESOLUTION
+SHADOWMAP_MIN_RESOLUTION :: iricom.SHADOWMAP_MIN_RESOLUTION
 SHADOWMAP_MAX_MIP_LEVEL :: 7
 
-ShadowmapResolution :: enum u32 {
-	_4096 = 4096,
-	_2048 = 2048,
-	_1024 = 1024,
-	_512  = 512,
-	_256  = 256,
-	_128  = 128,
-	_64   = 64,
-	_32   = 32,
-}
+ShadowmapResolution :: iricom.ShadowmapResolution // defined in iricom_light.odin
 
 shadowmap_resolution_to_mip_level:: proc(shadow_res : ShadowmapResolution) -> u32{
 

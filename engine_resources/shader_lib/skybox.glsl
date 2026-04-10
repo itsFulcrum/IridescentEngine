@@ -1,9 +1,5 @@
 
 struct SkyboxData {
-	vec3  sun_direction;
-    float sun_strength;
-    vec3  sun_color;
-    float use_cubemap;
 
     vec3  color_zenith;
 	float exposure;
@@ -11,6 +7,11 @@ struct SkyboxData {
 	float rotation;
 	vec3  color_nadir;
 	uint  max_cubemap_mip;
+    
+    float use_cubemap;
+	uint  padding1;
+	uint  padding2;
+	uint  padding3;
 };
 
 uint direction_to_cubemap_face_index(const vec3 dir){

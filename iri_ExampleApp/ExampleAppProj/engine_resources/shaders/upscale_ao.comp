@@ -1,0 +1,197 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+precision highp float;
+precision highp sampler2D;
+
+
+#include "../shader_lib/mathy.glsl"
+#include "../shader_lib/color.glsl"
+
+// https://wiki.libsdl.org/SDL3/SDL_CreateGPUComputePipeline
+// For SPIR-V shaders, use the following resource sets:
+// 0: Sampled textures, followed by read-only storage textures, followed by read-only storage buffers
+// 1: Read-write storage textures, followed by read-write storage buffers
+// 2: Uniform buffers
+
+
+
+layout(set=0, binding = 0) uniform sampler2D _min_max_depth_tex;
+
+layout(r8, set=1, binding = 0) uniform image2D _dest_tex;  // upscaled AO texture
+layout(r8, set=1, binding = 1) uniform image2D _src_tex;   // lower mip
+
+layout(set=2, binding=0) uniform ubo {
+    mat4 _inv_proj_mat;
+    uvec2 _src_dimentions;
+    uvec2 _dest_dimentions;
+    int   _dst_mip; 
+    int   _multiply_dest; // dont need this anymore
+    float _camera_near; 
+    float _camera_far; 
+};
+
+
+#define TEST
+
+void main() {
+    // runs for each pixel in the dest img.
+    //groupMemoryBarrier();
+
+    ivec2 texel_coord = ivec2(gl_GlobalInvocationID.xy);
+
+    if(texel_coord.x >= int(_dest_dimentions.x) || texel_coord.y >= int(_dest_dimentions.y) ){
+        return;
+    }
+
+    const int src_mip = _dst_mip + 1;
+
+    //vec2  src_texel_f = texel_uv * (vec2(_src_dimentions));
+    //ivec2 src_texel  = ivec2(src_texel_f);
+    ivec2 src_texel  = texel_coord / 2;
+
+    float high_res_depth = texelFetch(_min_max_depth_tex, texel_coord, _dst_mip).x;
+    high_res_depth = linearize_depth(high_res_depth, _camera_near, _camera_far);
+    
+    float upscaled = 1.0f;
+
+    
+#ifdef TEST
+    // controll the strength of the 'depth aware' upsampling    
+    float spacial_sigma = 1.0f;
+    float depth_sigma   = 10.0f;
+
+    float ao_summ = 0.0f;
+    float weight_sum = 0.0f;
+
+    int size = 1;
+
+    float max_dist = dot(vec2(size, size), vec2(size, size));
+
+    for (int x = -size; x <= size; x++){
+        for (int y = -size; y <= size; y++){
+
+            ivec2 texel_offset = ivec2(x,y);
+
+            ivec2 sample_texel = src_texel + texel_offset; // todo clamp to tex bounds
+
+            float sample_depth = texelFetch(_min_max_depth_tex, sample_texel, src_mip).x;
+            //sample_depth = linearize_depth(sample_depth, _camera_near, _camera_far);
+
+            vec4 value = imageLoad(_src_tex, sample_texel);
+            float sample_ao = srgb_to_linear_float_gamma_2_2(value.r);
+
+
+             float dist = dot(vec2(texel_offset), vec2(texel_offset)) / max_dist;
+             dist = 1-dist;
+             float spacial_weight = exp(dist * spacial_sigma);
+            //float spacial_weight = exp(-dot(vec2(texel_offset), vec2(texel_offset)) * spacial_sigma);
+
+            float depth_diff = abs(high_res_depth - sample_depth);
+            float depth_weight = exp(-depth_diff * depth_sigma);
+
+            float weight = depth_weight *  spacial_weight;
+
+            weight = max(0.0001f,weight);
+
+            ao_summ += sample_ao * weight;
+            weight_sum += weight;
+        }
+    }
+
+    ao_summ /= weight_sum;
+
+    // convert back to srgb
+    ao_summ = linear_to_srgb_float_gamma_2_2(ao_summ);
+    upscaled = ao_summ;
+#else 
+    
+    
+    float depth_sigma = 100.0f;
+    
+    ivec2 texel00 = src_texel + ivec2(0,0);
+    ivec2 texel01 = src_texel + ivec2(0,1);
+    ivec2 texel10 = src_texel + ivec2(1,0);
+    ivec2 texel11 = src_texel + ivec2(1,1);
+
+    float depth00 = linearize_depth(texelFetch(_min_max_depth_tex, texel00, src_mip).x, _camera_near, _camera_far);
+    float depth01 = linearize_depth(texelFetch(_min_max_depth_tex, texel01, src_mip).x, _camera_near, _camera_far);
+    float depth10 = linearize_depth(texelFetch(_min_max_depth_tex, texel10, src_mip).x, _camera_near, _camera_far);
+    float depth11 = linearize_depth(texelFetch(_min_max_depth_tex, texel11, src_mip).x, _camera_near, _camera_far);
+
+    float diff00 = abs(high_res_depth - depth00);
+    float diff01 = abs(high_res_depth - depth01);
+    float diff10 = abs(high_res_depth - depth10);
+    float diff11 = abs(high_res_depth - depth11);
+
+    vec4 depth_weights = vec4(0.0f);
+    //depth_weights.x = exp(diff00 * depth_sigma);
+    //depth_weights.y = exp(diff01 * depth_sigma);
+    //depth_weights.z = exp(diff10 * depth_sigma);
+    //depth_weights.w = exp(diff11 * depth_sigma);
+
+    depth_weights.x = step(diff00, 0.1f);
+    depth_weights.y = step(diff01, 0.1f);
+    depth_weights.z = step(diff10, 0.1f);
+    depth_weights.w = step(diff11, 0.1f);
+
+
+    float dsumm = depth_weights.x + depth_weights.y + depth_weights.z + depth_weights.w;
+    depth_weights /= dsumm;
+
+    dsumm = clamp(dsumm , 0.0, 1.0);
+
+    vec4 discon = vec4(0.0);
+    discon.x = diff00;
+    discon.y = diff01;
+    discon.z = diff10;
+    discon.w = diff11;
+
+    float discontinuety = clamp(discon.x + discon.y + discon.z + discon.w, 0.0, 1.0f);
+
+    vec2 texel_uv = vec2(vec2(texel_coord) ) / vec2(_dest_dimentions);
+
+    vec2 src_texel_f = texel_uv * (vec2(_src_dimentions));// - 0.5f;
+    vec2 fraction = fract(src_texel_f);
+
+    vec4 bilin_weights = vec4(0.0f);
+    bilin_weights.x = (1 - fraction.x) * (1 - fraction.y);
+    bilin_weights.y = (1 - fraction.x) * (    fraction.y);
+    bilin_weights.z = (    fraction.x) * (1 - fraction.y);
+    bilin_weights.w = (    fraction.x) * (    fraction.y);
+    
+    vec4 weights = mix(bilin_weights, depth_weights, dsumm);
+    //weights = bilin_weights;
+    //weights = depth_weights;
+
+
+    float ao_00 = imageLoad(_src_tex, texel00).r;
+    float ao_01 = imageLoad(_src_tex, texel01).r;
+    float ao_10 = imageLoad(_src_tex, texel10).r;
+    float ao_11 = imageLoad(_src_tex, texel11).r;
+    
+    float ao_summ = 0.0;
+
+    ao_summ += ao_00 * weights.x;
+    ao_summ += ao_01 * weights.y;
+    ao_summ += ao_10 * weights.z;
+    ao_summ += ao_11 * weights.w;
+
+    upscaled = ao_summ;
+    //upscaled = dsumm;
+    //upscaled = discon.x + discon.y +discon.z + discon.w;
+
+    // - lerp(bilinear_weights, depth_weights, f(depth_discontinuity)) * four_samples
+    // - lerp(biliear_sample, best_depth_sample, f(depth_discontinuity))
+    
+    // - bilinear_fetch(lerp(bilinear_texcoords, best_depth_texcoords, f(depth_discontinuity)))
+
+
+#endif
+
+
+
+    vec4 store = vec4(upscaled);
+
+    imageStore(_dest_tex, texel_coord, store);
+}

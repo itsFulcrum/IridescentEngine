@@ -1,0 +1,80 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba32f,set=1, binding = 0) uniform image2D _src;
+layout(rgba32f,set=1, binding = 1) uniform writeonly image2D _dest;
+
+// Uniform buffer
+layout(set=2, binding=0) uniform ubo {
+	uvec2 _texture_size;
+	uint  _blur_axis; // 0 horizontal (x), 1 vertical (y)
+	uint  _padding1;
+};
+
+
+void main() {
+
+	ivec2 texel_coord = ivec2(gl_GlobalInvocationID.xy);
+
+    if(texel_coord.x >= int(_texture_size.x) || texel_coord.y >= int(_texture_size.y) ){
+        return;   
+    }
+
+	//vec2 texel_uv =  (vec2(texel_coord.xy) + 0.5f) / vec2(_texture_size);
+
+	
+
+	ivec2 axis = ivec2(1, 0); // horizontal;
+
+	if(_blur_axis == 1){
+		axis = ivec2(0,1);
+	}
+
+	vec4 sum = vec4(0.0f);
+	
+	// gaus blur 7 wide
+	// sum += imageLoad(_src, texel_coord + ivec2(axis * -3)) * float(1.0f/64);
+	// sum += imageLoad(_src, texel_coord + ivec2(axis * -2)) * float(6.0f/64);
+	// sum += imageLoad(_src, texel_coord + ivec2(axis * -1)) * float(15.0f/64);
+	// sum += imageLoad(_src, texel_coord + ivec2(axis *  0)) * float(20.0f/64);
+	// sum += imageLoad(_src, texel_coord + ivec2(axis *  1)) * float(15.0f/64);
+	// sum += imageLoad(_src, texel_coord + ivec2(axis *  2)) * float(6.0f/64);
+	// sum += imageLoad(_src, texel_coord + ivec2(axis *  3)) * float(1.0f/64);
+
+	//sum = imageLoad(_src, texel_coord);
+
+	// Average blur
+	int size = 3;
+	float total = 0.0f;
+
+	// vec2 center = imageLoad(_src, texel_coord).rg;
+
+
+	float max_depth = 0.0f;
+	//vec2 minv = center;
+	for (int i = -size; i <= size; i++) {
+
+		ivec2 offset = ivec2(i, i) * axis;
+
+		ivec2 texel = texel_coord + offset;
+
+		float weight =  (float(size + 1) - float(abs(i))) / float(size);
+
+		weight = weight * weight;
+
+		vec3 value = imageLoad(_src, texel).rgb;
+
+		max_depth = max(max_depth, value.b);
+		// minv = max(minv, value);
+
+		sum += vec4(value, 0.0) * weight;
+
+		total += weight;
+	}
+
+	sum /= total;
+
+	sum.b = max_depth;
+
+	imageStore(_dest, texel_coord, sum);
+}

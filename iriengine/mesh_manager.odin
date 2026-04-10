@@ -3,14 +3,22 @@ package iri
 import "core:log"
 import "core:strings"
 import "core:mem"
+import "core:math"
+import "core:math/linalg"
 
-
+import iricom "iricommon"
 import sdl "vendor:sdl3"
 import "odinary:mathy"
 
+// @Note: MeshID's are runtime stable IDs, not between executable sessions.
+// They are also stable between loaded universes. 
+// So two loaded universes can refer to the same MeshID.
+MeshID :: iricom.MeshID   // == i32
 
-MeshID :: distinct i32
-
+DRAW_INSTANCE_FLAGS_DEFAULT :: iricom.DRAW_INSTANCE_FLAGS_DEFAULT
+DrawInstanceFlags 	:: iricom.DrawInstanceFlags
+DrawInstanceFlag 	:: iricom.DrawInstanceFlag
+DrawInstance 		:: iricom.DrawInstance
 
 MeshGPUData :: struct{
 	num_indecies  	: u32,
@@ -18,7 +26,7 @@ MeshGPUData :: struct{
 	index_buf  		: ^sdl.GPUBuffer,
 	vertex_buf 		: ^sdl.GPUBuffer,
 	vertex_pos_buf 	: ^sdl.GPUBuffer,
-	vertex_layout : VertexDataLayout,
+	vertex_layout   : VertexDataLayout,
 }
 
 Mesh :: struct {
@@ -26,42 +34,28 @@ Mesh :: struct {
 	name : string,
 	gpu_data : MeshGPUData,
 	aabb : AABB,
-//	mesh_data : rawptr, // ptrs to raw mesh data ??
 	bvh : rawptr, // ptr to a accelartion strutcure of the mesh
-}
 
-MESH_INSTANCE_FLAGS_DEFAULT :: MeshInstanceFlags{.IS_VISIBLE, .CAST_SHADOWS}
-MeshInstanceFlags :: distinct bit_set[MeshInstanceFlag]
-MeshInstanceFlag :: enum u32 {
-	IS_STATIC = 0,
-	IS_VISIBLE,
-	CAST_SHADOWS,
-}
-
-MeshInstance :: struct {
-	flags : MeshInstanceFlags,
-	mesh_id : MeshID,
-	mat_id  : MaterialID,
-	transform : Transform,
+	//@Note Transform of the loaded mesh file which we keep stored but its not used for rendering directly but will be copied to a drawables
+	transform : Transform, 
 }
 
 Drawable :: struct {
 	entity : Entity,
-	mesh_instance : MeshInstance,
-	//transform : Transform, 		// in world space (transformed by entity transform)
-	world_obb : OBB, // world space obb
-	//aabb : AABB,	// in world space..
-	world_mat : matrix[4,4]f32,
+	draw_instance  : DrawInstance,
+	world_oobb : OBB, // world space obb
+	world_mat  : matrix[4,4]f32,
 }
 
 MeshManager :: struct {
+	num_loaded_meshes : u32,
 	meshes : #soa[dynamic]Mesh,
+	id_map : map[AssetUUID]MeshID,
 }
 
 
 @(private="package")
 mesh_manager_init :: proc(manager : ^MeshManager){
-
 }
 
 @(private="package")
@@ -71,18 +65,22 @@ mesh_manager_deinit :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice)
 	// we could prob loop through elements seperatly since this is a #soa array
 	for &mesh in manager.meshes {
 
-		if(mesh.gpu_data.index_buf != nil){
+		if mesh.gpu_data.index_buf != nil {
 			sdl.ReleaseGPUBuffer(gpu_device, mesh.gpu_data.index_buf);
 		}
-		if(mesh.gpu_data.vertex_buf != nil){
+		if mesh.gpu_data.vertex_buf != nil {
 			sdl.ReleaseGPUBuffer(gpu_device, mesh.gpu_data.vertex_buf);
 		}
 
-		delete(mesh.name);
+		if len(mesh.name) > 0 {
+			delete(mesh.name);
+		}
 	}
 
-
 	delete_soa(manager.meshes);
+	delete_map(manager.id_map);
+
+	manager.num_loaded_meshes = 0;
 }
 
 @(private="package")
@@ -92,6 +90,16 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 
 	id : MeshID = -1;
 
+	// @Note: invalid uuid is allowed! 
+	// We generally want this system to allow storing meshes that are not stored with an
+	// asset_uuid but perhaps be programatically generated
+	invalid_uuid : bool = mesh_data.asset_uuid == AssetUUID_INVALID;
+
+	if !invalid_uuid {
+		if mesh_data.asset_uuid in manager.id_map {
+			return manager.id_map[mesh_data.asset_uuid];
+		}
+	}
 	
 	gpu_mesh_data, upload_ok := mesh_manager_upload_mesh_data_to_gpu(gpu_device, mesh_data);
 	
@@ -110,18 +118,18 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 					max = [4]f32{mesh_data.aabb_max.x, mesh_data.aabb_max.y, mesh_data.aabb_max.z, 0.0}
 				};
 	mesh.bvh = nil;
-
+	mesh.transform = mesh_data.transform;
 
 	free_spot : int = -1;
 	for i in 0..<len(manager.meshes){
 
-		if(!manager.meshes.used[i]){
+		if !manager.meshes.used[i] {
 			free_spot = i;
 			break;
 		}
 	}
 
-	if(free_spot == -1){
+	if free_spot == -1 {
 		append_soa(&manager.meshes, mesh);
 		id = cast(MeshID)(len(manager.meshes) -1);
 	} else {
@@ -129,128 +137,72 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 		id = cast(MeshID)free_spot;
 	}
 
+	if !invalid_uuid {
+		manager.id_map[mesh_data.asset_uuid] = id;
+	}
+
+	manager.num_loaded_meshes += 1;
+
 	return id;
 }
 
 @(private="package")
 mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice, id : ^MeshID){
 
-	index : i32 = cast(i32)id^;
+	engine_assert(id != nil)
 
-	if index < 0 || index >= cast(i32)len(manager.meshes) {
-		// invalid mesh id;
+	mesh_id : MeshID = id^;
+	index : i32 = cast(i32)mesh_id;
+
+	if !mesh_manager_is_valid_id(manager, mesh_id) {
 		return;
 	}
 
-	delete(manager.meshes[index].name);
-
-	manager.meshes[index].used = false;
-	manager.meshes[index].aabb = AABB{{0,0,0,0}, {0,0,0,0}};	
-	manager.meshes[index].gpu_data.vertex_layout = .Minimal;
-	manager.meshes[index].gpu_data.num_indecies  = 0; 
-	manager.meshes[index].gpu_data.num_vertecies = 0;
+	if len(manager.meshes[index].name) > 0 {
+		delete(manager.meshes[index].name);
+	}
 
 	if manager.meshes[index].gpu_data.index_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.index_buf);
-		manager.meshes[index].gpu_data.index_buf = nil;
 	}
 
 	if manager.meshes[index].gpu_data.vertex_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.vertex_buf);
-		manager.meshes[index].gpu_data.vertex_buf = nil;
 	}
 
 	if manager.meshes[index].gpu_data.vertex_pos_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.vertex_pos_buf);
-		manager.meshes[index].gpu_data.vertex_pos_buf = nil;
+	}
+
+	last : int = len(manager.meshes) -1;
+	if int(index) == last {
+		// if last entry, pop it of. there is no built in pop for #soa but this should be the same
+		ordered_remove_soa(&manager.meshes, last);
+	} else {
+		manager.meshes[index] = Mesh{}; // Zero memory.
 	}
 
 
-	// invalidate user id
+	manager.num_loaded_meshes -= 1;
+
+	// @Note: For now we will do the slow thing and iterate the entire id map to see if id exists there (it may not).
+	// we could also store the UUID yet again inside Mesh structure when loading to make this faster but more memory..
+	for key, value in manager.id_map {
+		if value == mesh_id {
+			delete_key(&manager.id_map, key);
+			break;
+		}  
+	}
+
+	// invalidate callers id
 	id^ = -1;
 
 	return;
 }
 
 mesh_manager_get_num_loaded_meshes :: proc(manager : ^MeshManager) -> u32 {
-	return cast(u32)len(manager.meshes);
+	return manager.num_loaded_meshes;
 }
-
-@(private="file")
-mesh_manager_make_interleaved_vertex_buffer :: proc(mesh_data: ^MeshData) -> (data : [^]byte, size : int) {
-
-	engine_assert(mesh_data != nil);
-
-	num_indecies  : u32 = mesh_data.num_indecies;
-	num_vertecies : u32 = mesh_data.num_vertecies;
-
-	layout := mesh_data.vertex_data_layout;
-	interleaved_buf_byte_size : int;
-	
-	switch layout {
-		case .Minimal:  interleaved_buf_byte_size = cast(int)num_vertecies * size_of(VertexDataMinimal);
-		case .Standard: interleaved_buf_byte_size = cast(int)num_vertecies * size_of(VertexDataStandard);
-		case .Extended: interleaved_buf_byte_size = cast(int)num_vertecies * size_of(VertexDataExtended);
-	}
-
-	interleaved_vertex_buffer , alloc_err := make_multi_pointer([^]byte, interleaved_buf_byte_size, context.allocator);
-	if alloc_err != .None {
-		log.fatalf("Memory Allocation Error: {}", alloc_err);
-		return nil, 0;
-	}
-
-	switch layout {
-		case .Minimal: {
-
-			buf : [^]VertexDataMinimal = cast([^]VertexDataMinimal)interleaved_vertex_buffer;
-			for i in 0..<num_vertecies {
-				//normal_oct  : [2]f32 = mathy.oct_encode(mesh_data.normals[i]);
-				tan_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i].xyz);
-
-				buf[i] = VertexDataMinimal {
-					normal = mathy.oct_encode(mesh_data.normals[i]),
-					texcoord_0 = mesh_data.texcoords_0[i],
-					tangent = [3]f32{tan_oct.x, tan_oct.y, mesh_data.tangents[i].w},
-				}
-			}
-		}
-		case .Standard: {
-			buf : [^]VertexDataStandard = cast([^]VertexDataStandard)interleaved_vertex_buffer;
-
-			for i in 0..<num_vertecies {
-				tan_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i].xyz);
-
-				buf[i] = VertexDataStandard {
-					normal = mathy.oct_encode(mesh_data.normals[i]),
-					texcoord_0 = mesh_data.texcoords_0[i],
-					tangent = [3]f32{tan_oct.x, tan_oct.y, mesh_data.tangents[i].w},
-
-					color_0 	   	= mesh_data.colors_0[i],
-				}
-			}
-		}
-		case .Extended: {
-			buf : [^]VertexDataExtended = cast([^]VertexDataExtended)interleaved_vertex_buffer;
-
-			for i in 0..<num_vertecies {
-				tan_oct : [2]f32 = mathy.oct_encode(mesh_data.tangents[i].xyz);
-
-				buf[i] = VertexDataExtended {
-					normal = mathy.oct_encode(mesh_data.normals[i]),
-					texcoord_0 = mesh_data.texcoords_0[i],
-					tangent = [3]f32{tan_oct.x, tan_oct.y, mesh_data.tangents[i].w},
-					
-					color_0 	   	= mesh_data.colors_0[i],
-					color_1 	   	= mesh_data.colors_1[i],
-					texcoord_1 		= mesh_data.texcoords_1[i],
-				}
-			}
-		}
-	}
-
-	return interleaved_vertex_buffer, interleaved_buf_byte_size;
-}
-
 
 @(private="file")
 mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_data: ^MeshData) -> (MeshGPUData, bool) {
@@ -262,8 +214,8 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 
 	layout := mesh_data.vertex_data_layout;
 
-	interleaved_vertex_buffer , interleaved_buf_byte_size := mesh_manager_make_interleaved_vertex_buffer(mesh_data);
-	defer free(interleaved_vertex_buffer);
+	// interleaved_vertex_buffer , interleaved_buf_byte_size := mesh_manager_make_interleaved_vertex_buffer(mesh_data);
+	// defer free(interleaved_vertex_buffer);
 
 	// Index Buffer
 	index_buf_create_info : sdl.GPUBufferCreateInfo = {
@@ -278,6 +230,9 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	}
 
 	// Vertex Buffer Interleaved vert data
+
+	interleaved_buf_byte_size : int = cast(int)mesh_data.num_vertecies * iricom.get_vertex_layout_byte_size(mesh_data.vertex_data_layout);
+
 	vertex_buf_create_info : sdl.GPUBufferCreateInfo = {
 		size  = cast(u32)interleaved_buf_byte_size,
 		usage = {sdl.GPUBufferUsageFlag.VERTEX},
@@ -315,7 +270,7 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	mem.copy(&transfer_buf_data[dst_offset], &mesh_data.positions[0], cast(int)vertex_pos_buf_create_info.size);
 	// Vertex Buffer
 	dst_offset += cast(int)vertex_pos_buf_create_info.size;
-	mem.copy(&transfer_buf_data[dst_offset], &interleaved_vertex_buffer[0], cast(int)vertex_buf_create_info.size);
+	mem.copy(&transfer_buf_data[dst_offset], &mesh_data.vertex_data[0], cast(int)vertex_buf_create_info.size);
 
 	sdl.UnmapGPUTransferBuffer(gpu_device, transfer_buf);
 
@@ -368,11 +323,10 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
     return gpu_data, true;
 }
 
-
 @(private="package")
-mesh_manager_is_valid_id :: proc(manager : ^MeshManager, id: MeshID) -> bool {
+mesh_manager_is_valid_id :: proc(manager : ^MeshManager, mesh_id: MeshID) -> bool {
 
-	index : i32 = cast(i32)id;
+	index : i32 = cast(i32)mesh_id;
 
 	if index < 0 || index >= cast(i32)len(manager.meshes) {
 		return false;
@@ -381,14 +335,34 @@ mesh_manager_is_valid_id :: proc(manager : ^MeshManager, id: MeshID) -> bool {
 	return manager.meshes.used[index];
 }
 
+@(private="package")
+mesh_manager_get_id_from_asset_uuid :: proc(manager : ^MeshManager, asset_uuid : AssetUUID) -> (id : MeshID, exists : bool) {
+	return manager.id_map[asset_uuid];
+}
+
+// @Speed. this is slow..
+@(private="package")
+mesh_manager_get_asset_uuid_from_mesh_id :: proc(manager : ^MeshManager, mesh_id : MeshID) -> (asset_uuid : AssetUUID, exists : bool){
+	
+	if !mesh_manager_is_valid_id(manager, mesh_id) {
+		return AssetUUID_INVALID, false;
+	}
+
+	for a_uuid, m_id in manager.id_map {
+		if m_id == mesh_id {
+			return a_uuid, true;
+		}
+	}
+
+	return AssetUUID_INVALID, false;
+}
 
 @(private="package")
 mesh_manager_get_mesh_gpu_data :: proc(manager : ^MeshManager, id : MeshID) -> ^MeshGPUData{
 
 	index : i32 = cast(i32)id;
 
-	if index < 0 || index >= cast(i32)len(manager.meshes) {
-		// invalid mesh id;
+	if !mesh_manager_is_valid_id(manager, id) {
 		return nil;
 	}
 
@@ -404,12 +378,21 @@ mesh_manager_get_mesh_gpu_data :: proc(manager : ^MeshManager, id : MeshID) -> ^
 @(private="package")
 mesh_manager_get_aabb :: proc(manager : ^MeshManager, id: MeshID) -> AABB {
 
-	index : i32 = cast(i32)id;
-
-	if index < 0 || index >= cast(i32)len(manager.meshes) {
+	if !mesh_manager_is_valid_id(manager, id) {
 		return AABB{};
 	}
 
 	
-	return manager.meshes.aabb[index];
+	return manager.meshes.aabb[cast(i32)id];
+}
+
+// returns an identity transform if mesh id is invalid. Use 'mesh_manager_is_valid_id' if you need to know.
+@(private="package")
+mesh_manager_get_original_transform :: proc(manager :^MeshManager, id : MeshID) -> Transform {
+	
+	if !mesh_manager_is_valid_id(manager, id) {
+		return transform_create_identity();
+	}
+
+	return manager.meshes.transform[cast(i32)id];
 }

@@ -19,14 +19,6 @@ FrustumPlanes :: struct {
 	planes : [6]Plane, // conventions is in this order: near, far, left, right, top, bottom
 }
 
-
-
-OBB :: struct {
-	center  : [4]f32,
-	extents : [4]f32,
-	axis : [3][4]f32, // Orthonormal axis as normalized vectors.
-}
-
 CullingFrustum :: struct {
 	near_plane_z : f32,
 	far_plane_z  : f32,
@@ -34,38 +26,38 @@ CullingFrustum :: struct {
 	near_plane_half_height : f32,
 }
 
-// transform a aabb in object space to an obb in world space given a to_world Transform
-aabb_to_transformed_obb :: proc "contextless" (aabb : AABB, to_world : Transform) -> OBB {
+// transform a aabb in object space to an oobb in world space given a to_world Transform
+aabb_to_transformed_oobb :: proc "contextless" (aabb : AABB, to_world : Transform) -> OBB {
 
     corner_0 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.min.y, aabb.min.z});
     corner_1 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.max.x, aabb.min.y, aabb.min.z});
     corner_2 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.max.y, aabb.min.z});
     corner_3 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.min.y, aabb.max.z});
 
-    obb : OBB;
+    oobb : OBB;
 
-    obb.axis[0].xyz = corner_1 - corner_0;
-    obb.axis[1].xyz = corner_2 - corner_0;
-    obb.axis[2].xyz = corner_3 - corner_0;
+    oobb.axis[0].xyz = corner_1 - corner_0;
+    oobb.axis[1].xyz = corner_2 - corner_0;
+    oobb.axis[2].xyz = corner_3 - corner_0;
 
-    obb.center.xyz = corner_0 + [3]f32{0.5,0.5,0.5} * (obb.axis[0].xyz + obb.axis[1].xyz + obb.axis[2].xyz);
-    obb.center.w = 1.0;
+    oobb.center.xyz = corner_0 + [3]f32{0.5,0.5,0.5} * (oobb.axis[0].xyz + oobb.axis[1].xyz + oobb.axis[2].xyz);
+    oobb.center.w = 1.0;
 
-    obb.extents = [4]f32{linalg.length(obb.axis[0].xyz), linalg.length(obb.axis[1].xyz), linalg.length(obb.axis[2].xyz), 0.0};
+    oobb.extents = [4]f32{linalg.length(oobb.axis[0].xyz), linalg.length(oobb.axis[1].xyz), linalg.length(oobb.axis[2].xyz), 0.0};
     
     // normalize axis
-    obb.axis[0] /= obb.extents.x
-    obb.axis[1] /= obb.extents.y
-    obb.axis[2] /= obb.extents.z
+    oobb.axis[0] /= oobb.extents.x
+    oobb.axis[1] /= oobb.extents.y
+    oobb.axis[2] /= oobb.extents.z
     // make .w = 0 since they are direction, so we can transform them with any other matrix
-    obb.axis[0].w = 0.0;
-    obb.axis[1].w = 0.0;
-    obb.axis[2].w = 0.0;
+    oobb.axis[0].w = 0.0;
+    oobb.axis[1].w = 0.0;
+    oobb.axis[2].w = 0.0;
 
     // extent should be half the lenght of each side
-    obb.extents.xyz *= 0.5;
+   oobb.extents.xyz *= 0.5;
 
-    return obb;
+   return oobb;
 }
 
 create_culling_frustum :: proc "contextless" (aspect_ratio : f32 , fov_radians: f32, near_clip_plane : f32 , far_clip_plane : f32 ) -> CullingFrustum {
@@ -87,11 +79,11 @@ create_culling_frustum :: proc "contextless" (aspect_ratio : f32 , fov_radians: 
 
 // @Note: cull objects in shadowmap draw that have samll pixel fill in the shadowmap or if they are outside the frustum.
 // the frustum check is very approximate and useses effective a spherical radius but its very fast at least.
-test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, obb: OBB, resolution : u32) -> bool {
+test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, oobb: OBB, resolution : u32) -> bool {
 
 
-    corner0  : [4]f32 = obb.center - (obb.axis[0] * obb.extents[0]) - (obb.axis[1] * obb.extents[1]) - (obb.axis[2] * obb.extents[2])
-    corner1  : [4]f32 = obb.center + (obb.axis[0] * obb.extents[0]) + (obb.axis[1] * obb.extents[1]) + (obb.axis[2] * obb.extents[2])
+    corner0  : [4]f32 = oobb.center - (oobb.axis[0] * oobb.extents[0]) - (oobb.axis[1] * oobb.extents[1]) - (oobb.axis[2] * oobb.extents[2])
+    corner1  : [4]f32 = oobb.center + (oobb.axis[0] * oobb.extents[0]) + (oobb.axis[1] * oobb.extents[1]) + (oobb.axis[2] * oobb.extents[2])
 
     corner0.w = 1.0;
     corner1.w = 1.0;
@@ -135,7 +127,7 @@ test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, obb: OBB, resolution :
 }
 
 
-frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, world_obb : OBB) -> bool{
+frustum_test_oobb_inside :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, world_oobb : OBB) -> bool{
 
     // using separating axis theorem
     // https://bruop.github.io/improved_frustum_culling/
@@ -146,12 +138,12 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
     y_near : f32 = culling_frustum.near_plane_half_height;
     zfar_over_znear : f32 = z_far / z_near;
 
-    obb : OBB = world_obb;
+    oobb : OBB = world_oobb;
 
-    obb.center  = view_mat * obb.center;
-    obb.axis[0] = view_mat * obb.axis[0];
-    obb.axis[1] = view_mat * obb.axis[1];
-    obb.axis[2] = view_mat * obb.axis[2];
+    oobb.center  = view_mat * oobb.center;
+    oobb.axis[0] = view_mat * oobb.axis[0];
+    oobb.axis[1] = view_mat * oobb.axis[1];
+    oobb.axis[2] = view_mat * oobb.axis[2];
 
     // First Test OBB Against frustums near and far plane
     when true {
@@ -160,17 +152,17 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
         // This would be the normal of the near plane in view space
         // N : [3]f32 = { 0, 0, 1 };
 
-        // we project the obb center onto a axis parralel to the normal
+        // we project the oobb center onto a axis parralel to the normal
         // this is simple we just use its z position value.
         // we then compute the projected extents on the axis.
 
         // we can then simply test if its below or above the near or far plane on this axis.
 
-        MoC : f32 = obb.center.z;
+        MoC : f32 = oobb.center.z;
 
-        radius: f32 = abs(obb.axis[0].z) * obb.extents.x;
-        radius     += abs(obb.axis[1].z) * obb.extents.y;
-        radius     += abs(obb.axis[2].z) * obb.extents.z;
+        radius: f32 = abs(oobb.axis[0].z) * oobb.extents.x;
+        radius     += abs(oobb.axis[1].z) * oobb.extents.y;
+        radius     += abs(oobb.axis[2].z) * oobb.extents.z;
 
         obb_min : f32 = MoC - radius;
         obb_max : f32 = MoC + radius;
@@ -204,13 +196,13 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
             MoY : f32 = abs(M[m].y);
             MoZ : f32 = M[m].z;
 
-            // project obb center onto frustum normal axis
-            MoC : f32 = linalg.dot(M[m], obb.center.xyz);
+            // project oobb center onto frustum normal axis
+            MoC : f32 = linalg.dot(M[m], oobb.center.xyz);
             
-            // calc projected min max of the obb on the projected axis
-            obb_radius: f32 = abs(linalg.dot(M[m], obb.axis[0].xyz)) * obb.extents.x;
-            obb_radius     += abs(linalg.dot(M[m], obb.axis[1].xyz)) * obb.extents.y;
-            obb_radius     += abs(linalg.dot(M[m], obb.axis[2].xyz)) * obb.extents.z;
+            // calc projected min max of the oobb on the projected axis
+            obb_radius: f32 = abs(linalg.dot(M[m], oobb.axis[0].xyz)) * oobb.extents.x;
+            obb_radius     += abs(linalg.dot(M[m], oobb.axis[1].xyz)) * oobb.extents.y;
+            obb_radius     += abs(linalg.dot(M[m], oobb.axis[2].xyz)) * oobb.extents.z;
 
             obb_min : f32 = MoC - obb_radius;
             obb_max : f32 = MoC + obb_radius;
@@ -239,14 +231,14 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
     when true {
         for  m in 0..<3 {
             
-            M := obb.axis[m].xyz;
+            M := oobb.axis[m].xyz;
             
             MoX : f32 = linalg.abs(M.x);
             MoY : f32 = linalg.abs(M.y);
             MoZ : f32 = M.z;
-            MoC : f32 = linalg.dot(M, obb.center.xyz);
+            MoC : f32 = linalg.dot(M, oobb.center.xyz);
 
-            obb_radius : f32 = obb.extents[m];
+            obb_radius : f32 = oobb.extents[m];
             obb_min : f32 = MoC - obb_radius;
             obb_max : f32 = MoC + obb_radius;
 
@@ -265,7 +257,7 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
 
             if (obb_min > tau_1 || obb_max < tau_0) {
 
-                //log.debugf("culled by obb axis")
+                //log.debugf("culled by oobb axis")
                 return false;
             }
         }
@@ -278,15 +270,15 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
     // First R x A_i
     when false {
         for m in 0..<3 {
-            M : [3]f32 = { 0.0, -obb.axis[m].z, obb.axis[m].y };
+            M : [3]f32 = { 0.0, -oobb.axis[m].z, oobb.axis[m].y };
             MoX : f32 = 0.0;
             MoY : f32 = linalg.abs(M.y);
             MoZ : f32 = M.z;
-            MoC : f32 = M.y * obb.center.y + M.z * obb.center.z;
+            MoC : f32 = M.y * oobb.center.y + M.z * oobb.center.z;
 
             obb_radius : f32 = 0.0;
             for i in 0..<3 {
-                obb_radius += linalg.abs(linalg.dot(M, obb.axis[i])) * obb.extents[i];
+                obb_radius += linalg.abs(linalg.dot(M, oobb.axis[i])) * oobb.extents[i];
             }
 
             obb_min : f32 = MoC - obb_radius;
@@ -315,15 +307,15 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
      // U x A_i
     when false {
         for m in 0..<3 {
-            M : [3]f32 = {obb.axis[m].z, 0.0, -obb.axis[m].x };
+            M : [3]f32 = {oobb.axis[m].z, 0.0, -oobb.axis[m].x };
             MoX : f32 = abs(M.x);
             MoY : f32 = 0.0;
             MoZ : f32 = M.z;
-            MoC : f32 = M.x * obb.center.x + M.z * obb.center.z;
+            MoC : f32 = M.x * oobb.center.x + M.z * oobb.center.z;
 
             obb_radius : f32 = 0.0;
             for i in 0..<3 {
-                obb_radius += abs(linalg.dot(M, obb.axis[i])) * obb.extents[i];
+                obb_radius += abs(linalg.dot(M, oobb.axis[i])) * oobb.extents[i];
             }
 
             obb_min := MoC - obb_radius;
@@ -353,10 +345,10 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
         for obb_edge_idx  in 0..<3 {
             
             M : [4][3]f32 = {
-                linalg.cross([3]f32{-x_near,  0.0   , z_near }, obb.axis[obb_edge_idx]),// Left Plane
-                linalg.cross([3]f32{ x_near,  0.0   , z_near }, obb.axis[obb_edge_idx]),// Right plane
-                linalg.cross([3]f32{ 0.0   ,  y_near, z_near }, obb.axis[obb_edge_idx]),// Top plane
-                linalg.cross([3]f32{ 0.0   , -y_near, z_near }, obb.axis[obb_edge_idx]),// Bottom plane
+                linalg.cross([3]f32{-x_near,  0.0   , z_near }, oobb.axis[obb_edge_idx]),// Left Plane
+                linalg.cross([3]f32{ x_near,  0.0   , z_near }, oobb.axis[obb_edge_idx]),// Right plane
+                linalg.cross([3]f32{ 0.0   ,  y_near, z_near }, oobb.axis[obb_edge_idx]),// Top plane
+                linalg.cross([3]f32{ 0.0   , -y_near, z_near }, oobb.axis[obb_edge_idx]),// Bottom plane
             }
 
             for m in 0..<4 {
@@ -375,11 +367,11 @@ frustum_test_obb_inside :: proc(culling_frustum : CullingFrustum, view_mat : mat
                     continue;
                 }
 
-                MoC : f32 = linalg.dot(M[m], obb.center);
+                MoC : f32 = linalg.dot(M[m], oobb.center);
 
                 obb_radius : f32= 0.0;
                 for i in 0..<3 {
-                    obb_radius += abs(linalg.dot(M[m], obb.axis[i])) * obb.extents[i];
+                    obb_radius += abs(linalg.dot(M[m], oobb.axis[i])) * oobb.extents[i];
                 }
 
                 obb_min : f32= MoC - obb_radius;
@@ -419,7 +411,7 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
     y_near : f32 = culling_frustum.near_plane_half_height;
     zfar_over_znear : f32 = z_far / z_near;
 
-    obb : OBB = aabb_to_transformed_obb(aabb, to_world);
+    oobb : OBB = aabb_to_transformed_oobb(aabb, to_world);
 
     // 4 corners of the aabb transform to world space using to_world Transform
     // @note - we could also combine the to_world Transform with the view_matrix but that would require to create a transform matrix for each 
@@ -459,10 +451,10 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
    //  obb_axis[1].w = 0.0;
    //  obb_axis[2].w = 0.0;
 
-    obb.center  = view_mat * obb.center;
-    obb.axis[0] = view_mat * obb.axis[0];
-    obb.axis[1] = view_mat * obb.axis[1];
-    obb.axis[2] = view_mat * obb.axis[2];
+    oobb.center  = view_mat * oobb.center;
+    oobb.axis[0] = view_mat * oobb.axis[0];
+    oobb.axis[1] = view_mat * oobb.axis[1];
+    oobb.axis[2] = view_mat * oobb.axis[2];
    // obb_extents = view_mat * obb_extents;
 
     // Transform corners to view space using view matrix
@@ -471,7 +463,7 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
     // corners[2] = view_mat * corners[2];
     // corners[3] = view_mat * corners[3];
 
-    // create obb ortonormal axis from corners
+    // create oobb ortonormal axis from corners
     // obb_axis : [3][4]f32 = ---;
     // obb_axis[0] = corners[1] - corners[0];
     // obb_axis[1] = corners[2] - corners[0];
@@ -487,17 +479,17 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
         // This would be the normal of the near plane in view space
         // N : [3]f32 = { 0, 0, 1 };
 
-        // we project the obb center onto a axis parralel to the normal
+        // we project the oobb center onto a axis parralel to the normal
         // this is simple we just use its z position value.
         // we then compute the projected extents on the axis.
 
         // we can then simply test if its below or above the near or far plane on this axis.
 
-        MoC : f32 = obb.center.z;
+        MoC : f32 = oobb.center.z;
 
-        radius: f32 = abs(obb.axis[0].z) * obb.extents.x;
-        radius     += abs(obb.axis[1].z) * obb.extents.y;
-        radius     += abs(obb.axis[2].z) * obb.extents.z;
+        radius: f32 = abs(oobb.axis[0].z) * oobb.extents.x;
+        radius     += abs(oobb.axis[1].z) * oobb.extents.y;
+        radius     += abs(oobb.axis[2].z) * oobb.extents.z;
 
         obb_min : f32 = MoC - radius;
         obb_max : f32 = MoC + radius;
@@ -531,13 +523,13 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
             MoY : f32 = abs(M[m].y);
             MoZ : f32 = M[m].z;
 
-            // project obb center onto frustum normal axis
-            MoC : f32 = linalg.dot(M[m], obb.center.xyz);
+            // project oobb center onto frustum normal axis
+            MoC : f32 = linalg.dot(M[m], oobb.center.xyz);
             
-            // calc projected min max of the obb on the projected axis
-            obb_radius: f32 = abs(linalg.dot(M[m], obb.axis[0].xyz)) * obb.extents.x;
-            obb_radius     += abs(linalg.dot(M[m], obb.axis[1].xyz)) * obb.extents.y;
-            obb_radius     += abs(linalg.dot(M[m], obb.axis[2].xyz)) * obb.extents.z;
+            // calc projected min max of the oobb on the projected axis
+            obb_radius: f32 = abs(linalg.dot(M[m], oobb.axis[0].xyz)) * oobb.extents.x;
+            obb_radius     += abs(linalg.dot(M[m], oobb.axis[1].xyz)) * oobb.extents.y;
+            obb_radius     += abs(linalg.dot(M[m], oobb.axis[2].xyz)) * oobb.extents.z;
 
             obb_min : f32 = MoC - obb_radius;
             obb_max : f32 = MoC + obb_radius;
@@ -566,14 +558,14 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
     when true {
         for  m in 0..<3 {
             
-            M := obb.axis[m].xyz;
+            M := oobb.axis[m].xyz;
             
             MoX : f32 = linalg.abs(M.x);
             MoY : f32 = linalg.abs(M.y);
             MoZ : f32 = M.z;
-            MoC : f32 = linalg.dot(M, obb.center.xyz);
+            MoC : f32 = linalg.dot(M, oobb.center.xyz);
 
-            obb_radius : f32 = obb.extents[m];
+            obb_radius : f32 = oobb.extents[m];
             obb_min : f32 = MoC - obb_radius;
             obb_max : f32 = MoC + obb_radius;
 
@@ -592,7 +584,7 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
 
             if (obb_min > tau_1 || obb_max < tau_0) {
 
-                //log.debugf("culled by obb axis")
+                //log.debugf("culled by oobb axis")
                 return false;
             }
         }
@@ -605,15 +597,15 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
     // First R x A_i
     when false {
         for m in 0..<3 {
-            M : [3]f32 = { 0.0, -obb.axis[m].z, obb.axis[m].y };
+            M : [3]f32 = { 0.0, -oobb.axis[m].z, oobb.axis[m].y };
             MoX : f32 = 0.0;
             MoY : f32 = linalg.abs(M.y);
             MoZ : f32 = M.z;
-            MoC : f32 = M.y * obb.center.y + M.z * obb.center.z;
+            MoC : f32 = M.y * oobb.center.y + M.z * oobb.center.z;
 
             obb_radius : f32 = 0.0;
             for i in 0..<3 {
-                obb_radius += linalg.abs(linalg.dot(M, obb.axis[i])) * obb.extents[i];
+                obb_radius += linalg.abs(linalg.dot(M, oobb.axis[i])) * oobb.extents[i];
             }
 
             obb_min : f32 = MoC - obb_radius;
@@ -642,15 +634,15 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
      // U x A_i
     when false {
         for m in 0..<3 {
-            M : [3]f32 = {obb.axis[m].z, 0.0, -obb.axis[m].x };
+            M : [3]f32 = {oobb.axis[m].z, 0.0, -oobb.axis[m].x };
             MoX : f32 = abs(M.x);
             MoY : f32 = 0.0;
             MoZ : f32 = M.z;
-            MoC : f32 = M.x * obb.center.x + M.z * obb.center.z;
+            MoC : f32 = M.x * oobb.center.x + M.z * oobb.center.z;
 
             obb_radius : f32 = 0.0;
             for i in 0..<3 {
-                obb_radius += abs(linalg.dot(M, obb.axis[i])) * obb.extents[i];
+                obb_radius += abs(linalg.dot(M, oobb.axis[i])) * oobb.extents[i];
             }
 
             obb_min := MoC - obb_radius;
@@ -680,10 +672,10 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
         for obb_edge_idx  in 0..<3 {
             
             M : [4][3]f32 = {
-                linalg.cross([3]f32{-x_near,  0.0   , z_near }, obb.axis[obb_edge_idx]),// Left Plane
-                linalg.cross([3]f32{ x_near,  0.0   , z_near }, obb.axis[obb_edge_idx]),// Right plane
-                linalg.cross([3]f32{ 0.0   ,  y_near, z_near }, obb.axis[obb_edge_idx]),// Top plane
-                linalg.cross([3]f32{ 0.0   , -y_near, z_near }, obb.axis[obb_edge_idx]),// Bottom plane
+                linalg.cross([3]f32{-x_near,  0.0   , z_near }, oobb.axis[obb_edge_idx]),// Left Plane
+                linalg.cross([3]f32{ x_near,  0.0   , z_near }, oobb.axis[obb_edge_idx]),// Right plane
+                linalg.cross([3]f32{ 0.0   ,  y_near, z_near }, oobb.axis[obb_edge_idx]),// Top plane
+                linalg.cross([3]f32{ 0.0   , -y_near, z_near }, oobb.axis[obb_edge_idx]),// Bottom plane
             }
 
             for m in 0..<4 {
@@ -702,11 +694,11 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
                     continue;
                 }
 
-                MoC : f32 = linalg.dot(M[m], obb.center);
+                MoC : f32 = linalg.dot(M[m], oobb.center);
 
                 obb_radius : f32= 0.0;
                 for i in 0..<3 {
-                    obb_radius += abs(linalg.dot(M[m], obb.axis[i])) * obb.extents[i];
+                    obb_radius += abs(linalg.dot(M[m], oobb.axis[i])) * oobb.extents[i];
                 }
 
                 obb_min : f32= MoC - obb_radius;
@@ -777,7 +769,7 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
 	_obb_center : #simd[4]f32 = simd.fused_mul_add(_tmp_0,#simd[4]f32{0.5,0.5,0.5,1.0},_corners_0);
 
 	// we can do dot product with itself and then just take sqrt to get the length
-	// obb.extents.x = linalg.length(obb.axis[0]); 
+	// oobb.extents.x = linalg.length(oobb.axis[0]); 
 	
 	obb_extents :[4]f32;
 	obb_extents.x = math.sqrt_f32(simdy.dot_f32x4(_obb_axis_0, _obb_axis_0));
@@ -801,7 +793,7 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
 	 	// This would be the normal of the near plane in view space
         // N : [3]f32 = { 0, 0, 1 };
 
-        // we project the obb center onto a axis parralel to the normal
+        // we project the oobb center onto a axis parralel to the normal
         // this is simple we just use its z position value.
         // we then compute the projected extents on the axis.
 
@@ -815,9 +807,9 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
         projected :#simd[4]f32 = simd.abs(#simd[4]f32{z_r, z_u, z_f, 0.0});
         projected = simd.mul(projected, _obb_extents);
 
-        // radius : f32 = abs(obb.axis[0].z) * obb.extents[0];
-        // radius += abs(obb.axis[1].z) * obb.extents[1];
-        // radius += abs(obb.axis[2].z) * obb.extents[2];
+        // radius : f32 = abs(oobb.axis[0].z) * oobb.extents[0];
+        // radius += abs(oobb.axis[1].z) * oobb.extents[1];
+        // radius += abs(oobb.axis[2].z) * oobb.extents[2];
 
         radius := simd.reduce_add_ordered(projected);
         MoC : f32 = simd.extract(_obb_center, 2); // center.z
@@ -847,11 +839,11 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
             MoY : f32 = abs(simd.extract(M[m], 1));
             MoZ : f32 = simd.extract(M[m], 2);
 
-            MoC : f32 = simdy.dot_last_is_0_f32x4(M[m],_obb_center);
+            MoC : f32 = simdy.dot_unsafe(M[m],_obb_center);
 
-            d0 := simdy.dot_last_is_0_f32x4(M[m], _obb_axis_0);
-            d1 := simdy.dot_last_is_0_f32x4(M[m], _obb_axis_1);
-            d2 := simdy.dot_last_is_0_f32x4(M[m], _obb_axis_2);
+            d0 := simdy.dot_unsafe(M[m], _obb_axis_0);
+            d1 := simdy.dot_unsafe(M[m], _obb_axis_1);
+            d2 := simdy.dot_unsafe(M[m], _obb_axis_2);
 
             _obb_radius := simd.mul(simd.abs(#simd[4]f32{d0 , d1 , d2, 0.0}), _obb_extents);
             obb_radius :f32 = simd.reduce_add_ordered(_obb_radius);
@@ -882,14 +874,14 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
     when false {
         for  m in 0..<3 {
             
-            M := obb.axis[m];
+            M := oobb.axis[m];
             
             MoX : f32 = linalg.abs(M.x);
             MoY : f32 = linalg.abs(M.y);
             MoZ : f32 = M.z;
-            MoC : f32 = linalg.dot(M, obb.center);
+            MoC : f32 = linalg.dot(M, oobb.center);
 
-            obb_radius : f32 = obb.extents[m];
+            obb_radius : f32 = oobb.extents[m];
             obb_min : f32 = MoC - obb_radius;
             obb_max : f32 = MoC + obb_radius;
 
@@ -910,7 +902,7 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
 
             if (obb_min > tau_1 || obb_max < tau_0) {
 
-            	//log.debugf("culled by obb axis")
+            	//log.debugf("culled by oobb axis")
                 return false;
             }
         }
@@ -921,15 +913,15 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
     // First R x A_i
     when false {
         for m in 0..<3 {
-            M : [3]f32 = { 0.0, -obb.axis[m].z, obb.axis[m].y };
+            M : [3]f32 = { 0.0, -oobb.axis[m].z, oobb.axis[m].y };
             MoX : f32 = 0.0;
             MoY : f32 = linalg.abs(M.y);
             MoZ : f32 = M.z;
-            MoC : f32 = M.y * obb.center.y + M.z * obb.center.z;
+            MoC : f32 = M.y * oobb.center.y + M.z * oobb.center.z;
 
             obb_radius : f32 = 0.0;
             for i in 0..<3 {
-                obb_radius += linalg.abs(linalg.dot(M, obb.axis[i])) * obb.extents[i];
+                obb_radius += linalg.abs(linalg.dot(M, oobb.axis[i])) * oobb.extents[i];
             }
 
             obb_min : f32 = MoC - obb_radius;
@@ -958,15 +950,15 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
      // U x A_i
     when false {
         for m in 0..<3 {
-            M : [3]f32 = {obb.axis[m].z, 0.0, -obb.axis[m].x };
+            M : [3]f32 = {oobb.axis[m].z, 0.0, -oobb.axis[m].x };
             MoX : f32 = abs(M.x);
             MoY : f32 = 0.0;
             MoZ : f32 = M.z;
-            MoC : f32 = M.x * obb.center.x + M.z * obb.center.z;
+            MoC : f32 = M.x * oobb.center.x + M.z * oobb.center.z;
 
             obb_radius : f32 = 0.0;
             for i in 0..<3 {
-                obb_radius += abs(linalg.dot(M, obb.axis[i])) * obb.extents[i];
+                obb_radius += abs(linalg.dot(M, oobb.axis[i])) * oobb.extents[i];
             }
 
             obb_min := MoC - obb_radius;
@@ -996,10 +988,10 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
         for obb_edge_idx  in 0..<3 {
         	
         	M : [4][3]f32 = {
-				linalg.cross([3]f32{-x_near,  0.0   , z_near }, obb.axis[obb_edge_idx]),// Left Plane
-				linalg.cross([3]f32{ x_near,  0.0   , z_near }, obb.axis[obb_edge_idx]),// Right plane
-				linalg.cross([3]f32{ 0.0   ,  y_near, z_near }, obb.axis[obb_edge_idx]),// Top plane
-				linalg.cross([3]f32{ 0.0   , -y_near, z_near }, obb.axis[obb_edge_idx]),// Bottom plane
+				linalg.cross([3]f32{-x_near,  0.0   , z_near }, oobb.axis[obb_edge_idx]),// Left Plane
+				linalg.cross([3]f32{ x_near,  0.0   , z_near }, oobb.axis[obb_edge_idx]),// Right plane
+				linalg.cross([3]f32{ 0.0   ,  y_near, z_near }, oobb.axis[obb_edge_idx]),// Top plane
+				linalg.cross([3]f32{ 0.0   , -y_near, z_near }, oobb.axis[obb_edge_idx]),// Bottom plane
 			}
 
             for m in 0..<4 {
@@ -1018,11 +1010,11 @@ frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AA
                 	continue;
                 }
 
-                MoC : f32 = linalg.dot(M[m], obb.center);
+                MoC : f32 = linalg.dot(M[m], oobb.center);
 
                 obb_radius : f32= 0.0;
                 for i in 0..<3 {
-                    obb_radius += abs(linalg.dot(M[m], obb.axis[i])) * obb.extents[i];
+                    obb_radius += abs(linalg.dot(M[m], oobb.axis[i])) * oobb.extents[i];
                 }
 
                 obb_min : f32= MoC - obb_radius;

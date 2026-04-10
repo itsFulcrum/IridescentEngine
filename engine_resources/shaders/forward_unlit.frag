@@ -14,21 +14,15 @@ layout (location = 0) in vertex_data {
 	mat3 tbn_mat;
 } vert_data;
 
-layout (std140, set=2, binding=0) readonly buffer global_fragment {
-    vec3 camera_pos_ws;
-	float time_sec;
-	vec3 camera_dir_ws;
-	float padding1;
-	uvec2 frame_size;
-	float padding2;
-	float padding3;
-	mat4  inv_view_proj_mat;
-	mat4  main_light_view_proj_mat;
-} _global;
 
-layout (std140, set=2, binding=1) readonly buffer unlit_material_buffer {
-    UnlitMaterial _unlit_materials[];
-};
+#define RES_GLOBAL_FRAG_BUFFER_SET 2
+#define RES_GLOBAL_FRAG_BUFFER_BIND 0
+#include "../shader_lib/resources/resource_global_fragment_buffer.glsl"
+
+#define RES_UNLIT_BUF_SET 2
+#define RES_UNLIT_BUF_BIND 1
+#include "../shader_lib/resources/resource_unlit_material_buffer.glsl"
+
 
 layout(set=3, binding=0) uniform mat_ubo {
 	uint mat_index;
@@ -43,5 +37,5 @@ void main() {
 	
 	UnlitMaterial mat = _unlit_materials[_mat_ubo.mat_index];
 
-	frag_color.rgb = vert_data.color_0.rgb;
+	frag_color.rgb = mat.albedo_color.rgb;
 }

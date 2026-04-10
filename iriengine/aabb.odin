@@ -11,6 +11,7 @@ AABB :: struct {
 }
 
 
+
 aabb_get_transform_matrix :: proc "contextless" (aabb : AABB) -> matrix[4,4]f32 {
 	// get a 'model' matrix from an aabb that we can use to render a unit cube as the aabb to visualize it.
 

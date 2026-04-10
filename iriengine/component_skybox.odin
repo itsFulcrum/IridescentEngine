@@ -5,21 +5,12 @@ import "core:mem"
 import sdl "vendor:sdl3"
 import "odinary:picy"
 
+import iricom "iricommon"
+
 SkyboxComponent :: struct{
 	using common : ComponentCommon,
 
-	// sun stuff is not implemented yet
-	sun_direction : [3]f32,
-	sun_strength  : f32,
-	sun_color     : [3]f32,
-
-	color_zenith 	: [3]f32,
-	color_horizon 	: [3]f32,
-	color_nadir 	: [3]f32,
-
-	exposure : f32,
-	
-	rotation : f32,
+	using data : iricom.SkyboxCompData,
 	
 	// @Note:  
 	// mip 0 contains just unfiltered cubemap, 
@@ -32,7 +23,7 @@ SkyboxComponent :: struct{
 
 @(private="package")
 comp_skybox_init :: proc (comp: ^SkyboxComponent){
-	if(comp == nil){
+	if comp == nil {
 		return;
 	}
 
@@ -41,7 +32,7 @@ comp_skybox_init :: proc (comp: ^SkyboxComponent){
 
 @(private="package")
 comp_skybox_deinit :: proc(comp: ^SkyboxComponent){
-	if(comp == nil){
+	if comp == nil {
 		return;
 	}
 
@@ -53,13 +44,9 @@ comp_skybox_deinit :: proc(comp: ^SkyboxComponent){
 
 
 comp_skybox_set_defaults :: proc(comp : ^SkyboxComponent){
-	if(comp == nil){
+	if comp == nil {
 		return;
 	}
-
-	comp.sun_direction = {0.0,-1.0,0.0};
-	comp.sun_strength  = 1.0;
-	comp.sun_color     = {1.0,1.0,1.0};
 
 	comp.color_zenith  = {0.5, 0.6, 0.8 };
 	comp.color_horizon = {0.7, 0.7, 0.75};
@@ -86,7 +73,7 @@ comp_skybox_load_hdr_cubemap :: proc(comp : ^SkyboxComponent, filename : string)
 
 	pic_info, ok := picy.read_from_file(filename, {.FLIP_VERTICALLY, .RGB_TO_RGBA});
 
-	if(!ok){
+	if !ok {
 		log.errorf("Failed to read image from file: {}", filename);
 		return;
 	}
@@ -95,7 +82,7 @@ comp_skybox_load_hdr_cubemap :: proc(comp : ^SkyboxComponent, filename : string)
 
 	sdl_tex_format := texture_get_sdl_GPUTextureFormat_from_picy_PicFormat(pic_info.format);
 
-	if(sdl_tex_format == .INVALID){
+	if sdl_tex_format == .INVALID {
 		log.errorf("Failed to load skybox image has invalid texture format: {}, {}", pic_info.format, filename);
 		return;
 	}
@@ -108,7 +95,7 @@ comp_skybox_load_hdr_cubemap :: proc(comp : ^SkyboxComponent, filename : string)
 	
 	success := texture_upload_pic_info_to_gpu_texture_2D(gpu_device, equirectangluar_tex.binding.texture, &pic_info);
 
-	if(!success){
+	if !success {
 		log.errorf("Failed to upload equirectangular img to gpu texture: width: {}, height: {}, format {}, {}",pic_info.width, pic_info.height, pic_info.format, filename);
 		return;
 	}
@@ -189,6 +176,12 @@ comp_skybox_load_hdr_cubemap :: proc(comp : ^SkyboxComponent, filename : string)
 
 	submit_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
 	engine_assert(submit_ok);
+
+
+
+	// @Note: i dont want this here but it seems to stall on my laptop otherwise...
+	wait_ok := sdl.WaitForGPUIdle(engine.window.gpu_device);
+
 }
 
 comp_skybox_push_changes :: proc(comp : ^SkyboxComponent){
@@ -196,4 +189,10 @@ comp_skybox_push_changes :: proc(comp : ^SkyboxComponent){
 	if comp.entity.id == comp.parent_ecs.active_skybox_entity.id {
 		comp.parent_ecs.active_skybox_is_dirty = true;
 	}
+}
+
+
+// todo: should prob have a function in ecs for this..
+comp_skybox_set_as_active :: proc(comp : ^SkyboxComponent){
+	ecs_set_active_skybox_entity(comp.parent_ecs, comp.entity);
 }

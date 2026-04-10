@@ -6,26 +6,23 @@ import "core:math"
 import "core:math/linalg"
 
 import sdl "vendor:sdl3"
+import iricom "iricommon"
 
-LightType :: enum u8 { 
-	DIRECTIONAL = 0,
-	POINT = 1,
-	SPOT = 2,
-}
+LightType :: iricom.LightType
 
 // Layout mirrors gpu structure
 @(private="package")
 LightDataGPU :: struct #align(16) {
-	position: [3]f32,
-	type: u32,
+	position 	: [3]f32,
+	type 		: u32, 		// @Note: This could be a u8. We wont have more than 256 light types.
 	direction: [3]f32,
 	shadowmap_index : i32,
-	radiance: [3]f32,
-	spot_angle_scale:  f32,
+	radiance: [3]f32, // color * intensity
+	spot_angle_scale:  f32, // @Note: could use half float for these.
 	spot_angle_offset: f32,
 	// Note: We could use these for per light shadowmap bias settings 
-	padding1 	 : u32,
-	padding2     : f32,
+	is_disabled  : u32,
+	range        : f32, // @Note: this could be range
 	padding3     : f32,
 }
 
@@ -125,11 +122,11 @@ light_manager_init :: proc(gpu_device: ^sdl.GPUDevice, manager: ^LightManager) {
 light_manager_deinit :: proc(gpu_device: ^sdl.GPUDevice, manager: ^LightManager) {
 
 
-	if(manager.gpu_lights_data_buf != nil){
+	if manager.gpu_lights_data_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.gpu_lights_data_buf);
 		manager.gpu_lights_data_buf = nil;
 	}
-	if(manager.gpu_lights_transfer_buf != nil){
+	if manager.gpu_lights_transfer_buf != nil {
 		sdl.ReleaseGPUTransferBuffer(gpu_device, manager.gpu_lights_transfer_buf);
 		manager.gpu_lights_transfer_buf = nil;
 	}
@@ -809,9 +806,7 @@ light_manager_frame_update_cpu_side_buffers :: proc(universe : ^Universe) -> Lig
 					}
 				}
 
-			} else {  // Cast shadows didn't change
-
-				
+			} else {  // Cast shadows didn't change				
 
 				light_casts_shadows : bool = cast_shadows_previous;
 				if light_casts_shadows {
@@ -1435,7 +1430,7 @@ light_manager_calculate_light_visible_range :: proc(light_radiance :[3]f32, thre
 	}
 
 	// Light attenuation is = 1 / (dist * dist)   inv square law
-	// light never reaches 0 so we need a threshold value to calculate percepulat light is not visible.
+	// light never reaches 0 so we need a threshold value to calculate perceptual light is not visible.
 	base_threshold : f32 = 0.05;
 	return linalg.sqrt(#force_inline luma_linear(light_radiance) / (base_threshold + threshold_fudge));
 }

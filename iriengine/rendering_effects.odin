@@ -88,7 +88,7 @@ RenEffectGTAO :: struct {
 
 RenEffectGTAOSettings :: struct {
 	temporary_disabled : bool,
-	full_res : bool, // Not implmented yet
+	full_res : bool,
 
 	strength : f32,
     sample_count : u32,
@@ -101,7 +101,7 @@ ren_effect_GTAO_create_default_settings :: proc() -> RenEffectGTAOSettings {
 
 	return RenEffectGTAOSettings{
 		temporary_disabled = false,
-		full_res 		= false,
+		full_res 		= true,
 		strength        = 2.5,
         sample_count    = 8,
         slice_count     = 8,

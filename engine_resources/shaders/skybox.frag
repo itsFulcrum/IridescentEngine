@@ -76,7 +76,6 @@ void main() {
 
 	frag_color = vec4(0.0f,0.0f,0.0f,1.0f);
 
-
 	float r_radian = radians(skybox.data.rotation);
 	mat3 rot_mat = rotate_mat3_Y(r_radian);
 	vec3 sample_dir = rot_mat * normalize(vert_data.position_os);

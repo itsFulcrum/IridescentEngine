@@ -12,9 +12,6 @@ set_render_config :: proc(config : RenderConfig){
 	renderer_set_render_config(engine.render_context, gpu_device, config);
 }
 
-get_render_debug_config :: proc() -> ^RenderDebugConfig {
-	return &engine.render_context.debug_config;
-}
 
 set_render_resolution :: proc(render_resolution: RenderResolution){
     gpu_device := get_gpu_device();

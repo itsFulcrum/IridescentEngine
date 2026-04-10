@@ -3,25 +3,17 @@ package iri
 import "core:math/linalg"
 import "odinary:mathy"
 
+import iricom "iricommon"
+
 CameraComponent :: struct{
 	using common : ComponentCommon,
 
-	fov_deg:   f32,
-	near_clip: f32,
-	far_clip:  f32,
-
-	exposure_correction : f32,
-
-	// physical camera
-	// TODO: maybe implment focal lenght and sensor size ?
-	iso : f32,
-	shutter_speed : f32,
-	aperture : f32,
+	using data : iricom.CameraCompData,
 }
 
 @(private="package")
 comp_camera_init :: proc (comp: ^CameraComponent){
-	if(comp == nil){
+	if comp == nil {
 		return;
 	}
 
@@ -37,7 +29,7 @@ comp_camera_deinit :: proc(comp: ^CameraComponent){
 
 comp_camera_set_defaults :: proc(comp: ^CameraComponent) {
 	
-	if(comp == nil){
+	if comp == nil {
 		return;
 	}
 
@@ -86,9 +78,9 @@ comp_camera_get_frustum_planes :: proc(comp: ^CameraComponent, aspect_ratio : f3
 	// note that we could probably just calculate the distance to closest point on plane position instead of storing full position per plane
 
 	// left
-	frust.planes[2]  = {normal = linalg.cross(up, forward_mul_far + right * half_h_side), position = transform.position }
+	frust.planes[2]   = {normal = linalg.cross(up, forward_mul_far + right * half_h_side), position = transform.position }
 	// right
-	frust.planes[3] = {normal = linalg.cross(forward_mul_far - right * half_h_side, up), position = transform.position }
+	frust.planes[3]   = {normal = linalg.cross(forward_mul_far - right * half_h_side, up), position = transform.position }
 	// top
 	frust.planes[4]   = {normal = linalg.cross(right, forward_mul_far - up* half_v_side) , position = transform.position }
 	// bot
@@ -141,4 +133,8 @@ comp_camera_get_exposure :: proc(comp: ^CameraComponent) -> f32 {
 	exposure : f32 = comp_camera_convert_EV100_to_exposure(ev100) * linalg.pow(f32(2.0), comp.exposure_correction);
 
 	return exposure;
+}
+
+comp_camera_set_as_active :: proc(comp: ^CameraComponent) {
+	ecs_set_active_camera_entity(comp.parent_ecs, comp.entity);
 }
