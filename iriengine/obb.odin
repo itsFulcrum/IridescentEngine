@@ -5,17 +5,17 @@ import "core:simd"
 import "base:intrinsics"
 import "odinary:mathy/simdy"
 
-// Extents could maybe live in w of axis?
 OBB :: struct {
 	center  : [4]f32,
 	extents : [4]f32,
 	axis : [3][4]f32, // Orthonormal axis as normalized vectors.
 }
 
-obb_from_transform :: proc "contextless" (t : Transform) -> OBB #no_bounds_check {
-	obb : OBB;
+
+obb_from_world_transform :: proc "contextless" (t : Transform) -> OBB #no_bounds_check {
+	obb : OBB 
 	obb.center.xyz  = t.position;
-	obb.center.w = 1;
+	obb.center.w    = 1;
 	obb.extents.xyz = t.scale;
 	obb.axis[0].xyz = get_right(t);
 	obb.axis[1].xyz = get_up(t);
@@ -23,25 +23,53 @@ obb_from_transform :: proc "contextless" (t : Transform) -> OBB #no_bounds_check
 	return obb;
 }
 
-// create an obb from an aabb by transforming it using a transform
-// doesnt work like this..
-// obb_from_aabb_and_transform :: proc "contextless" (aabb : AABB, to_world : Transform) -> OBB {
+obb_from_aabb_and_transform :: proc "contextless" (aabb : AABB, to_world : Transform) -> OBB #no_bounds_check {
 
-// 	aabb_extent := (aabb.max - aabb.min) * [4]f32{0.5,0.5,0.5,1.0};
-// 	aabb_center := aabb.min + aabb_extent;
+    corner_0 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.min.y, aabb.min.z});
+    corner_1 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.max.x, aabb.min.y, aabb.min.z});
+    corner_2 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.max.y, aabb.min.z});
+    corner_3 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.min.y, aabb.max.z});
 
-//     obb : OBB;
-//     obb.center.xyz = to_world.position + aabb_center.xyz; //linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * aabb_center.xyz);
-//     obb.center.w = 1;
-//     obb.extents.xyz = linalg.quaternion128_mul_vector3(to_world.orientation, aabb_extent.xyz);
+    oobb : OBB;
 
-//     obb.axis[0].xyz = get_right(to_world);
-//     obb.axis[1].xyz = get_up(to_world);
-//     obb.axis[2].xyz = get_forward(to_world);
+    oobb.axis[0].xyz = corner_1 - corner_0;
+    oobb.axis[1].xyz = corner_2 - corner_0;
+    oobb.axis[2].xyz = corner_3 - corner_0;
 
-//     return obb;
-// }
+    oobb.center.xyz = corner_0 + [3]f32{0.5,0.5,0.5} * (oobb.axis[0].xyz + oobb.axis[1].xyz + oobb.axis[2].xyz);
+    oobb.center.w   = 1.0;
 
+    oobb.extents = [4]f32{linalg.length(oobb.axis[0].xyz), linalg.length(oobb.axis[1].xyz), linalg.length(oobb.axis[2].xyz), 0.0};
+    
+    // normalize axis
+    oobb.axis[0] /= oobb.extents.x
+    oobb.axis[1] /= oobb.extents.y
+    oobb.axis[2] /= oobb.extents.z
+    // make .w = 0 since they are direction, so we can transform them with any other matrix
+    oobb.axis[0].w = 0.0;
+    oobb.axis[1].w = 0.0;
+    oobb.axis[2].w = 0.0;
+
+    // extent should be half the lenght of each side
+   oobb.extents.xyz *= 0.5;
+
+   return oobb;
+}
+
+obb_to_transform_matrix :: proc "contextless" (obb : OBB) -> matrix[4,4]f32 {
+
+	mat := matrix[4,4]f32 {
+		1, 0, 0, obb.center.x,
+		0, 1, 0, obb.center.y,
+		0, 0, 1, obb.center.z,
+		0, 0, 0, 1
+	};
+
+	mat[0].xyz = obb.axis[0].xyz * obb.extents.x;
+	mat[1].xyz = obb.axis[1].xyz * obb.extents.y;
+	mat[2].xyz = obb.axis[2].xyz * obb.extents.z;
+	return mat;
+}
 
 
 
@@ -253,7 +281,7 @@ obb_closest_point_simd :: proc "contextless" (obb : OBB, point : #simd[4]f32) ->
 	return _result;
 }
 
-obb_overlaps_sphere :: proc(obb : OBB, sphere_position : [3]f32, sphere_radius : f32) -> bool {
+obb_overlaps_sphere :: proc "contextless" (obb : OBB, sphere_position : [3]f32, sphere_radius : f32) -> bool {
 	_sphere_pos : #simd[4]f32 = simdy.from_vec3_f32(sphere_position, 0.0);
 	_closest_point : #simd[4]f32 = obb_closest_point_simd(obb, _sphere_pos);
 	_vec := simd.sub(_sphere_pos, _closest_point)

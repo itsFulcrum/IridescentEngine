@@ -45,6 +45,7 @@ Drawable :: struct {
 	draw_instance  : DrawInstance,
 	world_oobb : OBB, // world space obb
 	world_mat  : matrix[4,4]f32,
+	prev_physics_world_transform : Transform, // World Transform of the previous physics state!
 }
 
 MeshManager :: struct {

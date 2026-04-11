@@ -130,10 +130,10 @@ debug_draw_manager_push_universe_components :: proc(manager : ^DebugDrawManager,
 
             switch &var in collider_comp.variant {
                 case SphereCollider: {
-                    debug_draw_sphere(DebugColor.Green, collider_comp._world_transform.position, collider_comp._world_transform.scale.x)
+                    debug_draw_sphere(DebugColor.Green, var.world_position, var.world_radius)
                 }
                 case BoxCollider: {
-                    debug_draw_box(DebugColor.Green, collider_comp._world_transform)
+                    debug_draw_box(DebugColor.Green, var.world_obb);
                 }
             }
         }

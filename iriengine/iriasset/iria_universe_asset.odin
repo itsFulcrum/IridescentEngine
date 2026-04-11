@@ -8,28 +8,38 @@ import "core:strings"
 import reader "binary_reader"
 import iricom "../iricommon"
 
-EntityInfoFlags :: distinct bit_set[EntityInfoFlag; u32]
-EntityInfoFlag :: enum u32 {
-	IsEnabled = 0,
-}
+// EntityInfoFlags :: distinct bit_set[EntityInfoFlag; u32]
+// EntityInfoFlag :: enum u32 {
+// 	IsEnabled = 0,
+// 	PhysicsInterpolation,
+// }
 
 EntityInfoPacked :: struct {
-	flags 		: EntityInfoFlags,
+	flags 		: iricom.EntityFlags,
 	comp_set 	: iricom.ComponentSet,
 	tag 		: u32,
 }
 
 CompIndexes :: struct {
-	camera_index  : i32,
-	skybox_index  : i32,
-	light_index   : i32,
-	meshren_index : i32,
-	_ : [4]i32, // reserved.
+	camera_index   : i32,
+	skybox_index   : i32,
+	light_index    : i32,
+	meshren_index  : i32,
+	collider_index : i32,
+	_ : [3]i32, // reserved.
 }
 
 MeshRendererCompData :: struct {
 	num_drawable_assets : u32, // number of DrawableAssets that belong to this component.
 	array_offset : u32, // offset into drawable_assets array of universe asset.
+}
+
+ColliderCompData :: struct #packed {
+	type  : u32, // Collider type enum
+	flags : u32, // ColliderFlags enum bitset of collider component
+	offset : [3]f32,
+	extent : [3]f32,
+	orientation : quaternion128,
 }
 
 DrawableAsset :: struct {
@@ -75,6 +85,7 @@ UniverseAsset :: struct {
 	skybox_comp_data  : []iricom.SkyboxCompData,
 	light_comp_data   : []LightAsset,
 	meshren_comp_data : []MeshRendererCompData,
+	collider_comp_data : []ColliderCompData,
 
 	// This array is ORDERED by mesh renderer component. 
 	// such that MeshRendererCompData gives an offset where to start reading drawable asset form
@@ -106,6 +117,7 @@ UniverseAssetSecondHeader_v2 :: struct #packed { // 56 byte structure
 	_ : [8]u32, // reserved
 }
 
+// @NOTE: IMPORTANT; when adding new field append them to the end DONT REORDER - breaks reading sind type is stored as uint in the files!
 UniAssetBufferType :: enum u32 {
 	UniverseSettings = 0,
 
@@ -120,6 +132,7 @@ UniAssetBufferType :: enum u32 {
 	SkyboxCompData, 	// array of 'LightAsset' structures
 	MeshrenCompData, 	// array of 'MeshRendererCompData' structures
 	DrawablesArray, 	// array of 'DrawableAsset' structures
+	ColliderCompData,   // array of 'ColliderCompData' structures
 
 }
 
@@ -165,6 +178,10 @@ free_universe_asset :: proc(uni : ^UniverseAsset){
 
 	if uni.light_comp_data != nil {
 		delete_slice(uni.light_comp_data);
+	}
+
+	if uni.collider_comp_data != nil {
+		delete_slice(uni.collider_comp_data);
 	}
 
 	if uni.meshren_comp_data != nil {
@@ -238,7 +255,7 @@ asset_universe_read_v2 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader
 	uni_asset = new(UniverseAsset);
 
 	defer if !ok {
-		log.errorf("Failed to read uni from memory")
+		log.errorf("Failed to read universe asset")
 		free_universe_asset(uni_asset);
 		uni_asset = nil;
 	
@@ -295,6 +312,7 @@ asset_universe_read_v2 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader
 			case .CameraCompData:  uni_asset.camera_comp_data 		= reader.consume_make_slice(b_reader, []iricom.CameraCompData, numbr, context.allocator) or_return;
 			case .LightCompData:   uni_asset.light_comp_data  		= reader.consume_make_slice(b_reader, []LightAsset           , numbr, context.allocator) or_return;
 			case .SkyboxCompData:  uni_asset.skybox_comp_data 		= reader.consume_make_slice(b_reader, []iricom.SkyboxCompData, numbr, context.allocator) or_return;
+			case .ColliderCompData: uni_asset.collider_comp_data 	= reader.consume_make_slice(b_reader, []ColliderCompData 	 , numbr, context.allocator) or_return;
 			case .MeshrenCompData: uni_asset.meshren_comp_data 		= reader.consume_make_slice(b_reader, []MeshRendererCompData , numbr, context.allocator) or_return;
 			case .DrawablesArray:  uni_asset.drawable_assets_array 	= reader.consume_make_slice(b_reader, []DrawableAsset        , numbr, context.allocator) or_return;
 		}
@@ -550,6 +568,26 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 			written_bytes, write_err := os.write_ptr(file, &uni_asset.light_comp_data[0], byte_size);
+			is_no_write_error(write_err, filepath, log_errors) or_return;
+			assert(byte_size == written_bytes);
+		}
+	}
+
+	// Component Data Colliders
+	{
+		byte_size : int = len(uni_asset.collider_comp_data) * size_of(ColliderCompData);
+		
+		if byte_size > 0 {
+
+			buf_info := UniAssetBufferInfo{
+				type  = UniAssetBufferType.ColliderCompData,
+				numbr = cast(u32)len(uni_asset.collider_comp_data),
+				bytes = cast(u32)byte_size,
+			}
+			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
+			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+
+			written_bytes, write_err := os.write_ptr(file, &uni_asset.collider_comp_data[0], byte_size);
 			is_no_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}

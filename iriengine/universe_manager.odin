@@ -3,12 +3,16 @@ package iri
 import "core:log"
 import "core:mem"
 import "core:math/linalg"
+import "core:sort"
 import "odinary:mathy"
 
 import sdl "vendor:sdl3"
 
+@(private="file")
+tmp_store_universe_ptr : ^Universe = nil; // because we need it inside sort procedures. // we could use active universe from engine but maybe we want to update non active universes in the future.
+
 @(private="package")
-universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, frame_size : [2]u32){
+universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, frame_size : [2]u32, fixed_alpha_interpolator : f32){
 
 	perfs := get_performance_counters();
 
@@ -21,7 +25,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 
 	frame_aspect_ratio : f32 = cast(f32)frame_size.x / cast(f32)frame_size.y;
 
-	universe_update_frame_camera_info(universe, frame_aspect_ratio);
+	universe_update_frame_camera_info(universe, frame_aspect_ratio, fixed_alpha_interpolator);
 
 	if universe.ecs.active_skybox_is_dirty {
 		
@@ -60,7 +64,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 	}
 
 
-	light_manager_frame_update(gpu_device, universe);
+	light_manager_frame_update(gpu_device, universe, fixed_alpha_interpolator);
 
 	ecs := &universe.ecs;
 	drawables : ^#soa[dynamic]Drawable = &universe.ecs.drawables;
@@ -72,39 +76,37 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 		// which means they have a valid mesh/material to render with 
 		// and entity is not disables. We update _Internal draw inst flags accordingly.
 		clear(&universe.frame_renderables);
+
 		entity : Entity = EntityInvalid;
-		is_disabled_entity : bool = false;
+		entity_flags := EntityFlags{};
 
 		for i in 0..<len(drawables) {
 
-			if entity.id != drawables.entity[i].id {
+			entity = drawables.entity[i];
 
-				entity = drawables.entity[i];
-
-				if ecs_entity_exists(ecs, entity) {
-					is_disabled_entity = EntityFlag._Internal_IsEnabled not_in ecs.entity_infos[entity.id].flags;
-				} else {
-					is_disabled_entity = false;
-				}
-			}
-			
-			flags := drawables.draw_instance[i].flags;
-			
-			if is_disabled_entity {
-				if ._Internal_DisabledEntity not_in flags {
-					drawables.draw_instance[i].flags += DrawInstanceFlags{._Internal_DisabledEntity}
-				}
+			if !ecs_entity_exists(ecs, entity) {
 				continue;
-			} else if ._Internal_DisabledEntity in flags {
-					drawables.draw_instance[i].flags -= DrawInstanceFlags{._Internal_DisabledEntity}
 			}
+
+			entity_flags = ecs.entity_infos.flags[entity.id];
+
+			// We do this here for EVERY Drawable before we start culling out any.
+			if ._Internal_ForceUpdate in entity_flags {
+				drawables[i].prev_physics_world_transform = transform_child_by_parent(ecs.transform_components[entity.id].transform, drawables.draw_instance[i].transform);
+			}
+			
+			if ._Internal_IsEnabled not_in entity_flags {
+				continue;
+			}
+			
+			draw_flags := drawables.draw_instance[i].flags;
 
 			if !mesh_manager_is_valid_id(engine.mesh_manager, drawables.draw_instance[i].mesh_id) {
-				if ._Internal_NoValidMesh not_in flags {
+				if ._Internal_NoValidMesh not_in draw_flags {
 					drawables.draw_instance[i].flags += DrawInstanceFlags{._Internal_NoValidMesh};
 				}
 				continue;
-			} else if ._Internal_NoValidMesh in flags {
+			} else if ._Internal_NoValidMesh in draw_flags {
 				drawables.draw_instance[i].flags -= DrawInstanceFlags{._Internal_NoValidMesh}; 
 			}
 
@@ -113,7 +115,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 	}
 
 
-	universe_update_matrix_buffer(gpu_device, universe, &universe.frame_renderables);
+	universe_update_matrix_buffer(gpu_device, universe, &universe.frame_renderables, fixed_alpha_interpolator);
 
 
 	// Create a list of indexes into drawables that are inside camera frustum
@@ -216,6 +218,39 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
     }
 
     // TODO: sort blend meshes
+
+    SORT_BLEND_MESHES_BY_DISTANCE :: true
+    when SORT_BLEND_MESHES_BY_DISTANCE {
+
+    	if len(universe.frame_alpha_blend) > 1 {
+
+
+	    	tmp_store_universe_ptr = universe;
+	    	defer tmp_store_universe_ptr = nil;
+
+	    	alpha_blend_sort_proc :: proc(a : u32, b : u32) -> int {
+
+	    		a_to_cam := tmp_store_universe_ptr.frame_camera_info.position_ws - tmp_store_universe_ptr.ecs.drawables[a].world_oobb.center.xyz;
+	    		b_to_cam := tmp_store_universe_ptr.frame_camera_info.position_ws - tmp_store_universe_ptr.ecs.drawables[b].world_oobb.center.xyz;
+
+	    		// sort back to front based on distance squared to camera.
+	    		if linalg.dot(a_to_cam, a_to_cam) <= linalg.dot(b_to_cam, b_to_cam)  {
+	    			return 1;
+	    		}
+
+	    		return -1;
+	    	}
+
+	    	sort.quick_sort_proc(universe.frame_alpha_blend[:], alpha_blend_sort_proc);
+
+
+    	}
+
+
+    }
+
+
+
 }
 
 
@@ -248,14 +283,22 @@ universe_query_skybox_buffer_upload :: proc(gpu_device : ^sdl.GPUDevice, univers
 
 
 @(private="file")
-universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ratio : f32){
+universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ratio : f32, fixed_alpha_interpolator : f32){
 
 
 	info : ^FrameCameraInfo = &universe.frame_camera_info;
 
     if cam_comp := ecs_get_active_camera_component(&universe.ecs); cam_comp != nil {
 
-        cam_transform := ecs_get_transform(&universe.ecs, universe.ecs.active_camera_entity);
+        cam_transform := ecs_get_transform(&universe.ecs, universe.ecs.active_camera_entity).transform;
+
+        ent_flags := universe.ecs.entity_infos.flags[cam_comp.entity.id];
+
+        if .PhysicsInterpolation in ent_flags && ._Internal_ForceUpdate not_in ent_flags {
+        	prev_trans := universe.ecs.previous_physics_transforms[cam_comp.entity.id];
+        	cam_transform = transform_interpolate( prev_trans, cam_transform , fixed_alpha_interpolator);
+        }
+
         info.position_ws = cam_transform.position;
         info.direction_ws = get_forward(cam_transform);
             
@@ -366,7 +409,7 @@ universe_manager_recreate_matrix_buffers :: proc(gpu_device: ^sdl.GPUDevice, cur
 
 
 @(private="file")
-universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, frame_renderables : ^[dynamic]u32) {
+universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, frame_renderables : ^[dynamic]u32, fixed_alpha_interpolator : f32) {
 
 	ecs := &universe.ecs;
 	drawables : ^#soa[dynamic]Drawable = &universe.ecs.drawables;
@@ -387,43 +430,30 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 		// We only need to update what may be visibile in any way so we operate on the frame_renderables
 		// which already sorted out drawables with no valid meshes and disabled entities.
 
-		// We keep track of last entity's transform because its likely that entity will be the same
-		// for consequitive drawables so we dont need to fetch it every time.
-		// Drawables are allowed to not belong to any entity in which case it will just use an identity transform.
-		entity : Entity = EntityInvalid;
-		ent_transform : Transform = transform_create_identity();
-
 		for drawable_index in frame_renderables {
 			
-			do_force_update : bool = ._Internal_ForceUpdate in drawables.draw_instance[drawable_index].flags;
+			entity : Entity = drawables.entity[drawable_index];
 
-			if .IsStatic in drawables.draw_instance[drawable_index].flags && !do_force_update {
+			ent_flags := ecs.entity_infos.flags[entity.id];
+			draw_flags := drawables.draw_instance[drawable_index].flags;
+
+			if .IsStatic in draw_flags && ._Internal_ForceUpdate not_in ent_flags {
 				continue;
 			}
-
-			if entity.id != drawables.entity[drawable_index].id {
-
-				entity = drawables.entity[drawable_index];
-
-				if ecs_entity_exists(ecs, entity){
-					ent_transform = ecs_get_transform(ecs, entity).transform;
-				} else {
-					ent_transform = transform_create_identity();
-				}
-			}
 			
-			world_transform := transform_child_by_parent(ent_transform, drawables.draw_instance[drawable_index].transform);
+			world_transform := transform_child_by_parent(ecs.transform_components[entity.id].transform, drawables.draw_instance[drawable_index].transform);			
+
+			if .PhysicsInterpolation in ent_flags {
+				world_transform = transform_interpolate(drawables.prev_physics_world_transform[drawable_index], world_transform, fixed_alpha_interpolator);
+			}
+
 			drawables.world_mat[drawable_index] = transform_calc_world_matrix(world_transform);
 
 			aabb := mesh_manager_get_aabb(engine.mesh_manager, drawables.draw_instance[drawable_index].mesh_id);
-			drawables.world_oobb[drawable_index] = aabb_to_transformed_oobb(aabb, world_transform);
+			drawables.world_oobb[drawable_index] = obb_from_aabb_and_transform(aabb, world_transform);
 
 			min_index = min(min_index, cast(int)drawable_index);
 			max_index = max(max_index, cast(int)drawable_index);
-			
-			if do_force_update {
-				drawables.draw_instance[drawable_index].flags -= DrawInstanceFlags{._Internal_ForceUpdate};
-			}
 		}
 	}
 

@@ -190,17 +190,31 @@ comp_light_create_light_asset :: proc(comp : ^LightComponent) -> iria.LightAsset
 
 
 @(private="package")
-comp_light_create_LightDataGPU :: proc(comp : ^LightComponent) -> LightDataGPU {
- 	transform_comp := ecs_get_transform(comp.parent_ecs, comp.entity);
+comp_light_create_LightDataGPU :: proc(comp : ^LightComponent, apply_physics_interp_if_enabled : bool = false) -> LightDataGPU {
+
+ 	light_transform := ecs_get_transform(comp.parent_ecs, comp.entity).transform;
+
+ 	if apply_physics_interp_if_enabled {
+
+ 		ent_flags := comp.parent_ecs.entity_infos.flags[comp.entity.id];
+
+ 		if .PhysicsInterpolation in ent_flags && ._Internal_ForceUpdate not_in ent_flags {
+
+ 			interpolator := cast(f32)clock_get_fixed_alpha_interpolator();
+
+ 			prev_transform := comp.parent_ecs.previous_physics_transforms[comp.entity.id];
+ 			light_transform = transform_interpolate(prev_transform, light_transform, interpolator);
+ 		}
+ 	}
 
  	gpu_light : LightDataGPU;
 
  	light_type_enum : LightType = comp_light_get_type(comp);
 
-	gpu_light.position = transform_comp.position;
-	gpu_light.direction = -get_forward(transform_comp);
-	gpu_light.type = cast(u32)light_type_enum;
-	gpu_light.radiance = comp.color * comp.strength;
+	gpu_light.position    = light_transform.position;
+	gpu_light.direction   = -get_forward(light_transform);
+	gpu_light.type        = cast(u32)light_type_enum;
+	gpu_light.radiance    = comp.color * comp.strength;
 	gpu_light.is_disabled = entity_is_enabled(comp.entity) ? 0 : 1;
 
 	if !comp.cast_shadows {
@@ -220,10 +234,6 @@ comp_light_create_LightDataGPU :: proc(comp : ^LightComponent) -> LightDataGPU {
 		gpu_light.spot_angle_scale  = 1.0 / max(0.001, linalg.cos(inner_cone_angle_rad) - linalg.cos(outer_cone_angle_rad));
 		gpu_light.spot_angle_offset = - linalg.cos(outer_cone_angle_rad) * gpu_light.spot_angle_scale;
 
-	} else if light_type_enum == .DIRECTIONAL{
-		// as we dont need position for dir lights store up vectore to compute proper 
-		// view_proj for cascaded shadowmaps
-		//gpu_light.position = get_up(transform_comp); 
 	}
 
 

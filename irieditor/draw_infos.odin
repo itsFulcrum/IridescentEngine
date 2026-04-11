@@ -14,6 +14,7 @@ draw_base_info :: proc(){
 	im.Text("FPS: %i", fps);
 	im.Text("Frametime: %f ms", frametime);
 
+
 	im.Spacing();
 
 	frame_size := iri.get_frame_size();
@@ -21,4 +22,7 @@ draw_base_info :: proc(){
 
 	im.Text("Frame Size:     %dx%dpx", frame_size.x, frame_size.y);
 	im.Text("Swapchain Size: %dx%dpx", swap_size.x, swap_size.y);
+
+	interp : f32 = cast(f32)iri.clock_get_fixed_alpha_interpolator();
+	im.Text("Alpha Interpolator: %f", interp);
 }

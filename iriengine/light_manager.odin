@@ -159,7 +159,7 @@ light_manager_deinit :: proc(gpu_device: ^sdl.GPUDevice, manager: ^LightManager)
 }
 
 @(private="package")
-light_manager_frame_update :: proc(gpu_device: ^sdl.GPUDevice, universe : ^Universe){
+light_manager_frame_update :: proc(gpu_device: ^sdl.GPUDevice, universe : ^Universe,  fixed_alpha_interpolator : f32){
 
 	manager := &universe.light_manager;
 
@@ -170,7 +170,7 @@ light_manager_frame_update :: proc(gpu_device: ^sdl.GPUDevice, universe : ^Unive
 	manager.gpu_dir_lights_shadowmap_infos_upload_info.requires_upload = false;
 
 
-	update_info : LightManagerUpdateBufferInfo = light_manager_frame_update_cpu_side_buffers(universe);
+	update_info : LightManagerUpdateBufferInfo = light_manager_frame_update_cpu_side_buffers(universe, fixed_alpha_interpolator );
 
 	// now gpu_lights and shadowmap info array are updated with pushed light changes
 	// but we still need to (at least for directional lights)
@@ -545,7 +545,7 @@ light_manager_frame_update :: proc(gpu_device: ^sdl.GPUDevice, universe : ^Unive
 }
 
 @(private="file")
-light_manager_frame_update_cpu_side_buffers :: proc(universe : ^Universe) -> LightManagerUpdateBufferInfo {
+light_manager_frame_update_cpu_side_buffers :: proc(universe : ^Universe, fixed_alpha_interpolator : f32) -> LightManagerUpdateBufferInfo {
 
 	// @Note: 
 	// This structure is used to track which ranges in the 
@@ -603,7 +603,7 @@ light_manager_frame_update_cpu_side_buffers :: proc(universe : ^Universe) -> Lig
 				light_type := comp_light_get_type(&light_comp);
 
 				if light_type == light_enum_type {
-					gpu_light := comp_light_create_LightDataGPU(&light_comp);
+					gpu_light := comp_light_create_LightDataGPU(&light_comp, false);
 					gpu_light.shadowmap_index = -1; // set to -1 initally, shadowmap allocation will happen after this loop
 
 					gpu_arr_index : u32 = cast(u32)len(manager.gpu_lights);					
@@ -779,7 +779,7 @@ light_manager_frame_update_cpu_side_buffers :: proc(universe : ^Universe) -> Lig
 		} else {
 
 			// Light type didn't change
-			new_gpu_light := comp_light_create_LightDataGPU(&light_comp);
+			new_gpu_light := comp_light_create_LightDataGPU(&light_comp, true);
 
 			// Check if cast shadows changed 
 			cast_shadows_previous : bool = gpu_light_previous.shadowmap_index >= 0;
@@ -1305,7 +1305,7 @@ light_manager_insert_light_component_at :: proc(manager : ^LightManager, light_c
 
 	light_type := comp_light_get_type(light_component);
 
-	new_gpu_light := comp_light_create_LightDataGPU(light_component);
+	new_gpu_light := comp_light_create_LightDataGPU(light_component, true);
 
 	if light_component.cast_shadows {
 		// allocate new shadowinfos and shadowmap array spots

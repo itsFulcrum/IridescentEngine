@@ -19,6 +19,7 @@ timer_end_get_miliseconds :: proc(timer : PerfTimer) -> f64{
 }
 
 
+
 ClockData :: struct {
 
 	elapsed_time : f64, // advances by delta time not true delta time.
@@ -34,7 +35,8 @@ ClockData :: struct {
 	fixed_delta_accumulator : f64,
 	fixed_delta_timestep    : f64,
 	fixed_elapsed_time      : f64,
-	should_advance_fixed    : bool, // a variable for error handling
+	fixed_alpha_interpolator: f64, // blend factor between previous and current physics (transform) state to do linear interpolation with.
+	should_advance_fixed    : bool,
 
  	// FPS stuff
 	second_accumulator: f64,
@@ -42,7 +44,7 @@ ClockData :: struct {
  	current_fps: u32,
 }
 
-@(private="file")
+@(private="package")
 clock_data: ClockData;
 
 
@@ -60,7 +62,8 @@ clock_init :: proc(){
 
 	clock_data.delta_time = 0.0;
 	clock_data.true_delta_time = 0.0;
-
+	clock_data.fixed_alpha_interpolator = 0.0;
+	
 	// physics
 	clock_data.fixed_elapsed_time 		= 0.0;
 	clock_data.fixed_delta_accumulator 	= 0.0;
@@ -74,12 +77,12 @@ clock_tick_frame :: proc() -> f64{
 
 	new_time : f64 = clock_get_ticks_seconds();
 	clock_data.true_delta_time = new_time - clock_data.true_elapsed_time; 
+	clock_data.true_elapsed_time = new_time;
 
 	delta_time : f64 = clock_data.true_delta_time * clock_data.timescale;
 	clock_data.delta_time = min(delta_time, clock_data.max_delta_time);
 
 	clock_data.elapsed_time += clock_data.delta_time;
-	clock_data.true_elapsed_time = new_time;
 
 	clock_data.fixed_delta_accumulator += delta_time;
 
@@ -88,7 +91,7 @@ clock_tick_frame :: proc() -> f64{
 	
 	clock_data.frames_since_last_second += 1;
 
-	if(clock_data.second_accumulator >= 1.0){
+	if clock_data.second_accumulator >= 1.0 {
 		clock_data.second_accumulator = 0;
 		
 		clock_data.current_fps = clock_data.frames_since_last_second;
@@ -100,13 +103,23 @@ clock_tick_frame :: proc() -> f64{
 
 
 // @Note - fulcrum.
-// the next two procedures are used to determine the fixed update calls for physics updated.
-// call 'clock_should_advance_fixed_timestep()' in a while loop and if we enter the while loop
-// call 'clock_advance_fixed_timestep()'
-// for clock_should_advance_fixed_timestep() {
-// 	do_physics_update();
-// 	clock_advance_fixed_timestep();
-// }
+/*
+	the next two procedures are used to determine the fixed update calls for physics updated.
+	call 'clock_should_advance_fixed_timestep()' in a while loop and if we enter the while loop
+	call 'clock_advance_fixed_timestep()'
+	
+	example:
+
+	for clock_should_advance_fixed_timestep() {
+		do_physics_update();
+		clock_advance_fixed_timestep();
+	}
+	
+	alpha := clock_calc_fixed_alpha_interpolator();
+
+ 	-> https://gafferongames.com/post/fix_your_timestep/
+*/
+
 
 @(private="package")
 clock_should_advance_fixed_timestep :: proc() -> bool {
@@ -125,6 +138,17 @@ clock_advance_fixed_timestep :: proc() {
 	clock_data.should_advance_fixed = false;
 }
 
+@(private="package")
+clock_calc_fixed_alpha_interpolator :: proc() -> f64 {
+	//clock_data.fixed_alpha_interpolator = clock_data.fixed_delta_accumulator / clock_data.fixed_delta_accumulator;
+	clock_data.fixed_alpha_interpolator = clock_data.fixed_delta_accumulator / clock_data.fixed_delta_timestep;
+	return clock_data.fixed_alpha_interpolator;
+}
+
+
+clock_get_fixed_alpha_interpolator :: proc() -> f64{
+	return clock_data.fixed_alpha_interpolator;
+}
 
 clock_get_elapsed_time :: proc() -> f32 {
 	return cast(f32)clock_data.elapsed_time;

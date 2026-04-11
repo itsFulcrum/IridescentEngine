@@ -1,17 +1,21 @@
 package iri
 
+import iria "iriasset"
+import "core:math/linalg"
+
 ColliderType :: enum u8 {
 	Sphere,
 	Box,
 }
 
+// Collider Variants store world space transformed collider primitves!
 SphereCollider :: struct {
-	radius : f32,
+	world_position : [3]f32,
+	world_radius : f32,
 }
 
 BoxCollider :: struct {
-	extent : [3]f32,
-	orientation : quaternion128,
+	world_obb : OBB,
 }
 
 Collider :: union #no_nil {
@@ -19,15 +23,14 @@ Collider :: union #no_nil {
 	BoxCollider
 }
 
-COLLIDER_FLAGS_INTERNAL :: ColliderFlags{._Internal_IsOverlapped, ._Internal_ForceUpdate, ._Internal_EntityDisabled}
-ColliderFlags :: bit_set[ColliderFlag]
+// COLLIDER_FLAGS_INTERNAL :: ColliderFlags{._Internal_ForceUpdate, ._Internal_EntityDisabled}
+COLLIDER_FLAGS_INTERNAL :: ColliderFlags{}
+ColliderFlags :: bit_set[ColliderFlag; u32]
 ColliderFlag :: enum u32 {
 	GenerateOverlapEvents = 0,
 	ReceiveOverlapEvents,
 	IsStatic,
 
-	_Internal_IsOverlapped,
-	_Internal_ForceUpdate,
 	_Internal_EntityDisabled,
 }
 
@@ -38,11 +41,10 @@ ColliderComponent :: struct {
 	
 	flags : ColliderFlags,
 	offset : [3]f32,	
-	variant : Collider,
+	extent : [3]f32,			 // .yz ignored for sphere
+	orientation : quaternion128, // ignored for sphere
 
-	// TODO: cache stuff respecting isStatic flag and force updates.
-	// but maybe for box we want to cache obb directly??
-	_world_transform : Transform,
+	variant : Collider,
 
 	// Callbacks
 	callback_on_overlap_begin : ColliderOnOverlap_CallbackSignature,
@@ -72,9 +74,12 @@ comp_collider_set_defaults :: proc(comp : ^ColliderComponent){
 		return;
 	}
 
-	comp.offset = [3]f32{0,0,0};
 	comp.flags = ColliderFlags{.GenerateOverlapEvents, .ReceiveOverlapEvents};
-	comp.variant = sphere_collider_create_default();
+	comp.variant = SphereCollider{}; // sphere_collider_create_default();
+	
+	comp.offset = [3]f32{0,0,0};
+	comp.extent = [3]f32{1,1,1};
+	comp.orientation = linalg.QUATERNIONF32_IDENTITY;
 }
 
 // =====================================================================
@@ -94,9 +99,15 @@ comp_collider_get_type :: proc(comp : ^ColliderComponent) -> ColliderType {
 comp_collider_set_type :: proc(comp : ^ColliderComponent, type : ColliderType){
 
 	switch type {
-		case .Sphere: 	comp.variant = sphere_collider_create_default()
-		case .Box: 		comp.variant = box_collider_create_default()
+		case .Sphere: {
+			comp.variant = SphereCollider{};
+		}
+		case .Box:{
+			comp.variant = BoxCollider{}
+		} 		
 	}
+
+	comp_collider_recompute_collider_primitve(comp);
 }
 
 comp_collider_set_flags :: proc(comp : ^ColliderComponent, flags : ColliderFlags, substract_flags : bool = false){
@@ -110,20 +121,62 @@ comp_collider_set_flags :: proc(comp : ^ColliderComponent, flags : ColliderFlags
 	}
 }
 
-// Bypasses IsStatic flag
-comp_collider_force_update :: proc(comp : ^ColliderComponent){
-	comp.flags += ColliderFlags{._Internal_ForceUpdate};
+// Assumes Collider is of type sphere
+comp_collider_set_radius :: proc(comp : ^ColliderComponent, radius : f32){
+	comp.extent = [3]f32{radius, radius, radius};
 }
 
-sphere_collider_create_default :: proc() -> SphereCollider {
-	return SphereCollider {
-		radius = 1.0,
+// Assumes Collider is of type sphere
+comp_collider_get_radius :: proc(comp : ^ColliderComponent) -> f32 {
+	return comp.extent.x;
+}
+
+// Bypasses IsStatic flag
+// comp_collider_force_update :: proc(comp : ^ColliderComponent){
+// 	//comp.flags += ColliderFlags{._Internal_ForceUpdate};
+// }
+
+
+comp_collider_recompute_collider_primitve :: proc(comp : ^ColliderComponent) {
+	
+	ent_trans := ecs_get_transform(comp.parent_ecs, comp.entity);
+
+	switch &v in comp.variant{
+		case SphereCollider: {
+			v.world_position = ent_trans.position + linalg.quaternion128_mul_vector3(ent_trans.orientation, comp.offset * ent_trans.scale);
+			v.world_radius = comp.extent.x * max(max(ent_trans.scale.x, ent_trans.scale.y), ent_trans.scale.z);
+		}
+		case BoxCollider: 	{
+			world_transform := Transform {
+				position 	= ent_trans.position + linalg.quaternion128_mul_vector3(ent_trans.orientation, comp.offset * ent_trans.scale),
+				scale 		= ent_trans.scale * comp.extent,
+				orientation = linalg.quaternion_mul_quaternion(ent_trans.orientation,comp.orientation),
+			}
+			v.world_obb = obb_from_world_transform(world_transform);
+		}
 	}
 }
 
-box_collider_create_default :: proc() -> BoxCollider {
-	return BoxCollider {
-		extent = {1,1,1},
-		orientation = quaternion(x=0, y=0,z=0,w=1),
+
+comp_collider_init_from_comp_data :: proc(comp : ^ColliderComponent, comp_data : iria.ColliderCompData){
+
+	comp.flags = transmute(ColliderFlags)comp_data.flags;
+	comp.offset = comp_data.offset;
+	comp.extent = comp_data.extent;
+	comp.orientation = comp_data.orientation;
+
+	type : ColliderType = cast(ColliderType)cast(u8)comp_data.type;
+	comp_collider_set_type(comp, type); // This will also recompute the collider primitve.
+} 
+
+comp_collider_create_collider_comp_data :: proc(comp : ^ColliderComponent) -> iria.ColliderCompData {
+	flags : ColliderFlags = comp.flags - COLLIDER_FLAGS_INTERNAL;
+
+	return iria.ColliderCompData{
+		type  		= cast(u32)comp_collider_get_type(comp),
+		flags 		= transmute(u32)flags,
+		offset 		= comp.offset,
+		extent 		= comp.extent,
+		orientation = comp.orientation,
 	}
 }

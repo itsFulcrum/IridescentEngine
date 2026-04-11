@@ -11,6 +11,7 @@ EntityInvalid :: iricom.EntityInvalid
 
 EntityFlag  :: iricom.EntityFlag
 EntityFlags :: iricom.EntityFlags
+ENTITY_FLAGS_INTERNAL :: iricom.ENTITY_FLAGS_INTERNAL
 
 EntityInfo :: iricom.EntityInfo
 
@@ -52,11 +53,12 @@ ECData :: struct {
 	// that might just be '-1' if the component is not attached. 
 	// the memory cost of one entity is therefore one 'i32' per component type + tranform component + entity info.
 	
-	entity_infos: [dynamic]EntityInfo,
+	entity_infos: #soa[dynamic]EntityInfo,	// All entities have this
 
 	component_indexes : [ComponentType][dynamic]i32,
 
-	transform_components 		: [dynamic]TransformComponent, // All entities have this
+	previous_physics_transforms : [dynamic]Transform,			// All entities have this
+	transform_components 		: [dynamic]TransformComponent, 	// All entities have this
 	camera_components 			: [dynamic]CameraComponent,
 	light_components 			: [dynamic]LightComponent,
 	skybox_components 			: [dynamic]SkyboxComponent,
@@ -68,6 +70,7 @@ ECData :: struct {
 	active_skybox_is_dirty : bool,
 	
 	any_light_is_dirty : bool, // set to false each frame by light_manager after updates
+	force_updates_exist : bool, // set to false each frame by ecs_process_end_frame
 
 	drawables : #soa[dynamic]Drawable,
 }
@@ -235,7 +238,7 @@ ecs_init :: proc(ecs : ^ECData, reserve_mem_for_n_entities : u32 = 16) {
 
 	reserve_amount := reserve_mem_for_n_entities;
 
-	reserve_dynamic_array(&ecs.entity_infos, reserve_amount);
+	reserve_soa(&ecs.entity_infos, reserve_amount);
 	reserve_dynamic_array(&ecs.transform_components, reserve_amount);
 	
 	// for each component reserve memory in the indexes list
@@ -255,7 +258,7 @@ ecs_init :: proc(ecs : ^ECData, reserve_mem_for_n_entities : u32 = 16) {
 }
 
 @(private="package")
-ecs_destroy :: proc(ecs : ^ECData) -> EcsError{
+ecs_deinit:: proc(ecs : ^ECData) -> EcsError{
 
 	engine_assert(ecs != nil);
 
@@ -283,6 +286,7 @@ ecs_destroy :: proc(ecs : ^ECData) -> EcsError{
 		delete(ecs.component_indexes[comp_type]);
 	}
 
+	delete(ecs.previous_physics_transforms);
 	delete(ecs.pending_destroy);
 	delete(ecs.drawables);
 
@@ -297,6 +301,30 @@ ecs_process_pending_destroy :: proc (ecs : ^ECData){
 	}
 
 	clear(&ecs.pending_destroy);
+}
+
+ecs_process_end_of_frame :: proc (ecs : ^ECData){
+
+	if !ecs.force_updates_exist {
+		return;
+	}
+
+
+	for i := 0; i < len(ecs.entity_infos); i+=1 {
+
+		flags := ecs.entity_infos.flags[i];
+
+		if ._Internal_Exists not_in  flags {
+			continue;
+		}
+
+		if ._Internal_ForceUpdate in flags {
+			ecs.entity_infos[i].flags -= EntityFlags{._Internal_ForceUpdate};
+		}
+
+	}
+
+	ecs.force_updates_exist = false;
 }
 
 // Set an existing entity with a camera component attached to it as the active camera used for rendering
@@ -320,6 +348,10 @@ ecs_get_active_camera_component :: proc (ecs : ^ECData) -> ^CameraComponent {
 		return nil;
 	}
 
+	if !ecs_entity_is_enabled(cam_comp.parent_ecs, cam_comp.entity) {
+		return nil;
+	}
+
 	return cam_comp;
 }
 
@@ -339,12 +371,17 @@ ecs_set_active_skybox_entity :: proc(ecs : ^ECData, entity : Entity) -> EcsError
 	return EcsError.None;
 }
 
-// returns nill if no active skybox is set
+// returns nill if no active skybox is set or active is disabled
 ecs_get_active_skybox_component :: proc(ecs : ^ECData) -> ^SkyboxComponent {
 	sky_comp, err := ecs_get_component(ecs, ecs.active_skybox_entity, SkyboxComponent);
 	if err != EcsError.None {
 		return nil;
 	}
+
+	if !ecs_entity_is_enabled(sky_comp.parent_ecs, sky_comp.entity) {
+		return nil;
+	}
+
 	return sky_comp;
 }
 
@@ -353,8 +390,10 @@ ecs_get_active_skybox_component :: proc(ecs : ^ECData) -> ^SkyboxComponent {
 // GATHER & FIND ENTITY PROCEDURES
 // =================================================================================
 
+// TODO: use entity info SOA!!!!
+
 // Gather all entities that have all the components in the include_set and none of the components in the exclude_set
-ecs_gather_entities_by_components :: proc(ecs : ^ECData, include_set: ComponentSet, exclude_set: ComponentSet = {}, include_disabled: bool = false, allocator := context.allocator) -> []Entity {
+ecs_gather_entities_by_component_subset :: proc(ecs : ^ECData, include_set: ComponentSet, exclude_set: ComponentSet = {}, include_disabled: bool = false, allocator := context.allocator) -> []Entity {
 
 	engine_assert(ecs != nil);
 
@@ -363,20 +402,55 @@ ecs_gather_entities_by_components :: proc(ecs : ^ECData, include_set: ComponentS
 
 	empty_set := ComponentSet{};
 
-	for ent_info, index in ecs.entity_infos {
+	for index in 0..<len(ecs.entity_infos) {
 
-		if EntityFlag._Internal_Exists not_in ent_info.flags || !include_disabled && ._Internal_IsEnabled not_in ent_info.flags {
+		ent_flags := ecs.entity_infos.flags[index];
+
+		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
 			continue;
 		}
 
-		exclude_intersection := exclude_set & ent_info.component_set;
+		comp_set := ecs.entity_infos.component_set[index];
+
+		exclude_intersection := exclude_set & comp_set;
 		if exclude_intersection != empty_set  do continue;
 
-		if include_set <= ent_info.component_set { // A <= B -> subset relation (A is a subset of B or equal to B)	
+		if include_set <= comp_set { // A <= B -> subset relation (A is a subset of B or equal to B)	
 
-			append(&ents_arr, Entity{id=cast(i32)index, identifier = ent_info.identifier});
+			append(&ents_arr, Entity{id=cast(i32)index, identifier = ecs.entity_infos.identifier[index]});
 		}
 
+	}
+
+	return ents_arr[:];
+}
+
+// Gather all entities that have any component specified in the 'include_set' but exclude entitys that have any component in the 'exclude_set'
+ecs_gather_entities_with_component :: proc(ecs : ^ECData, include_set: ComponentSet, exclude_set: ComponentSet = {}, include_disabled: bool = false, allocator := context.allocator) -> []Entity {
+
+	engine_assert(ecs != nil);
+
+	ents_arr: [dynamic]Entity = make_dynamic_array([dynamic]Entity, allocator);
+	reserve_dynamic_array(&ents_arr, len(ecs.entity_infos));
+
+	empty_set := ComponentSet{};
+
+	for index := 0; index < len(ecs.entity_infos); index += 1{
+
+		if EntityFlag._Internal_Exists not_in ecs.entity_infos.flags[index] || !include_disabled && EntityFlag._Internal_IsEnabled not_in ecs.entity_infos.flags[index] {
+			continue;
+		}
+		comp_set := ecs.entity_infos.component_set[index];
+
+		exc_dif_set := exclude_set - comp_set;
+		if exc_dif_set != exclude_set {
+			continue;
+		}
+
+		inc_diff_set := include_set - comp_set;
+		if inc_diff_set != include_set {
+			append(&ents_arr, Entity{id=cast(i32)index, identifier = ecs.entity_infos[index].identifier});
+		}
 	}
 
 	return ents_arr[:];
@@ -389,15 +463,18 @@ ecs_gather_entities_by_tag :: proc(ecs : ^ECData, ent_tag : u32 = 0, include_dis
 
 	ents_arr: [dynamic]Entity = make_dynamic_array([dynamic]Entity, allocator);
 
-	for ent_info, index in ecs.entity_infos {
+	for index in 0..<len(ecs.entity_infos) {
 
-		if EntityFlag._Internal_Exists not_in ent_info.flags || !include_disabled && ._Internal_IsEnabled not_in ent_info.flags {
+		ent_flags := ecs.entity_infos.flags[index];
+		
+
+		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
 			continue;
 		}
 		
-		if ent_info.tag == ent_tag {
+		if ecs.entity_infos.tag[index] == ent_tag {
 
-			append(&ents_arr, Entity{id=cast(i32)index, identifier = ent_info.identifier});
+			append(&ents_arr, Entity{id=cast(i32)index, identifier = ecs.entity_infos.identifier[index]});
 			
 			if only_first do break;
 		}
@@ -407,31 +484,35 @@ ecs_gather_entities_by_tag :: proc(ecs : ^ECData, ent_tag : u32 = 0, include_dis
 }
 
 // Gather all entities that have all compoents in the include_set and a specific tag. If ent_tag is 0, only search by components.
-ecs_gather_entities_by_components_and_tag :: proc(ecs : ^ECData, component_include_set: ComponentSet, ent_tag : u32 = 0 , include_disabled: bool = false, only_first : bool = false, allocator := context.allocator) -> []Entity {
+ecs_gather_entities_by_component_subset_and_tag :: proc(ecs : ^ECData, include_set: ComponentSet, ent_tag : u32 = 0 , include_disabled: bool = false, only_first : bool = false, allocator := context.allocator) -> []Entity {
 
 	engine_assert(ecs != nil);
 
 	ents_arr: [dynamic]Entity = make_dynamic_array([dynamic]Entity, allocator);
 
-	for ent_info, index in ecs.entity_infos {
+	for index in 0..<len(ecs.entity_infos) {
 
-		if EntityFlag._Internal_Exists not_in ent_info.flags || !include_disabled && ._Internal_IsEnabled not_in ent_info.flags {
+		ent_flags := ecs.entity_infos.flags[index];
+		
+		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
 			continue;
 		}
 
+		ent_comp_set := ecs.entity_infos.component_set[index];
+
 		if ent_tag == 0 {
 			
-			if component_include_set <= ent_info.component_set { // A <= B -> subset relation (A is a subset of B or equal to B)	
+			if include_set <= ent_comp_set { // A <= B -> subset relation (A is a subset of B or equal to B)	
 
-				append(&ents_arr, Entity{id=cast(i32)index, identifier = ent_info.identifier});
+				append(&ents_arr, Entity{id=cast(i32)index, identifier = ecs.entity_infos.identifier[index]});
 
 				if only_first do break;
 			}
-		} else if ent_info.tag == ent_tag {
+		} else if ecs.entity_infos.tag[index] == ent_tag {
 
-			if component_include_set <= ent_info.component_set { // A <= B -> subset relation (A is a subset of B or equal to B)	
+			if include_set <= ent_comp_set { // A <= B -> subset relation (A is a subset of B or equal to B)	
 
-				append(&ents_arr, Entity{id=cast(i32)index, identifier = ent_info.identifier});
+				append(&ents_arr, Entity{id=cast(i32)index, identifier = ecs.entity_infos.identifier[index]});
 				
 				if only_first do break;
 			}
@@ -448,23 +529,25 @@ ecs_gather_entities_by_name_and_tag :: proc(ecs : ^ECData, ent_name : string, en
 
 	ents_arr: [dynamic]Entity = make_dynamic_array([dynamic]Entity, allocator);
 
-	for ent_info, index in ecs.entity_infos {
+	for index in 0..<len(ecs.entity_infos) {
 
-		if EntityFlag._Internal_Exists not_in ent_info.flags || !include_disabled && ._Internal_IsEnabled not_in ent_info.flags {
+		ent_flags := ecs.entity_infos.flags[index];
+		
+		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
 			continue;
 		}
 
 		if ent_tag == 0 {
 
-			if ent_name == ent_info.name {
-				append(&ents_arr, Entity{id=cast(i32)index, identifier = ent_info.identifier});
+			if ent_name == ecs.entity_infos.name[index] {
+				append(&ents_arr, Entity{id=cast(i32)index, identifier = ecs.entity_infos.identifier[index]});
 
 				if only_first do break;
 			}
-		} else if  ent_info.tag == ent_tag {
+		} else if  ecs.entity_infos.tag[index] == ent_tag {
 
-			if ent_name == ent_info.name {
-				append(&ents_arr, Entity{id=cast(i32)index, identifier = ent_info.identifier});
+			if ent_name == ecs.entity_infos.name[index] {
+				append(&ents_arr, Entity{id=cast(i32)index, identifier = ecs.entity_infos.identifier[index]});
 
 				if only_first do break;
 			}
@@ -486,7 +569,7 @@ ecs_find_first_entity_by_tag :: proc(ecs : ^ECData, ent_tag : u32, include_disab
 }
 
 ecs_find_first_entity_by_components_and_tag :: proc(ecs : ^ECData, component_include_set: ComponentSet, ent_tag : u32 = 0, include_disabled: bool = false) -> (Entity) {
-	ents := ecs_gather_entities_by_components_and_tag(ecs, component_include_set, ent_tag, include_disabled, true, context.temp_allocator);
+	ents := ecs_gather_entities_by_component_subset_and_tag(ecs, component_include_set, ent_tag, include_disabled, true, context.temp_allocator);
 
 	if len(ents) > 0{
 		return ents[0];
@@ -565,6 +648,7 @@ ecs_entity_create :: proc(ecs : ^ECData, ent_name : string = "NewEntity", ent_ta
 
 	ecs_init_component(&transform_comp, ecs, entity);
 	append(&ecs.transform_components, transform_comp);
+	append(&ecs.previous_physics_transforms, transform_comp.transform);
 
 	engine_assert(len(ecs.transform_components) == len(ecs.entity_infos));
 
@@ -628,17 +712,39 @@ ecs_entity_destroy_actual :: proc(ecs : ^ECData, entity : ^Entity) -> EcsError {
 		err := ecs_remove_component_from_component_type(ecs, entity^, comp_type);
 	}
 
-	// Mark EntityInfo as non existent
-	entity_info := &ecs.entity_infos[entity.id];
-	if len(entity_info.name) > 0 {
-		delete_string(entity_info.name)
-		entity_info.name = ""; // This is required because delete string does not reset the length to 0..
+	// if last entity, pop from array. otherwise put it into free list.
+
+	if entity.id == cast(i32)len(ecs.entity_infos) -1 {
+		// TODO: we could loop here to check how many entities below this entity.id also dont exisst and remove them asswell
+		// but maybe we should just do this per frame to now cause random spikes. removing al lot of entities in one frame. 
+
+		unordered_remove_soa(&ecs.entity_infos, entity.id);
+		pop(&ecs.transform_components);
+		pop(&ecs.previous_physics_transforms);
+
+		for comp_type in ComponentType {
+			if comp_type == .Transform {
+				continue;
+			}
+
+			pop(&ecs.component_indexes[comp_type]);
+		}
+
+		return EcsError.None;
 	}
-	entity_info.identifier 		= -1;
-	entity_info.flags 			= EntityFlags{};
-	entity_info.component_set 	= ComponentSet{};
-	entity_info.tag 			= 0;
-	entity_info.user_data 		= 0;
+
+
+	// Mark EntityInfo as non existent
+	//entity_info := &ecs.entity_infos[entity.id];
+	if len(ecs.entity_infos.name[entity.id]) > 0 {
+		delete_string(ecs.entity_infos[entity.id].name)
+		ecs.entity_infos[entity.id].name = ""; // This is required because delete string does not reset the length to 0..
+	}
+	ecs.entity_infos[entity.id].identifier 		= -1;
+	ecs.entity_infos[entity.id].flags 			= EntityFlags{};
+	ecs.entity_infos[entity.id].component_set 	= ComponentSet{};
+	ecs.entity_infos[entity.id].tag 			= 0;
+	ecs.entity_infos[entity.id].user_data 		= 0;
 
 	// Deinit the transform Component.
 	ecs_deinit_component(&ecs.transform_components[entity.id]);
@@ -752,7 +858,7 @@ ecs_remove_component ::proc(ecs : ^ECData, entity : Entity,  $T : typeid) -> Ecs
 	}
 
 	// if we are removing the last component in the components array, we can just pop it off
-	if(comp_index == cast(i32)len(components_array) -1) {
+	if comp_index == cast(i32)len(components_array) -1 {
 		pop(components_array);
 		return EcsError.None;
 	}
@@ -809,6 +915,21 @@ ecs_get_transform :: proc(ecs : ^ECData, entity : Entity) -> ^TransformComponent
 	return &ecs.transform_components[entity.id];
 }
 
+@(private="package")
+ecs_on_enabled_changed :: proc(ecs : ^ECData, entity : Entity){
+	
+	light_comp , err := ecs_get_component(ecs, entity, LightComponent);
+	if light_comp != nil {
+		comp_light_push_changes(light_comp);
+	}
+
+	if entity == ecs.active_skybox_entity {
+		ecs.active_skybox_is_dirty = true;
+	}
+
+	ecs_entity_force_update(ecs, entity);
+}
+
 ecs_entity_exists :: proc(ecs : ^ECData, entity : Entity) -> bool {
 
 	engine_assert(ecs != nil);
@@ -817,26 +938,28 @@ ecs_entity_exists :: proc(ecs : ^ECData, entity : Entity) -> bool {
 		return false;
 	}
 
-	if EntityFlag._Internal_Exists not_in ecs.entity_infos[entity.id].flags {
+	if EntityFlag._Internal_Exists not_in ecs.entity_infos.flags[entity.id] {
 		return false;
 	}
 
-	if ecs.entity_infos[entity.id].identifier != entity.identifier {
+	if ecs.entity_infos.identifier[entity.id] != entity.identifier {
 		return false;
 	}
 
 	return true;
 }
 
+
+// Get / Set EntityInfo fields
 ecs_entity_get_name :: proc(ecs : ^ECData, entity : Entity) -> (string, EcsError){
 	if !ecs_entity_exists(ecs, entity) {
 		return "", EcsError.InvalidEntity;
 	}
 
-	return ecs.entity_infos[entity.id].name, EcsError.None;
+	return ecs.entity_infos.name[entity.id], EcsError.None;
 }
 
-ecs_entity_rename :: proc(ecs : ^ECData, entity : Entity, new_name : string) -> EcsError{
+ecs_entity_set_name :: proc(ecs : ^ECData, entity : Entity, new_name : string) -> EcsError{
 
 	if len(new_name) <= 0 {
 		return EcsError.InvalidInputParameter;
@@ -846,13 +969,11 @@ ecs_entity_rename :: proc(ecs : ^ECData, entity : Entity, new_name : string) -> 
 		return EcsError.InvalidEntity;
 	}
 
-	info := &ecs.entity_infos[entity.id];
-
-	if len(info.name) > 0 {
-		delete_string(info.name);
+	if len(ecs.entity_infos.name[entity.id]) > 0 {
+		delete_string(ecs.entity_infos.name[entity.id]);
 	}
 
-	info.name = strings.clone(new_name, context.allocator);
+	ecs.entity_infos[entity.id].name = strings.clone(new_name, context.allocator);
 
 	return EcsError.None;
 }
@@ -874,7 +995,7 @@ ecs_entity_get_tag :: proc(ecs : ^ECData, entity : Entity) -> (u32, EcsError) {
 		return 0, EcsError.InvalidEntity;
 	}
 
-	return ecs.entity_infos[entity.id].tag, EcsError.None;
+	return ecs.entity_infos.tag[entity.id], EcsError.None;
 }
 
 ecs_entity_is_enabled :: proc(ecs : ^ECData, entity : Entity) -> bool {
@@ -883,7 +1004,7 @@ ecs_entity_is_enabled :: proc(ecs : ^ECData, entity : Entity) -> bool {
 		return false;
 	}
 
-	return EntityFlag._Internal_IsEnabled in ecs.entity_infos[entity.id].flags;
+	return EntityFlag._Internal_IsEnabled in ecs.entity_infos.flags[entity.id];
 }
 
 ecs_entity_set_enabled :: proc(ecs : ^ECData, entity : Entity, new_enabled : bool) -> EcsError{
@@ -906,6 +1027,15 @@ ecs_entity_set_enabled :: proc(ecs : ^ECData, entity : Entity, new_enabled : boo
 	return EcsError.None;
 }
 
+// @Note. only returns non _Internal flags
+ecs_entity_get_flags :: proc(ecs : ^ECData, entity : Entity) -> (EntityFlags, EcsError) {
+	if !ecs_entity_exists(ecs, entity) {
+		return EntityFlags{}, EcsError.InvalidEntity;
+	}
+
+	return ecs.entity_infos.flags[entity.id] - ENTITY_FLAGS_INTERNAL, EcsError.None;
+}
+
 // @Note. only allows setting non _Internal flags
 ecs_entity_set_flags :: proc(ecs : ^ECData, entity : Entity, flags : EntityFlags, subtract_flags : bool = false) -> EcsError{
 	if !ecs_entity_exists(ecs, entity) {
@@ -924,6 +1054,31 @@ ecs_entity_set_flags :: proc(ecs : ^ECData, entity : Entity, flags : EntityFlags
 	return EcsError.None;
 }
 
+ecs_entity_get_user_data :: proc(ecs : ^ECData, entity : Entity) -> (data : uintptr, err : EcsError) {
+	if !ecs_entity_exists(ecs, entity) {
+		return 0, EcsError.InvalidEntity;
+	}
+
+	return ecs.entity_infos.user_data[entity.id], EcsError.None;
+}
+
+ecs_entity_set_user_data :: proc(ecs : ^ECData, entity : Entity, data : uintptr) -> EcsError {
+	if !ecs_entity_exists(ecs, entity) {
+		return EcsError.InvalidEntity;
+	}
+
+	ecs.entity_infos[entity.id].user_data = data;
+	return EcsError.None;
+}
+
+ecs_entity_get_component_set :: proc(ecs : ^ECData, entity : Entity) -> (set : ComponentSet, err : EcsError) {
+	if !ecs_entity_exists(ecs, entity) {
+		return ComponentSet{}, EcsError.InvalidEntity;
+	}
+
+	return ecs.entity_infos.component_set[entity.id], EcsError.None;
+}
+
 ecs_component_is_attached :: proc(ecs : ^ECData, entity : Entity,  component_type : ComponentType) -> bool {
 
 	engine_assert(ecs != nil);
@@ -932,14 +1087,16 @@ ecs_component_is_attached :: proc(ecs : ^ECData, entity : Entity,  component_typ
 		return false;
 	}
 
-	if component_type in ecs.entity_infos[entity.id].component_set {
+	if component_type in ecs.entity_infos.component_set[entity.id] {
 		return true;
 	}
 
 	return false;
 }
 
-ecs_get_entity_info :: proc(ecs : ^ECData, entity : Entity) -> (info : EntityInfo, err : EcsError) {
+
+// @Note: Prefer not to use this unless you need to get all fields.
+ecs_get_entity_info_copy :: proc(ecs : ^ECData, entity : Entity) -> (info : EntityInfo, err : EcsError) {
 
 	engine_assert(ecs != nil);
 
@@ -952,15 +1109,21 @@ ecs_get_entity_info :: proc(ecs : ^ECData, entity : Entity) -> (info : EntityInf
 	return ecs.entity_infos[entity.id], EcsError.None;
 }
 
-@(private="package")
-ecs_on_enabled_changed :: proc(ecs : ^ECData, entity : Entity){
-	
-	light_comp , err := ecs_get_component(ecs, entity, LightComponent);
-	if light_comp != nil {
-		comp_light_push_changes(light_comp);
+// Usefull for pooling and physics updated entities. 
+ecs_entity_force_update :: proc(ecs : ^ECData, entity : Entity) -> EcsError{
+	if !ecs_entity_exists(ecs, entity) {
+		return EcsError.InvalidEntity;
 	}
-}
 
+	ent_trans := ecs_get_transform(ecs, entity);
+
+	ecs.previous_physics_transforms[entity.id] = ent_trans.transform;
+	ecs.entity_infos[entity.id].flags += EntityFlags{._Internal_ForceUpdate};
+
+	ecs.force_updates_exist = true;
+
+	return EcsError.None;
+}
 
 // =================================================================================
 // DRAWABLES
@@ -984,7 +1147,7 @@ ecs_drawable_add :: proc(ecs : ^ECData, entity : Entity, drawable : ^Drawable) -
 
 	if mesh_manager_is_valid_id(engine.mesh_manager, drawable.draw_instance.mesh_id) {	
 		mesh_aabb := mesh_manager_get_aabb(engine.mesh_manager, drawable.draw_instance.mesh_id);
-		drawable.world_oobb = aabb_to_transformed_oobb(mesh_aabb, world_transform);
+		drawable.world_oobb = obb_from_aabb_and_transform(mesh_aabb, world_transform);
 	} else {
 		drawable.draw_instance.flags += DrawInstanceFlags{._Internal_NoValidMesh}
 	}
@@ -1023,7 +1186,7 @@ ecs_drawable_remove :: proc(ecs : ^ECData, index : ^int) {
 	// this will remove the element at index and copy last element there instead.
 	unordered_remove_soa(&ecs.drawables, _index);
 
-	// we must force update this entity.
+	// we must force update this entity. Because the transform matrix must be reuploaded to gpu.
 	ecs_drawable_force_update(ecs, _index);
 
 	// Since drawable already stores the entity to which it belongs.
@@ -1048,7 +1211,7 @@ ecs_drawable_remove :: proc(ecs : ^ECData, index : ^int) {
 	engine_assert(found);
 }
 
-@(private="package")
+// @(private="package")
 ecs_drawable_force_update :: proc(ecs : ^ECData, index : int) {
 
 	if !ecs_drawable_valid_index(ecs, index){
@@ -1057,7 +1220,7 @@ ecs_drawable_force_update :: proc(ecs : ^ECData, index : int) {
 
 	entity := ecs.drawables.entity[index];
 
-	ecs.drawables[index].draw_instance.flags += DrawInstanceFlags{._Internal_ForceUpdate};
+	ecs.drawables[index].draw_instance.flags += DrawInstanceFlags{._Internal_ReuploadMatrixGPU};
 }
 
 @(private="package")

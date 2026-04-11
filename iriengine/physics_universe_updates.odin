@@ -5,13 +5,11 @@ import "core:math/linalg"
 import "core:sort"
 
 
-
 CollisionPair :: struct {
 	ent_a : Entity,
 	ent_b : Entity,
 }
 
-// TOOD: clear both on universe swithes!!
 CollisionManager :: struct {
 	pairs_buf_a : [dynamic]CollisionPair,
 	pairs_buf_b : [dynamic]CollisionPair,
@@ -40,6 +38,50 @@ collision_manager_reset :: proc(manager : ^CollisionManager){
 	clear(&manager.pairs_buf_b);
 }
 
+// @Note: this should run in physics update BEFORE any physics intergration happens, we copy transforms of the current state and store them 
+// such that when rendering we can interpolate between last and current physics states for smoooothnes.
+@(private="package")
+physics_universe_update_previous_transform_state :: proc(manager : ^CollisionManager, universe : ^Universe, timestep : f32){
+
+	ecs := &universe.ecs;
+
+	{
+		// Copy current transform state for all components that may need interpolation for rendering frames.
+		ents : []Entity = ecs_gather_entities_with_component(ecs, {.MeshRenderer, .Camera, .Light}, {}, include_disabled = false, allocator = context.temp_allocator);
+
+		for ent in ents {
+			universe.ecs.previous_physics_transforms[ent.id] = ecs.transform_components[ent.id].transform;
+		}
+	}
+
+
+	drawables : ^#soa[dynamic]Drawable = &ecs.drawables;
+
+	for index in 0..<len(drawables) {
+		
+		entity := drawables.entity[index];
+		ent_flags := ecs.entity_infos.flags[entity.id];
+		engine_assert(._Internal_Exists in ent_flags);
+
+		draw_flags := drawables.draw_instance[index].flags;
+
+		// @Note: force update may not reach this procedure which mean we may skip
+		// all statics here but it should be okey since we update force updates also in normal frame update
+		
+		if ._Internal_IsEnabled not_in ent_flags && ._Internal_ForceUpdate not_in ent_flags {
+			continue;
+		}
+
+		if .IsStatic in draw_flags && ._Internal_ForceUpdate not_in ent_flags {
+			continue;
+		}
+
+		ecs.drawables[index].prev_physics_world_transform = transform_child_by_parent(ecs.previous_physics_transforms[entity.id], drawables.draw_instance[index].transform)
+	}
+}
+
+
+// Collision detection and boradcast overlap callback events
 @(private="package")
 physics_universe_update :: proc(manager : ^CollisionManager, universe : ^Universe, timestep : f32){
 	
@@ -49,9 +91,9 @@ physics_universe_update :: proc(manager : ^CollisionManager, universe : ^Univers
 
 	ecs := &universe.ecs;
 
-	// produce and cache world transform
+	// Update collider primitives
 	for &comp in ecs.collider_components {
-		
+
 		if ecs_entity_is_enabled(ecs, comp.entity){
 			comp.flags -= ColliderFlags{._Internal_EntityDisabled}
 		} else {
@@ -59,30 +101,17 @@ physics_universe_update :: proc(manager : ^CollisionManager, universe : ^Univers
 			continue;
 		}
 
-		// dont write to this
-		ent_trans := ecs_get_transform(ecs, comp.entity);
+		ent_flags := ecs.entity_infos.flags[comp.entity.id];
 
-		switch &var in comp.variant {
-			case SphereCollider: {
-				comp._world_transform.position = ent_trans.position + linalg.quaternion128_mul_vector3(ent_trans.orientation, comp.offset * ent_trans.scale);
-				radi : f32 = var.radius * max(max(ent_trans.scale.x, ent_trans.scale.y), ent_trans.scale.z);
-				comp._world_transform.scale = [3]f32{radi,radi,radi};
-				// no need orientation for sphere
-			}
-			case BoxCollider: {
-				comp._world_transform = Transform {
-					position 	= ent_trans.position + linalg.quaternion128_mul_vector3(ent_trans.orientation, comp.offset * ent_trans.scale),
-					scale 		= ent_trans.scale * var.extent,
-					orientation = ent_trans.orientation * var.orientation,
-				}
-			}
+		if .IsStatic in comp.flags && ._Internal_ForceUpdate not_in ent_flags {
+			continue;
 		}
+		
+		comp_collider_recompute_collider_primitve(&comp);
 	}
 
 	// For loooop go brrrrr
-
 	clear(manager.curr_pairs);
-
 	r_loop: for r := 0; r < len(ecs.collider_components); r += 1 {
 		
 		r_comp := &ecs.collider_components[r];
@@ -100,7 +129,7 @@ physics_universe_update :: proc(manager : ^CollisionManager, universe : ^Univers
 			}
 			
 
-			if colliders_overlap(r_comp.variant, r_comp._world_transform, g_comp.variant, g_comp._world_transform){
+			if collider_overlaps_collider(r_comp.variant, g_comp.variant){
 
 				r_smaller_g : bool = r_comp.entity.id < g_comp.entity.id;
 				pair := CollisionPair {
@@ -224,28 +253,20 @@ physics_universe_update :: proc(manager : ^CollisionManager, universe : ^Univers
 }
 
 
-colliders_overlap :: proc(a_col: Collider, a_transform : Transform, b_col : Collider, b_transform : Transform) -> bool {
+collider_overlaps_collider :: proc(a_col: Collider, b_col : Collider) -> bool {
 
 	switch &a_var in a_col {
 		case SphereCollider: {
 
 			switch &b_var in b_col {
-				case SphereCollider:{
-					return collider_test_sphere_vs_sphere(a_transform.position, a_transform.scale.x, b_transform.position, b_transform.scale.x);
-				}
-				case BoxCollider: {
-					return collider_test_sphere_vs_box(a_var, a_transform.position, a_transform.scale.x, b_var, b_transform);
-				}
+				case SphereCollider: return #force_inline collider_sphere_overlaps_sphere(a_var, b_var);
+				case BoxCollider:	 return #force_inline collider_sphere_overlaps_box(a_var, b_var);
 			}
 		}
 		case BoxCollider: {
 			switch &b_var in b_col {
-				case SphereCollider:{
-					return collider_test_sphere_vs_box(b_var, b_transform.position, b_transform.scale.x, a_var, a_transform);
-				}
-				case BoxCollider: {
-					return collider_test_box_vs_box(a_var, a_transform, b_var, b_transform);
-				}
+				case SphereCollider: return #force_inline collider_sphere_overlaps_box(b_var, a_var);
+				case BoxCollider:	 return #force_inline collider_box_overlaps_box(a_var, b_var);
 			}
 		}
 	}
@@ -253,21 +274,21 @@ colliders_overlap :: proc(a_col: Collider, a_transform : Transform, b_col : Coll
 	return false;
 }
 
-collider_test_sphere_vs_sphere :: #force_inline proc "contextless" (a_pos : [3]f32, a_radius : f32, b_pos : [3]f32, b_radius : f32) -> bool {
-	return linalg.distance(a_pos, b_pos) <= (a_radius + b_radius);
+
+collider_sphere_overlaps_sphere :: #force_inline proc "contextless" (a : SphereCollider, b : SphereCollider) -> bool {
+	return linalg.distance(a.world_position, b.world_position) <= (a.world_radius + b.world_radius);
 }
 
-collider_test_sphere_vs_box :: proc(a_col : SphereCollider, sphere_pos : [3]f32, sphere_radius : f32, box_col : BoxCollider, box_transform : Transform) -> bool{
-	
-	obb : OBB = obb_from_transform(box_transform);
-	return obb_overlaps_sphere(obb, sphere_pos, sphere_radius)
+collider_sphere_overlaps_box :: #force_inline proc "contextless" (sphere : SphereCollider, box : BoxCollider) -> bool {
+	return obb_overlaps_sphere(box.world_obb, sphere.world_position, sphere.world_radius)
 }
 
-collider_test_box_vs_box :: proc(a_col : BoxCollider, a_transform : Transform, b_col : BoxCollider, b_transform : Transform) -> bool {
-	obb_a : OBB = obb_from_transform(a_transform);
-	obb_b : OBB = obb_from_transform(b_transform);
-	
-	// TODO: optimize..
-	return obb_overlaps_obb(obb_a, obb_b);
+collider_box_overlaps_sphere :: #force_inline proc "contextless" (box : BoxCollider, sphere : SphereCollider) -> bool {
+	return obb_overlaps_sphere(box.world_obb, sphere.world_position, sphere.world_radius)
+}
+
+
+collider_box_overlaps_box :: #force_inline proc "contextless" (a : BoxCollider, b : BoxCollider) -> bool {
+	return obb_overlaps_obb(a.world_obb, b.world_obb);
 }
 

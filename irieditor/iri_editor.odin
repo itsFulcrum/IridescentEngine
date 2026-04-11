@@ -231,11 +231,11 @@ select_entity :: proc(universe : ^iri.Universe, entity : iri.Entity) {
 
 	editor._selected_entity = entity;
 
-	info, ecs_err := iri.entity_get_entity_info(entity, universe);
+	ent_name , ecs_err := iri.entity_get_name(entity, universe);
 	
 	if ecs_err == iri.EcsError.None {
 		// copy name to buffer
-		copy_string_to_buffer_null_terminate(editor.selected_entity_rename_buf ,cast(int)editor.selected_entity_rename_buf_len, info.name)
+		copy_string_to_buffer_null_terminate(editor.selected_entity_rename_buf ,cast(int)editor.selected_entity_rename_buf_len, ent_name)
 	}
 }
 

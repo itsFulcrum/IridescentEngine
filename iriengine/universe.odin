@@ -1,5 +1,6 @@
 package iri
 
+import "core:log"
 import "core:math/linalg"
 import "core:encoding/uuid"
 import "core:strings"
@@ -138,6 +139,13 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 		trans_comp := ecs_get_transform(&universe.ecs, entity);
 		trans_comp.transform = uni_asset.entity_trans[id];
 
+		if ._Internal_IsEnabled not_in packed_info.flags {
+			ecs_entity_set_enabled(&universe.ecs, entity, false);
+		}
+
+		ecs_entity_set_flags(&universe.ecs, entity, packed_info.flags);
+
+
 		ent_comp_indexes : iria.CompIndexes = uni_asset.entity_comp_indexes[id];
 
 		for comp_type in packed_info.comp_set {
@@ -178,6 +186,13 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 						comp_meshrenderer_append_drawable_assets(comp, uni_asset.drawable_assets_array[offset:offset+num], build_pipeline_cache = false)
 					}
 				}
+				case .Collider: {
+					comp, err := ecs_get_component(&universe.ecs, entity, ColliderComponent);
+					engine_assert(comp != nil);
+					engine_assert(ent_comp_indexes.collider_index > -1)
+					
+					comp_collider_init_from_comp_data(comp, uni_asset.collider_comp_data[ent_comp_indexes.collider_index]);
+				}
 			}
 		}
 
@@ -186,17 +201,23 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 		pipe_manager_update_material_and_depthonly_pipeline_cache_for_universe(pipe_manager, gpu_device, universe);
 	}
 	
-	// Maybe we should do validation that the corresponding entities we just created 
-	// actually have the components but if we wrote the asset file correctly these should
-	// just be correct since we just created entities now, didnt remove any and their
-	// id's should be the same as stored in the universe_asset.
+	
+	// Entity idenfiyers are runtime created and not stored in file so get get it first manually
+	// if for some reason the entity doesn't have the component attached it'll be handled by the ecs call.
 	if uni_asset.active_camera_entity > -1 {
-		universe.ecs.active_camera_entity.id = cast(i32)uni_asset.active_camera_entity;
+		
+		entity : Entity;
+		entity.id = cast(i32)uni_asset.active_camera_entity;
+		entity.identifier = universe.ecs.entity_infos[uni_asset.active_camera_entity].identifier;
+		ecs_set_active_camera_entity(&universe.ecs, entity);
 	}
 
 	if uni_asset.active_skybox_entity > -1 {
-		universe.ecs.active_skybox_entity.id = cast(i32)uni_asset.active_skybox_entity;
-		universe.ecs.active_skybox_is_dirty = true;
+		entity : Entity;
+		entity.id = cast(i32)uni_asset.active_skybox_entity;
+		entity.identifier = universe.ecs.entity_infos[uni_asset.active_skybox_entity].identifier;
+		
+		ecs_set_active_skybox_entity(&universe.ecs, entity);
 	}
 }
 
@@ -206,7 +227,7 @@ universe_deinit :: proc(universe : ^Universe) {
 
 	engine_assert(universe != nil);
 
-	ecs_destroy(&universe.ecs);
+	ecs_deinit(&universe.ecs);
 	
 	// skybox buffer
 	if universe.skybox_gpu_buffer != nil {

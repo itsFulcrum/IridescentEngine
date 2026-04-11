@@ -80,10 +80,11 @@ comp_meshrenderer_get_draw_instance :: proc(comp : ^MeshRendererComponent, index
 
 comp_meshrenderer_force_update_all_draw_instances :: proc(comp : ^MeshRendererComponent){
 
-	for draw_index in comp.drawable_indexes {
+	ecs_entity_force_update(comp.parent_ecs, comp.entity);
+	// for draw_index in comp.drawable_indexes {
 
-		ecs_drawable_force_update(comp.parent_ecs, draw_index);
-	}
+	// 	ecs_drawable_force_update(comp.parent_ecs, draw_index);
+	// }
 }
 
 // Force update bypasses if draw instance is marked as static or entity is disabled.

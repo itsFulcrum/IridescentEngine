@@ -26,40 +26,6 @@ CullingFrustum :: struct {
 	near_plane_half_height : f32,
 }
 
-// transform a aabb in object space to an oobb in world space given a to_world Transform
-aabb_to_transformed_oobb :: proc "contextless" (aabb : AABB, to_world : Transform) -> OBB {
-
-    corner_0 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.min.y, aabb.min.z});
-    corner_1 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.max.x, aabb.min.y, aabb.min.z});
-    corner_2 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.max.y, aabb.min.z});
-    corner_3 : [3]f32 = to_world.position + linalg.quaternion128_mul_vector3(to_world.orientation, to_world.scale * [3]f32{aabb.min.x, aabb.min.y, aabb.max.z});
-
-    oobb : OBB;
-
-    oobb.axis[0].xyz = corner_1 - corner_0;
-    oobb.axis[1].xyz = corner_2 - corner_0;
-    oobb.axis[2].xyz = corner_3 - corner_0;
-
-    oobb.center.xyz = corner_0 + [3]f32{0.5,0.5,0.5} * (oobb.axis[0].xyz + oobb.axis[1].xyz + oobb.axis[2].xyz);
-    oobb.center.w = 1.0;
-
-    oobb.extents = [4]f32{linalg.length(oobb.axis[0].xyz), linalg.length(oobb.axis[1].xyz), linalg.length(oobb.axis[2].xyz), 0.0};
-    
-    // normalize axis
-    oobb.axis[0] /= oobb.extents.x
-    oobb.axis[1] /= oobb.extents.y
-    oobb.axis[2] /= oobb.extents.z
-    // make .w = 0 since they are direction, so we can transform them with any other matrix
-    oobb.axis[0].w = 0.0;
-    oobb.axis[1].w = 0.0;
-    oobb.axis[2].w = 0.0;
-
-    // extent should be half the lenght of each side
-   oobb.extents.xyz *= 0.5;
-
-   return oobb;
-}
-
 create_culling_frustum :: proc "contextless" (aspect_ratio : f32 , fov_radians: f32, near_clip_plane : f32 , far_clip_plane : f32 ) -> CullingFrustum {
 
     tan_fovy_near : f32 = linalg.tan(fov_radians * 0.5) * near_clip_plane;
@@ -411,7 +377,7 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
     y_near : f32 = culling_frustum.near_plane_half_height;
     zfar_over_znear : f32 = z_far / z_near;
 
-    oobb : OBB = aabb_to_transformed_oobb(aabb, to_world);
+    oobb : OBB = obb_from_aabb_and_transform(aabb, to_world);
 
     // 4 corners of the aabb transform to world space using to_world Transform
     // @note - we could also combine the to_world Transform with the view_matrix but that would require to create a transform matrix for each 

@@ -53,6 +53,7 @@ asset_io_load_mesh_asset_id :: proc(asset_manager : ^AssetManager, mesh_manager 
 	return mesh_id, true;
 }
 
+
 asset_io_load_material_asset_id :: proc(asset_manager : ^AssetManager, material_manager : ^MaterialManager, asset_uuid : AssetUUID) -> (mat_id : MaterialID, ok : bool){
 
 
@@ -140,11 +141,8 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 	}
 
 	entity_info_to_entity_info_packed :: proc(ent_info : EntityInfo) -> iria.EntityInfoPacked {
-		info_flags : iria.EntityInfoFlags;
 
-		if EntityFlag._Internal_IsEnabled in ent_info.flags {
-			info_flags += iria.EntityInfoFlags{.IsEnabled}
-		}
+		info_flags := ent_info.flags - iricom.ENTITY_FLAGS_NOSTORE;
 
 		return iria.EntityInfoPacked {
 			flags 		= info_flags,
@@ -191,6 +189,7 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 			skybox_index   = ecs.component_indexes[.Skybox][ent_id],
 			light_index    = ecs.component_indexes[.Light][ent_id],
 			meshren_index  = ecs.component_indexes[.MeshRenderer][ent_id],
+			collider_index = ecs.component_indexes[.Collider][ent_id],
 		}
 
 		append(&ent_infos, info_packed);
@@ -211,7 +210,6 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 	uni_asset.entity_comp_indexes = ent_comp_indexes[:];
 
 	// We effectivly just remap these to the index in the constant compact array above.
-
 	if ecs.active_camera_entity.id > -1 {
 		uni_asset.active_camera_entity = ent_index_map[ecs.active_camera_entity.id] or_else -1;
 	}
@@ -223,7 +221,8 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 	num_camera_components  : int  = len(ecs.camera_components);
 	num_skybox_components  : int  = len(ecs.skybox_components);
 	num_light_components   : int  = len(ecs.light_components);
-	num_meshren_components : int = len(ecs.mesh_renderer_components);
+	num_meshren_components : int  = len(ecs.mesh_renderer_components);
+	num_collider_components : int = len(ecs.collider_components);
 
 	// Camera
 	if num_camera_components > 0 {
@@ -247,6 +246,14 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 
 		for &comp, index in ecs.light_components {
 			uni_asset.light_comp_data[index] = comp_light_create_light_asset(&comp);
+		}
+	}
+
+	if num_collider_components > 0 {
+		uni_asset.collider_comp_data = make_slice([]iria.ColliderCompData, num_collider_components, context.allocator);
+
+		for &comp, index in ecs.collider_components {
+			uni_asset.collider_comp_data[index] = comp_collider_create_collider_comp_data(&comp);
 		}
 	}
 

@@ -32,4 +32,4 @@ transform_calc_view_matrix  :: iricom.transform_calc_view_matrix
 transform_world_matrix_to_normal_matrix :: iricom.transform_world_matrix_to_normal_matrix
 
 transform_child_by_parent :: iricom.transform_child_by_parent
-
+transform_interpolate :: iricom.transform_interpolate

@@ -48,6 +48,11 @@ material_get_by_id :: proc(mat_id : MaterialID) -> ^Material {
 }
 
 
+material_load_from_asset_uuid :: proc(asset_uuid : AssetUUID) -> (mat_id : MaterialID, ok : bool){
+	return asset_io_load_material_asset_id(engine.asset_manager, engine.material_manager, asset_uuid)
+}
+
+
 // Push changes made to a material variants so they get uploaded to the gpu next frame.
 // If changes were made on the render_technique like changing the blend mode, use 'material_push_technique_changes' instead.
 material_push_changes :: proc(mat_id : MaterialID) {

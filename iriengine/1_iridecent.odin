@@ -253,6 +253,11 @@ iri_run :: proc() {
 
     	// Physics UPDATE
     	for clock_should_advance_fixed_timestep() {
+    		if engine.universe != nil {
+				// @Note: this should run before physics any integration. (previous_state = current state)
+				physics_universe_update_previous_transform_state(engine.collision_manager, engine.universe, cast(f32)fixed_timestep);
+			}	
+
     		iri_global_physics_update(fixed_timestep);
     		
     		if engine.universe != nil {
@@ -262,6 +267,8 @@ iri_run :: proc() {
 
     		clock_advance_fixed_timestep();
     	}
+
+    	fixed_alpha_interpolator : f64 = clock_calc_fixed_alpha_interpolator();
 
     	event_manager_update(engine.event_manager, cast(f32)delta_time, cast(f32)true_delta_time);
     	
@@ -274,7 +281,7 @@ iri_run :: proc() {
 
     	shader_manager_update(engine.shader_manager, engine.window.gpu_device, true_delta_time);
     	material_manager_update(engine.material_manager, engine.window.gpu_device);
-    	universe_manager_update_universe(engine.window.gpu_device, engine.universe, engine.render_context.current_frame_size);
+    	universe_manager_update_universe(engine.window.gpu_device, engine.universe, engine.render_context.current_frame_size, cast(f32)fixed_alpha_interpolator);
     	
 
     	// RENDERING
@@ -282,12 +289,16 @@ iri_run :: proc() {
     		debug_draw_manager_push_universe_components(engine.debug_draw_manager, engine.universe);
     		
     		renderer_draw_frame(engine.render_context, &engine.window, engine.universe);
+    	
+    		ecs_process_end_of_frame(&engine.universe.ecs)
     	} else {
     		renderer_draw_frame_UI_only(engine.render_context, &engine.window);
     	}
     	
+
     	debug_draw_manager_clear_commands(engine.debug_draw_manager);
 
+    	
     	free_all(context.temp_allocator);
     }
 }
@@ -395,8 +406,6 @@ iri_global_physics_update :: proc(timestep : f64) {
 
 	ts : f32 = cast(f32)timestep;
 
-	physics_universe_update(engine.collision_manager, engine.universe, ts);
-
 	if engine.global_physics_update_callback != nil {
 		engine.global_physics_update_callback(ts);
 	}
@@ -410,6 +419,8 @@ iri_global_physics_update :: proc(timestep : f64) {
 		if engine.universe_update_callbacks.physics_update_late != nil {
 			engine.universe_update_callbacks.physics_update_late(engine.universe, ts)
 		}
+		
+		physics_universe_update(engine.collision_manager, engine.universe, ts);
 	}
 }
 

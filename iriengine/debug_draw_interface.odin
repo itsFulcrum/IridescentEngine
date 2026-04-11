@@ -25,6 +25,7 @@ DebugColor :: enum {
 debug_draw_box :: proc {
 	debug_draw_box_mat4,
 	debug_draw_box_transform,
+	debug_draw_box_obb,
 }
 
 debug_draw_box_mat4 :: proc(color : DebugDrawColor, mat : matrix[4,4]f32) {
@@ -41,6 +42,15 @@ debug_draw_box_transform :: proc(color : DebugDrawColor, trans : Transform) {
 		type  = DebugDrawType.Box,
 		color = debug_draw_color_to_f32(color),
 		mat   = transform_calc_world_matrix(trans),
+	}
+	debug_draw_manager_push_command(command);
+}
+
+debug_draw_box_obb :: proc(color : DebugDrawColor, obb : OBB) {
+	command := DebugDrawCommand {
+		type  = DebugDrawType.Box,
+		color = debug_draw_color_to_f32(color),
+		mat   = obb_to_transform_matrix(obb),
 	}
 	debug_draw_manager_push_command(command);
 }

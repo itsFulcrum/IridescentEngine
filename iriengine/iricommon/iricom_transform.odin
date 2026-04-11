@@ -17,7 +17,7 @@ transform_create_identity :: proc "contextless" () -> Transform {
 	return Transform{
 		position 	= {0.0, 0.0, 0.0},
 		scale 		= {1.0, 1.0, 1.0},
-		orientation = quaternion(x = 0.0, y = 0.0, z = 0.0, w = 1.0),
+		orientation = linalg.QUATERNIONF32_IDENTITY,
 	}
 }
 
@@ -91,7 +91,14 @@ transform_child_by_parent :: proc "contextless" (parent, child: Transform) -> Tr
     	//@Note - child positon must first be scaled by parent scale and rotated by parent orientation before adding to parent position
         position    = parent.position + linalg.quaternion128_mul_vector3(parent.orientation, child.position * parent.scale),
         scale       = parent.scale * child.scale,
-        orientation = parent.orientation * child.orientation,
+        orientation = linalg.quaternion_mul_quaternion(parent.orientation,child.orientation)
     };
 }
 
+transform_interpolate :: proc "contextless" (a, b : Transform, t : f32) -> Transform {
+	return Transform{
+		position = linalg.lerp(a.position, b.position, t),
+		scale 	 = linalg.lerp(a.scale, b.scale, t),
+		orientation = linalg.quaternion_slerp_f32(a.orientation, b.orientation, t),
+	}
+}

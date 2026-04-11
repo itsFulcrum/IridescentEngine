@@ -144,7 +144,7 @@ draw_entity_list :: proc(universe: ^iri.Universe){
 	_inc_set := apply_comp_filter ? comp_include_set : iri.ComponentSet{};
 	_tag_filter : u32 = apply_tag_filter ? cast(u32)tag_filter : 0;
 
-	entities : []iri.Entity = iri.ecs_gather_entities_by_components_and_tag(&universe.ecs, _inc_set, _tag_filter, true, false, context.temp_allocator);
+	entities : []iri.Entity = iri.ecs_gather_entities_by_component_subset_and_tag(&universe.ecs, _inc_set, _tag_filter, true, false, context.temp_allocator);
 
 	im.Spacing();
 	
@@ -194,7 +194,7 @@ draw_entity_list :: proc(universe: ^iri.Universe){
 
 			for ent in entities {
 				
-				ent_info, ent_info_ok := iri.ecs_get_entity_info(&universe.ecs, ent);
+				ent_info, ent_info_err := iri.entity_get_entity_info_copy(ent, universe);
 				
 				im.TableNextRow();
 
@@ -337,7 +337,6 @@ draw_entity_viewer :: proc(universe: ^iri.Universe, entity : iri.Entity) {
 		return;
 	}
 
-	ent_info, info_ok := iri.ecs_get_entity_info(ecs, entity);
 
 	if editor_is_initialized() {
 		im.Text("Name:")
@@ -349,11 +348,12 @@ draw_entity_viewer :: proc(universe: ^iri.Universe, entity : iri.Entity) {
 		
 			name_str : string = strings.clone_from_cstring(rename_buf_cstr_alias, context.temp_allocator);
 			if len(name_str) > 0 {
-				iri.ecs_entity_rename(ecs, entity, name_str);
+				iri.ecs_entity_set_name(ecs, entity, name_str);
 			}
 		} 
 	} else {
-		imgui_text_fmt("Name: {}", ent_info.name);
+		ent_name, err := iri.entity_get_name(entity, universe);
+		imgui_text_fmt("Name: {}", ent_name);
 	}
 
 	im.SameLine();
@@ -366,16 +366,25 @@ draw_entity_viewer :: proc(universe: ^iri.Universe, entity : iri.Entity) {
 
 	im.SameLine();
 
-	if select_tag, selection_made := draw_entity_tag_combo_selection("Tag",ent_info.tag); selection_made == true {
+	ent_tag, tag_ok := iri.entity_get_tag(entity, universe);
+	if select_tag, selection_made := draw_entity_tag_combo_selection("Tag",ent_tag); selection_made == true {
 		iri.ecs_entity_set_tag(&universe.ecs, entity, select_tag);
 	}
 
-
-	if enum_flags_checkbox("Non Persistant", iri.EntityFlag.NonPersistant, &ent_info.flags){
-		was_disabled : bool = iri.EntityFlag.NonPersistant not_in ent_info.flags;
-		iri.ecs_entity_set_flags(&universe.ecs, entity, {.NonPersistant}, subtract_flags = was_disabled);
+	ent_flags, flags_ok := iri.entity_get_flags(entity, universe);
+	if enum_flags_checkbox("Non Persistant", iri.EntityFlag.NonPersistant, &ent_flags){
+		was_disabled : bool = iri.EntityFlag.NonPersistant not_in ent_flags;
+		iri.entity_set_flags(entity, {.NonPersistant}, subtract_flags = was_disabled, universe = universe);
 	}
 	im.SetItemTooltip("Non Persistant entities are not written to file")
+
+	if enum_flags_checkbox("Physics Interpolation", iri.EntityFlag.PhysicsInterpolation, &ent_flags){
+		was_disabled : bool = iri.EntityFlag.PhysicsInterpolation not_in ent_flags;
+		iri.entity_set_flags(entity, {.PhysicsInterpolation}, subtract_flags = was_disabled, universe = universe);
+	}
+	im.SetItemTooltip("Interpolate between current transform state and last physics update transform state. Use when updating entity transforms during physics update")
+
+
 
 	im.Spacing();
 	im.Separator();
@@ -409,7 +418,8 @@ draw_entity_viewer :: proc(universe: ^iri.Universe, entity : iri.Entity) {
 	}
 
 
-	comp_loop: for comp_type in ent_info.component_set {
+	ent_comp_set, comp_set_ok := iri.entity_get_component_set(entity, universe);
+	comp_loop: for comp_type in ent_comp_set {
 
 		comp_type_cstr := fmt_cstr("{}", comp_type);
 
@@ -470,7 +480,7 @@ draw_entity_viewer :: proc(universe: ^iri.Universe, entity : iri.Entity) {
 
 			for comp_type in iri.ComponentType {
 
-				if comp_type in ent_info.component_set {
+				if comp_type in ent_comp_set {
 					continue;
 				}
 
@@ -615,12 +625,6 @@ draw_editor_transform :: proc (transform : ^iri.Transform) -> (any_changed : boo
 	im.SetNextItemWidth(225);
 	any_changed |= draw_quaternion("##Rotation", &transform.orientation);
 
-	im.SameLine();
-	if im.Button("Reset##Rot") {
-		transform.orientation = linalg.QUATERNIONF32_IDENTITY;
-		any_changed = true;
-	}
-
 	imgui_text_fmt("Quaternion - [x:{}, y: {}, z: {}, w: {}]", transform.orientation.x,transform.orientation.y,transform.orientation.z,transform.orientation.w);
 
 	return any_changed;
@@ -638,10 +642,7 @@ draw_component_editor_transform :: proc (comp : ^iri.TransformComponent){
 			iri.comp_light_push_changes(light_comp);
 		}
 
-		if meshren_comp , err := iri.ecs_get_component(comp.parent_ecs, comp.entity, iri.MeshRendererComponent); meshren_comp != nil {
-
-			iri.comp_meshrenderer_force_update_all_draw_instances(meshren_comp);
-		}
+		iri.ecs_entity_force_update(comp.parent_ecs, comp.entity);
 	}
 }
 
@@ -803,13 +804,9 @@ draw_component_editor_skybox :: proc (comp : ^iri.SkyboxComponent) {
 	changed |= im.ColorEdit3("Horizon", &comp.color_horizon);
 	changed |= im.ColorEdit3("Nadir", &comp.color_nadir);
 
-
-
 	if im.Button("Set as active Skybox"){
 		iri.comp_skybox_set_as_active(comp);
 	}
-
-
 
 	if changed {
 		iri.comp_skybox_push_changes(comp);
@@ -964,15 +961,12 @@ draw_component_editor_collider :: proc(comp : ^iri.ColliderComponent){
 
 	any_changed : bool = false;
 
-	any_changed |= im.DragFloat3("Offset", &comp.offset, v_speed = 0.01, v_min = -math.F32_MAX, v_max = math.F32_MAX);
-	
-	curr_type := iri.comp_collider_get_type(comp);
-
-	curr_type_cstr := fmt_cstr("{}", curr_type, allocator = context.temp_allocator)
-
 	any_changed |= enum_flags_checkbox("IsStatic" , iri.ColliderFlag.IsStatic , &comp.flags)
 	any_changed |= enum_flags_checkbox("Generate Overlap Events", iri.ColliderFlag.GenerateOverlapEvents, &comp.flags)
 	any_changed |= enum_flags_checkbox("Receive Overlap Events" , iri.ColliderFlag.ReceiveOverlapEvents , &comp.flags)
+
+	curr_type := iri.comp_collider_get_type(comp);
+	curr_type_cstr := fmt_cstr("{}", curr_type, allocator = context.temp_allocator)
 
 	if im.BeginCombo("Collider Type", curr_type_cstr) {
 			
@@ -991,20 +985,22 @@ draw_component_editor_collider :: proc(comp : ^iri.ColliderComponent){
 		im.EndCombo();
 	}
 
-
+	any_changed |= im.DragFloat3("Offset", &comp.offset, v_speed = 0.01, v_min = -math.F32_MAX, v_max = math.F32_MAX);
 
 	switch &v in comp.variant {
-		case iri.SphereCollider:{
-			any_changed |=  im.DragFloat("Radius"  , &v.radius , v_speed = 0.1, v_min = 0.0, v_max = math.F32_MAX);
+		case iri.SphereCollider: {
+			any_changed |=  im.DragFloat("Radius", &comp.extent.x , v_speed = 0.1, v_min = 0.0, v_max = math.F32_MAX);
 		}
 		case iri.BoxCollider: {
-			im.Text("Box Collider is not yet implemented!")
-			any_changed |= im.DragFloat3("Extent", &v.extent, v_speed = 0.1, v_min = -math.F32_MAX, v_max = math.F32_MAX);
-			any_changed |= draw_quaternion("Rotation##Collider", &v.orientation);
+			any_changed |= im.DragFloat3("Extent", &comp.extent, v_speed = 0.1, v_min = -math.F32_MAX, v_max = math.F32_MAX);
+			any_changed |= draw_quaternion("Rotation##Collider", &comp.orientation);
 		}
 	}
-}
 
+	if any_changed {
+		iri.ecs_entity_force_update(comp.parent_ecs, comp.entity);
+	}
+}
 
 draw_quaternion :: proc(label : cstring, orientation : ^quaternion128) -> bool {
 	
@@ -1050,6 +1046,14 @@ draw_quaternion :: proc(label : cstring, orientation : ^quaternion128) -> bool {
 
 		return true;
 	}
+
+	btn_lable := fmt_cstr("Reset##{}", label, allocator = context.temp_allocator);
+	im.SameLine();
+	if im.Button(btn_lable) {
+		orientation^ = linalg.QUATERNIONF32_IDENTITY;
+		return true
+	}
+
 
 	return false;
 }
