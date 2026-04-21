@@ -102,7 +102,7 @@ debug_gui_process_sdl_event :: proc(event: ^sdl.Event){
 }
 
 @(private="package")
-debug_gui_process_frame :: proc(){
+debug_gui_process_frame :: proc(active_universe : ^Universe = nil, update_callbacks : ^UniverseUpdateCallbacks = nil){
 
 	if debug_gui_ctx.enable_next_frame {
 		debug_gui_ctx.is_enabled = true;
@@ -129,6 +129,15 @@ debug_gui_process_frame :: proc(){
 
 		if debug_gui_ctx.debug_gui_callback != nil {
 			debug_gui_ctx.debug_gui_callback();
+		}
+
+		// universe callback;
+		if active_universe != nil && update_callbacks != nil {
+
+			if update_callbacks.imgui_debug_draw != nil  {
+				update_callbacks.imgui_debug_draw(active_universe);
+			}
+
 		}
 
 	}

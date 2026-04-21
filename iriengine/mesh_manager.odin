@@ -9,6 +9,7 @@ import "core:math/linalg"
 import iricom "iricommon"
 import sdl "vendor:sdl3"
 import "odinary:mathy"
+import "odinary:poly/meshopt"
 
 // @Note: MeshID's are runtime stable IDs, not between executable sessions.
 // They are also stable between loaded universes. 
@@ -24,6 +25,7 @@ MeshGPUData :: struct{
 	num_indecies  	: u32,
 	num_vertecies 	: u32,
 	index_buf  		: ^sdl.GPUBuffer,
+	//shadow_index_buf : ^sdl.GPUBuffer, // not using atm.
 	vertex_buf 		: ^sdl.GPUBuffer,
 	vertex_pos_buf 	: ^sdl.GPUBuffer,
 	vertex_layout   : VertexDataLayout,
@@ -167,6 +169,10 @@ mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDe
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.index_buf);
 	}
 
+	// if manager.meshes[index].gpu_data.shadow_index_buf != nil {
+	// 	sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.shadow_index_buf);
+	// }
+
 	if manager.meshes[index].gpu_data.vertex_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.vertex_buf);
 	}
@@ -213,10 +219,15 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	num_indecies  : u32 = mesh_data.num_indecies;
 	num_vertecies : u32 = mesh_data.num_vertecies;
 
+	// Not in use atm.
+	// shadow_indecies : [^]u32 = make_multi_pointer([^]u32, cast(int)num_indecies);
+	// defer free(shadow_indecies)
+	// meshopt.generateShadowIndexBuffer(&shadow_indecies[0], &mesh_data.indecies[0], cast(uint)num_indecies, &mesh_data.positions[0], cast(uint)num_vertecies, cast(uint)size_of([3]f32), cast(uint)size_of([3]f32));
+	// meshopt.optimizeVertexCache(&shadow_indecies[0], &shadow_indecies[0], cast(uint)num_indecies, cast(uint)num_vertecies);
+
+	
 	layout := mesh_data.vertex_data_layout;
 
-	// interleaved_vertex_buffer , interleaved_buf_byte_size := mesh_manager_make_interleaved_vertex_buffer(mesh_data);
-	// defer free(interleaved_vertex_buffer);
 
 	// Index Buffer
 	index_buf_create_info : sdl.GPUBufferCreateInfo = {
@@ -244,6 +255,7 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	gpu_data.num_indecies  = num_indecies;
 	gpu_data.num_vertecies = num_vertecies;
 	gpu_data.index_buf      = sdl.CreateGPUBuffer(gpu_device, index_buf_create_info);
+	//gpu_data.shadow_index_buf  = sdl.CreateGPUBuffer(gpu_device, index_buf_create_info); // can use same index buf create info.
 	gpu_data.vertex_buf     = sdl.CreateGPUBuffer(gpu_device, vertex_buf_create_info);
 	gpu_data.vertex_pos_buf = sdl.CreateGPUBuffer(gpu_device, vertex_pos_buf_create_info)
 
@@ -253,6 +265,8 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	// copy into transfer buffer
 	transfer_buf_info : sdl.GPUTransferBufferCreateInfo = {
 		size = index_buf_create_info.size + vertex_pos_buf_create_info.size + vertex_buf_create_info.size,
+		// shadow index buf 
+		//size = index_buf_create_info.size + index_buf_create_info.size + vertex_pos_buf_create_info.size + vertex_buf_create_info.size,
 		usage = sdl.GPUTransferBufferUsage.UPLOAD,
 	}
 
@@ -266,11 +280,15 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	// Index Buffer
 	dst_offset : int = 0;
 	mem.copy(&transfer_buf_data[dst_offset], &mesh_data.indecies[0], cast(int)index_buf_create_info.size);
-	// Vertex Pos Buffer
 	dst_offset += cast(int)index_buf_create_info.size;
+	// Shadow Index Buffer of same size
+	//mem.copy(&transfer_buf_data[dst_offset], &shadow_indecies[0], cast(int)index_buf_create_info.size);
+	//dst_offset += cast(int)index_buf_create_info.size;
+
+	// Vertex Pos Buffer
 	mem.copy(&transfer_buf_data[dst_offset], &mesh_data.positions[0], cast(int)vertex_pos_buf_create_info.size);
-	// Vertex Buffer
 	dst_offset += cast(int)vertex_pos_buf_create_info.size;
+	// Vertex Buffer
 	mem.copy(&transfer_buf_data[dst_offset], &mesh_data.vertex_data[0], cast(int)vertex_buf_create_info.size);
 
 	sdl.UnmapGPUTransferBuffer(gpu_device, transfer_buf);
@@ -294,24 +312,36 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 
 		sdl.UploadToGPUBuffer(copy_pass, transfer_loc, index_region, false);
 
+
+		// shadow_index_region : sdl.GPUBufferRegion = {
+		// 	buffer 	= gpu_data.shadow_index_buf,
+		// 	size 	= index_buf_create_info.size,
+		// 	offset 	= 0,
+		// }
+
+		// transfer_loc.offset = index_buf_create_info.size;		
+		// sdl.UploadToGPUBuffer(copy_pass, transfer_loc, shadow_index_region, false);
+
+
 		// Position vertex Buffer
-		transfer_loc.offset = index_buf_create_info.size;
 		pos_region : sdl.GPUBufferRegion = {
 			buffer = gpu_data.vertex_pos_buf,
 			size   = vertex_pos_buf_create_info.size,
 			offset = 0,
 		}
 
+		//transfer_loc.offset = index_buf_create_info.size + index_buf_create_info.size;
+		transfer_loc.offset = index_buf_create_info.size;
 		sdl.UploadToGPUBuffer(copy_pass, transfer_loc, pos_region, false);
 
 		// Interleaved Vertex buffer
-		transfer_loc.offset = index_buf_create_info.size + vertex_pos_buf_create_info.size;
 		vertex_region : sdl.GPUBufferRegion = {
 			buffer 	= gpu_data.vertex_buf,
 			size 	= vertex_buf_create_info.size,
 			offset 	= 0,
 		}
 
+		transfer_loc.offset = index_buf_create_info.size + vertex_pos_buf_create_info.size;
 		sdl.UploadToGPUBuffer(copy_pass, transfer_loc, vertex_region, false);
     }
     sdl.EndGPUCopyPass(copy_pass);

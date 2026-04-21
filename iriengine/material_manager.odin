@@ -556,7 +556,7 @@ material_manager_push_material_technique_changes :: proc(manager : ^MaterialMana
 
 	material_manager_push_material_changes(manager, mat_id);
 
-	// @Note: Since we dont know at this stage wich vertex layouts are combined with this materail, we will build pipelines for all of them.
+	// @Note: Since we dont know at this stage wich vertex layouts are combined with this material, we will build pipelines for all of them.
 	pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts(pipe_manager, gpu_device, manager, mat_id, VERTEX_LAYOUTS_ALL);
 	pipe_manager_update_depthonly_pipeline_cache_with_material(pipe_manager, gpu_device, manager, mat_id);
 }

@@ -1011,8 +1011,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
                 renderer_push_debug_group(cmd_buf, "Shadowmap Pass");
                 defer renderer_pop_debug_group(cmd_buf);
 
-                //log.debugf("Rendering sinfo {},   array_layer {}, mip {}", index, cast(u32)sinfo.array_layer, sinfo.mip_level);
-
                 color_target := sdl.GPUColorTargetInfo {
                     texture =  light_manager.shadowmap_array_binding.texture,
                     mip_level = sinfo.mip_level,
@@ -1029,10 +1027,9 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
                     load_op     = sdl.GPULoadOp.CLEAR,
                     store_op    = sdl.GPUStoreOp.DONT_CARE,
 
-
                     stencil_load_op = sdl.GPULoadOp.DONT_CARE,
                     stencil_store_op = sdl.GPUStoreOp.DONT_CARE,
-                    cycle = false,         // true cycles the texture if the texture is bound and any load ops are not LOAD */
+                    cycle = true,         // true cycles the texture if the texture is bound and any load ops are not LOAD */
                     clear_stencil = 0,    // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. */
                 }
 
@@ -1041,42 +1038,18 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
                 sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 0, &universe.matrix_buf, 1);
                 sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 1, &light_manager.gpu_shadowmap_infos_buf, 1);
 
-                // Note we souldn't do all but exclude blend meshes and probably also frustum cull from light!
                 
                 last_shadow_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
 
-                for drawable_index in universe.frame_renderables {
-
-                    if .CastShadows not_in ecs.drawables[drawable_index].draw_instance.flags {
-                        continue;
-                    }
-
-                    mesh_id := ecs.drawables[drawable_index].draw_instance.mesh_id;
-                    mat_id  := ecs.drawables[drawable_index].draw_instance.mat_id;
-
-                    // @Note we cant use unsafe here yet
-                    mat  := material_get_by_id(mat_id);
-
-                    if mat.render_technique.alpha_mode == .Blend {
-                        continue;
-                    }
+                for shadow_draw in universe.frame_shadow_draws {
 
                     if universe.cull_shadow_draws {
-                        render_draw : bool = test_shadow_draw(sinfo.view_proj, ecs.drawables[drawable_index].world_oobb, sinfo.resolution)
-                        if !render_draw {
+                        if !test_shadow_draw(sinfo.view_proj, ecs.drawables[shadow_draw.drawable_index].world_oobb, sinfo.resolution){
                             continue;
                         }
                     }
 
-                    technique_hash := material_manager_get_render_technique_hash_unsafe(material_manager, mat_id);
-
-                    pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
-
-                    if mat.render_technique.alpha_mode == .Opaque {
-                        pipeline_variant = pipe_manager_get_depthonly_pipeline_variant(pipe_manager, DepthOnlyPipelineShaders.Shadowmap, technique_hash);
-                    } else {
-                        pipeline_variant = pipe_manager_get_depthonly_pipeline_variant(pipe_manager, DepthOnlyPipelineShaders.ShadowmapAlphaTest, technique_hash);
-                    }
+                    pipeline_variant := pipe_manager_get_depthonly_pipeline_variant(pipe_manager, shadow_draw.shader_type, shadow_draw.technique_hash);
 
                     if pipeline_variant != last_shadow_pipeline_variant {
 
@@ -1087,16 +1060,16 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
                     
                     draw_instance_ubo := VertexDrawInstanceUBO{
-                        drawable_index = cast(u32)drawable_index,
-                        padding1 = cast(u32)index,
+                        drawable_index = shadow_draw.drawable_index,
+                        padding1 = cast(u32)index, // shadowmap index.
                     }
                     
                     sdl.PushGPUVertexUniformData(cmd_buf, 0, &draw_instance_ubo, size_of(VertexDrawInstanceUBO));
 
-                    mesh_gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id);
+                    mesh_id := ecs.drawables[shadow_draw.drawable_index].draw_instance.mesh_id;                    
+                    mesh_gpu_data := &mesh_manager.meshes.gpu_data[mesh_id];
 
-                    renderer_DRAW_CALL_draw_mesh_instance_gpu_data(shadowmap_pass, mesh_gpu_data, true);
-                    
+                    renderer_DRAW_CALL_draw_mesh_instance_shadow(shadowmap_pass,mesh_gpu_data)
                     draw_calls += 1;
                 }
 
@@ -1346,7 +1319,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
 
         // EXECUTE DEBUG DRAW COMMANDS
-        DO_DEBUG_DISPLAY :: true
+
         if engine.debug_draw_manager.is_enabled {
             line_cube_pipe   := pipe_manager_get_core_pipeline(pipe_manager, .LINE_CUBE);
             line_line_pipe   := pipe_manager_get_core_pipeline(pipe_manager, .LINE_LINE);
@@ -1677,6 +1650,11 @@ renderer_get_render_pass_info :: proc(ren_ctx : ^RenderContext, render_pass_type
 @(private="file")
 renderer_DRAW_CALL_draw_mesh_instance_gpu_data :: proc "contextless" (render_pass : ^sdl.GPURenderPass, mesh_gpu_data : ^MeshGPUData, only_position_buf : bool = false){
                 
+    // bind index buffer
+    index_buf_binding : sdl.GPUBufferBinding;
+    index_buf_binding.buffer = mesh_gpu_data.index_buf;
+    index_buf_binding.offset = 0;
+  
     // bind vertex buffer
     if only_position_buf {
         
@@ -1684,6 +1662,9 @@ renderer_DRAW_CALL_draw_mesh_instance_gpu_data :: proc "contextless" (render_pas
         buffer_bindings[0].buffer = mesh_gpu_data.vertex_pos_buf;
         buffer_bindings[0].offset = 0;
         sdl.BindGPUVertexBuffers(render_pass, 0, &buffer_bindings[0], 1);
+        
+        index_buf_binding.buffer = mesh_gpu_data.index_buf; 
+
     } else {
 
         buffer_bindings : [2]sdl.GPUBufferBinding;
@@ -1695,15 +1676,27 @@ renderer_DRAW_CALL_draw_mesh_instance_gpu_data :: proc "contextless" (render_pas
         sdl.BindGPUVertexBuffers(render_pass, 0, &buffer_bindings[0], 2);
     }
 
-    // bind index buffer
-    index_buf_binding : sdl.GPUBufferBinding;
-    index_buf_binding.buffer = mesh_gpu_data.index_buf;
-    index_buf_binding.offset = 0;
     sdl.BindGPUIndexBuffer(render_pass, index_buf_binding, sdl.GPUIndexElementSize._32BIT);
 
 
     num_indecies : u32 = mesh_gpu_data.num_indecies;
     sdl.DrawGPUIndexedPrimitives(render_pass, num_indecies, 1, 0, 0, 0);
+}
+
+@(private="file")
+renderer_DRAW_CALL_draw_mesh_instance_shadow :: proc "contextless" (render_pass : ^sdl.GPURenderPass, mesh_gpu_data : ^MeshGPUData){
+    
+    vert_buf_binding := sdl.GPUBufferBinding {
+        buffer = mesh_gpu_data.vertex_pos_buf,
+    }
+    sdl.BindGPUVertexBuffers(render_pass, 0, &vert_buf_binding, 1);
+    
+    index_buf_binding := sdl.GPUBufferBinding {
+        buffer = mesh_gpu_data.index_buf, 
+    }
+    sdl.BindGPUIndexBuffer(render_pass, index_buf_binding, sdl.GPUIndexElementSize._32BIT);
+
+    sdl.DrawGPUIndexedPrimitives(render_pass, mesh_gpu_data.num_indecies, 1, 0, 0, 0);
 }
 
 

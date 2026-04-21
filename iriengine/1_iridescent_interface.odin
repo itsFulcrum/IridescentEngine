@@ -89,6 +89,8 @@ UniverseDeinit_CallbackSignature :: #type proc(universe : ^Universe);
 UniverseFrameUpdate_CallbackSignature   :: #type proc(universe : ^Universe, delta_time : f32);
 UniversePhysicsUpdate_CallbackSignature :: #type proc(universe : ^Universe, timestep : f32);
 
+UniverseDebugGuiDraw_CallbackSignature :: #type proc(universe : ^Universe);
+
 UniverseUpdateCallbacks :: struct{
 	init 	  : UniverseInit_CallbackSignature,
 	init_late : UniverseInit_CallbackSignature,
@@ -102,8 +104,7 @@ UniverseUpdateCallbacks :: struct{
 	deinit      : UniverseDeinit_CallbackSignature,
 	deinit_late : UniverseDeinit_CallbackSignature,
 
-	//cb_on_begin_overlap : proc(),
-	//cb_on_end_overlap : proc(),
+	imgui_debug_draw : UniverseDebugGuiDraw_CallbackSignature,
 }
 
 set_global_frame_update_callback_proc :: proc(callback_procedure : GlobalFrameUpdate_CallbackSignature){

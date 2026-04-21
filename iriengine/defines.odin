@@ -1,9 +1,9 @@
 package iri
 
 ENGINE_DEVELOPMENT 				:: #config(ENGINE_DEVELOPMENT, true)
-ENGINE_ENABLE_VALIDATION_LAYERS :: #config(ENGINE_FORCE_ENABLE_VALIDATION_LAYERS, true)
-ENGINE_ASSERT 					:: #config(ENGINE_ASSERT, true)
-ENGINE_SHADER_HOT_RELOADING 	:: #config(ENGINE_SHADER_HOT_RELOADING, true)
+ENGINE_ENABLE_VALIDATION_LAYERS :: #config(ENGINE_FORCE_ENABLE_VALIDATION_LAYERS, false)
+ENGINE_ASSERT 					:: #config(ENGINE_ASSERT, false)
+ENGINE_SHADER_HOT_RELOADING 	:: #config(ENGINE_SHADER_HOT_RELOADING, false)
 
 engine_panic_alloc_error :: proc(loc := #caller_location){
 	panic("Memory Allocation Error",loc = loc);

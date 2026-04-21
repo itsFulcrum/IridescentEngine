@@ -277,7 +277,7 @@ iri_run :: proc() {
 
 
     	// Process debug ui
-    	debug_gui_process_frame();
+    	debug_gui_process_frame(engine.universe, &engine.universe_update_callbacks);
 
     	shader_manager_update(engine.shader_manager, engine.window.gpu_device, true_delta_time);
     	material_manager_update(engine.material_manager, engine.window.gpu_device);

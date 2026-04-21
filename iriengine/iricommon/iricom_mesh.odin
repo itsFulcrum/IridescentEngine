@@ -46,6 +46,7 @@ MeshData :: struct {
 
 	num_indecies : u32,
 	indecies: 	[^]u32,
+	shadow_indecies : [^]u32,
 
 	aabb_min : [3]f32,
 	aabb_max : [3]f32,
@@ -68,6 +69,12 @@ free_mesh_data :: proc(mesh_data : ^MeshData) {
 		free(mesh_data.indecies);
 		mesh_data.indecies = nil;
 	}
+
+	if mesh_data.shadow_indecies != nil {
+		free(mesh_data.shadow_indecies);
+		mesh_data.shadow_indecies = nil;
+	}
+
 	if mesh_data.vertex_data != nil {
 		free(mesh_data.vertex_data);
 		mesh_data.vertex_data = nil;

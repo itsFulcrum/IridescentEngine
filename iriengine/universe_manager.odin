@@ -118,6 +118,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 	universe_update_matrix_buffer(gpu_device, universe, &universe.frame_renderables, fixed_alpha_interpolator);
 
 
+
 	// Create a list of indexes into drawables that are inside camera frustum
 
 	// Cull Drawables for Camera into frame_renderables
@@ -129,28 +130,45 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 			perfs.frustum_culled_instance = culled_instances;
 		}
 
+		material_manager := engine.material_manager;
 		camera_info := &universe.frame_camera_info;
 
 		clear(&universe.frame_camera_visible);
+		clear(&universe.frame_shadow_draws);
 
 		for drawable_index in universe.frame_renderables {
 
 			flags := drawables.draw_instance[drawable_index].flags;
 
-			if .IsVisible not_in flags {
-				continue;
+			shadow_draws: if .CastShadows in flags {
+				
+				mat_id  := ecs.drawables[drawable_index].draw_instance.mat_id;
+				mat := material_manager_get_material_unsafe(material_manager, mat_id);
+
+				if mat.render_technique.alpha_mode == .Blend {
+					break shadow_draws;
+				}
+
+				shadow_drawable_info := ShadowDrawableInfo{
+					shader_type = mat.render_technique.alpha_mode == .Opaque ? DepthOnlyPipelineShaders.Shadowmap : DepthOnlyPipelineShaders.ShadowmapAlphaTest,
+					drawable_index = drawable_index,
+					technique_hash = material_manager_get_render_technique_hash_unsafe(material_manager, mat_id),
+				}
+				
+				append(&universe.frame_shadow_draws, shadow_drawable_info);
 			}
 
-			inside_frustum : bool = true;
-
-			if universe.do_frustum_culling {
-				inside_frustum = frustum_test_oobb_inside(camera_info.culling_frustum, camera_info.frustum_view_mat, drawables.world_oobb[drawable_index]);
-			}
-
-			if inside_frustum {
-				append(&universe.frame_camera_visible, drawable_index);
-			} else {
-				culled_instances += 1;
+			if .IsVisible in flags {
+				
+				if universe.do_frustum_culling {
+					if obb_overlaps_frustum(camera_info.culling_frustum, camera_info.frustum_view_mat, drawables.world_oobb[drawable_index]) {
+						append(&universe.frame_camera_visible, drawable_index);
+					} else {
+						culled_instances += 1;
+					}
+				} else {
+					append(&universe.frame_camera_visible, drawable_index);
+				}
 			}
 		}
 	}
@@ -217,13 +235,41 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 		}
     }
 
+    SORT_SHADOW_DRAWS :: true
+    when SORT_SHADOW_DRAWS {
+    	
+    	shadow_draw_sort_proc :: proc(a : ShadowDrawableInfo, b : ShadowDrawableInfo) -> int {
+
+    		if a.shader_type == .Shadowmap && b.shader_type == .ShadowmapAlphaTest {
+    			return -1;
+    		}
+
+    		if a.shader_type == .ShadowmapAlphaTest && b.shader_type == .Shadowmap {
+    			return 1;
+    		}
+
+    		if a.technique_hash < b.technique_hash {
+    			return -1;
+    		}
+
+    		return 1;
+    	}
+
+    	if len(universe.frame_shadow_draws) > 2 {
+    		tmp_store_universe_ptr = universe;
+	    	defer tmp_store_universe_ptr = nil;   		
+
+	    	sort.quick_sort_proc(universe.frame_shadow_draws[:], shadow_draw_sort_proc);
+    	}
+    }
+
+
     // TODO: sort blend meshes
 
     SORT_BLEND_MESHES_BY_DISTANCE :: true
     when SORT_BLEND_MESHES_BY_DISTANCE {
 
     	if len(universe.frame_alpha_blend) > 1 {
-
 
 	    	tmp_store_universe_ptr = universe;
 	    	defer tmp_store_universe_ptr = nil;
@@ -245,8 +291,6 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 
 
     	}
-
-
     }
 
 

@@ -8,6 +8,11 @@ import iria "iriasset"
 
 import sdl "vendor:sdl3"
 
+ShadowDrawableInfo :: struct {
+    shader_type : DepthOnlyPipelineShaders,
+    drawable_index : u32,
+    technique_hash : RenderTechniqueHash,
+}
 
 Universe :: struct {
 	name : string, // Readonly, use 'universe_rename()' to rename
@@ -42,7 +47,8 @@ Universe :: struct {
 
 	// indexes into ecs.drawables
 	frame_renderables 	 : [dynamic]u32, // subset ecs.drawables. only drawbles with valid data and enabled entities.
-	
+	frame_shadow_draws   : [dynamic]ShadowDrawableInfo, // subset ecs.drawables. drawables for shadow randering.
+
 	frame_camera_visible : [dynamic]u32, // subset frame_renderables. camera / distance culled
 	frame_opaques 		 : [dynamic]u32, // subset frame_camera_visible. only opaques
 	frame_alpha_test 	 : [dynamic]u32, // subset frame_camera_visibly. only alpha test
@@ -258,6 +264,7 @@ universe_deinit :: proc(universe : ^Universe) {
 	light_manager_deinit(gpu_device, &universe.light_manager);
 
 	delete(universe.frame_renderables)
+	delete(universe.frame_shadow_draws)
 	delete(universe.frame_camera_visible)
 	delete(universe.frame_opaques); 
 	delete(universe.frame_alpha_test); 

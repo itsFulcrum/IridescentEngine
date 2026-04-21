@@ -8,8 +8,6 @@ package iri
 
 ## engine
 
- - mesh optimizer
-
  - bugfix: entity name not cleaned up somewhere when runtime destroying entities..
 
 

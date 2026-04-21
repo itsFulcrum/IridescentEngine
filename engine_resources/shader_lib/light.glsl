@@ -34,7 +34,7 @@ float light_get_spot_light_angular_attenuation(vec3 spot_light_direction, vec3 t
   // @Note: 
   // Paramters 'light_angle_scale' and 'light_angle_offset' can be calculated on the cpu
   // inner and outter cone angles in radians.
-  // float light_angle_scale = 1.0f / max(0.001f, cos(inner_cone_angle_radians) - cos(outer_cone_angle_radians));
+  // float light_angle_scale  = 1.0f / max(0.001f, cos(inner_cone_angle_radians) - cos(outer_cone_angle_radians));
   // float light_angle_offset = -cos(outer_cone_angle_radians) * light_angle_scale;
 
   // Angular attenuation

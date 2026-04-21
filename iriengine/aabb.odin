@@ -26,6 +26,36 @@ aabb_get_transform_matrix :: proc "contextless" (aabb : AABB) -> matrix[4,4]f32 
 	};
 }
 
+aabb_from_sphere :: proc "contextless" (center : [3]f32, radius : f32) -> AABB {
+
+	aabb : AABB;
+	aabb.min.xyz = center - [3]f32{radius, radius, radius};
+	aabb.max.xyz = center + [3]f32{radius, radius, radius};
+	aabb.min.w = 1.0;
+	aabb.max.w = 1.0;
+
+	return aabb;
+}
+
+aabb_overlpas_aabb :: proc "contextless" (a, b : AABB) -> bool {
+	
+	// @Note: can prob do simd with per lane compare and reduce bit AND's.
+
+	if b.min.x < a.max.x && b.min.y < a.max.y && b.min.z < a.max.z {
+		if b.min.x > a.min.x && b.min.y > a.min.y && b.min.z > a.min.z {
+			return true;
+		}
+	}
+
+	if b.max.x > a.min.x && b.max.y > a.min.y && b.max.z > a.min.z {
+		if b.max.x < a.max.x && b.max.y < a.max.y && b.max.z < a.max.z {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 aabb_combine :: proc "contextless" (a , b : AABB) -> AABB {
 	return AABB {
 		min = linalg.min(a.min,b.min),

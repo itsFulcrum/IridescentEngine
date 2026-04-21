@@ -1,3 +1,5 @@
+#ifndef SKYBOX_GLSL
+#define SKYBOX_GLSL
 
 struct SkyboxData {
 
@@ -99,18 +101,15 @@ vec3 skybox_sample_indirect_specular(samplerCube prefilter_cubemap, vec3 dir, fl
 
 vec3 skybox_sample_procedual(vec3 dir, vec3 zenith, vec3 horizon, vec3 nadir){
 
-
 	zenith  = pow(zenith, vec3(2.2f)); // srgb to linear
 	horizon = pow(horizon,vec3(2.2f)); // srgb to linear
 	nadir   = pow(nadir,  vec3(2.2f)); // srgb to linear
 
-
 	vec3 color = vec3(0);
-
 	float dot = dot(dir.xyz, vec3(0,1,0));
 
 	float lerp = clamp( pow(  abs(dot), 0.7 )  , 0,1);
-	if( dot >= 0) {
+	if(dot >= 0) {
 		color =  mix(horizon, zenith, lerp );
 	} else {
 		color = mix(horizon, nadir, lerp );
@@ -118,3 +117,5 @@ vec3 skybox_sample_procedual(vec3 dir, vec3 zenith, vec3 horizon, vec3 nadir){
 
 	return color;
 }
+
+#endif // SKYBOX_GLSL

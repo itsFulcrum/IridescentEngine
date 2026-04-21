@@ -93,7 +93,7 @@ test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, oobb: OBB, resolution 
 }
 
 
-frustum_test_oobb_inside :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, world_oobb : OBB) -> bool{
+obb_overlaps_frustum :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, world_oobb : OBB) -> bool{
 
     // using separating axis theorem
     // https://bruop.github.io/improved_frustum_culling/

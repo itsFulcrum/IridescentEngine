@@ -28,6 +28,10 @@ float randf(int x, int y) {
     return mod(52.9829189f * mod(0.06711056f * float(x) + 0.00583715f * float(y), 1.0f), 1.0f);
 }
 
+float randf(float x) {
+    return mod(52.9829189f * mod(0.06711056f * float(x) + 0.00583715f * float(-x), 1.0f), 1.0f);
+}
+
 
 const int ditherBayer[8][8] =
 {
@@ -112,6 +116,25 @@ float reshape_uniform_to_triangle(float v) {
     v = v * 2.0f - 1.0f;
     v = sign(v) * (1.0f - sqrt(max(0.0f, 1.0f - abs(v)))); // [-1, 1], max prevents NaNs
     return v + 0.5f; // [-0.5, 1.5]
+}
+
+
+float noise_dot_3D(vec3 p) {
+    // By: https://www.shadertoy.com/view/wfsyRX
+
+    //The golden ratio:
+    //https://mini.gmshaders.com/p/phi
+    const float phi = 1.618033988;
+    //Rotating the golden angle on the vec3(1, phi, phi*phi) axis
+    const mat3 gold = mat3(
+     -0.571464913, +0.814921382, +0.096597072,
+     -0.278044873, -0.303026659, +0.911518454,
+     +0.772087367, +0.494042493, +0.399753815);
+    
+    //Gyroid with irrational orientations and scales
+    float dot = dot(cos(gold * p), sin(phi * p * gold));
+
+    return (dot + 3) / 3.0f;
 }
 
 #endif // NOISE_GLSL

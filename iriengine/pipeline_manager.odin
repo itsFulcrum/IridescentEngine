@@ -1243,8 +1243,8 @@ pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts :: 
         vert_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, vert_shader_id, vert_shader_variant);
         frag_shader := shader_manager_get_or_load_gfx_shader_variant(shader_manager, gpu_device, frag_shader_id, frag_shader_variant);
 
-        engine_assert(vert_shader != nil);
-        engine_assert(frag_shader != nil);
+        //engine_assert(vert_shader != nil);
+        //engine_assert(frag_shader != nil);
 
         pipeline := pipe_manager_create_graphics_pipeline(gpu_device, vert_shader, frag_shader, &pipe_config, &manager.vertex_buf_descriptor_infos[vert_buff_descrip_type], &render_pass_info);
 

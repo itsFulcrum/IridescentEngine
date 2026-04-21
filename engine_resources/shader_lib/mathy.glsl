@@ -130,14 +130,14 @@ vec3 rotate_vec_by_quat(vec4 q, vec3 v) {
 }
 
 
-// expects values to be in -1..1 range and outputs in -1..1 range
+// expects input to be in -1..1 range and outputs in -1..1 range
 vec3 normal_reconstruct_z(vec2 In) {
     float reconstructZ = sqrt(1.0f - saturate(dot(In.xy, In.xy)));
     vec3 normalVector = vec3(In.x, In.y, reconstructZ);
     return normalize(normalVector);
 }
 
-// this scales normal between 0 and 1 // this is honestly weird implmentation
+// this scales normal between 0 and 1
 vec3 normal_strength(vec3 In, float Strength) {
   return vec3(In.xy * Strength, lerp(1.0f, In.z, saturate(Strength)));
 }
@@ -217,7 +217,6 @@ vec3 reconstruct_position_from_depth(vec2 screen_uv, float nonlin_depth_sample, 
     // screen_uv in 0..1 range
     
     // depth sample should come directly from depth texture also in 0..1 range.
-    // one can also pass inv_proj matrix instead of inv_view_proj to arrive at view_space postion
     
     // https://wickedengine.net/2019/09/improved-normal-reconstruction-from-depth/
 
@@ -243,15 +242,23 @@ vec3 reconstruct_normal_from_depth(sampler2D depth_sampler, int mip, uvec2 depth
     // 'pos_at_uv_center' must match this the space ofcourse
     // use e.g. function above this one to get postion 
 
-    // to construct normals from depth we must at least take 3 depth samples and reconstruct postion (world or view space)
+    // to construct normal for a texel we must at least take 2 adjecent depth samples and reconstruct postion (world or view space)
     // from those 3 positions we can use cross product to calculate the normal
 
     // but in which direction should we take neighbouring samples ?
-    // to reduce artifacts we can instead sample in a cross pattern 4 times.
+    // to reduce artifacts we can instead sample in a cross pattern, 5 total samples.
     // so we take 4 depth samples around the center sample
     // up, down, left and right
     // we then compare which of those match the center depth values more
     
+    ivec2 texel_center = ivec2(uv_center * vec2(depth_tex_dimentions));
+
+    ivec2 texel_up      = texel_center + ivec2( 0,  1);
+    ivec2 texel_right   = texel_center + ivec2( 1,  0);
+    ivec2 texel_down    = texel_center + ivec2( 0, -1);
+    ivec2 texel_left    = texel_center + ivec2(-1,  0);
+
+
     // now given the up down left right samples we can form triangles
     // like this
 
@@ -270,7 +277,7 @@ vec3 reconstruct_normal_from_depth(sampler2D depth_sampler, int mip, uvec2 depth
     // we will chose one best horizontal sample (left or right)
     // and one best vertical (up down)
 
-    // using counter clockwise order we can than make form triangles 
+    // using counter clockwise order we can than form triangles 
     // with the center (p0) and the chosen corners to construct our normal 
     // here is how to chose p1 and p2 based on wich corners are better fit
 
@@ -281,12 +288,6 @@ vec3 reconstruct_normal_from_depth(sampler2D depth_sampler, int mip, uvec2 depth
     
     // formula: normal = normalize(cross(p2 - p0, p1 - p0))
 
-    ivec2 texel_center = ivec2(uv_center * vec2(depth_tex_dimentions));
-
-    ivec2 texel_up      = texel_center + ivec2( 0,  1);
-    ivec2 texel_right   = texel_center + ivec2( 1,  0);
-    ivec2 texel_down    = texel_center + ivec2( 0, -1);
-    ivec2 texel_left    = texel_center + ivec2(-1,  0);
     
     float z_center  = depth_at_uv_center;
     float z_up      = texelFetch(depth_sampler, texel_up   , mip).x;
