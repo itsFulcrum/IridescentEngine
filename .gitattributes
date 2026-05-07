@@ -25,6 +25,7 @@
 *.svg lfs-file
 *.tga lfs-file
 *.tiff lfs-file
+*.tif lfs-file
 *.webp lfs-file
 
 # Audio formats
