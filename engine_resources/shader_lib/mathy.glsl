@@ -204,8 +204,22 @@ ivec2 oct_wrap_texel_coordinates(const in ivec2 texel, const in ivec2 texSize) {
 
 
 // make depth linear given near clip and far clip plane camera values
+// assuming depth is between 0..1 range always
 float linearize_depth(float nonlin_depth , float z_near, float z_far) {
     return z_near * z_far / (z_far + nonlin_depth * (z_near - z_far));
+}
+
+float linearize_depth_precomp(float z, float far, float near_times_far, float near_minus_far){
+
+    return near_times_far / (far + z * near_minus_far);
+}
+
+
+// in vulkan depth is between 0..1 range and in opengl depth is between -1..1 this function maps it to this -1..1 range.
+float linearize_depth_gl(float nonlin_depth , float z_near, float z_far) {
+    
+    float z_n = 2.0f * nonlin_depth - 1.0f;
+    return 2.0f * z_far * z_near / (z_near + z_far - z_n * (z_near - z_far));
 }
 
 

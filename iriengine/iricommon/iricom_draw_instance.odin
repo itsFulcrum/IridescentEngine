@@ -1,5 +1,6 @@
 package iricom
 
+import geo "odinary:geometry"
 
 DRAW_INSTANCE_FLAGS_DEFAULT :: DrawInstanceFlags{.IsVisible, .CastShadows}
 DRAW_INSTANCE_FLAGS_INTERNAL :: DrawInstanceFlags{._Internal_NoValidMesh, ._Internal_ReuploadMatrixGPU}
@@ -17,5 +18,5 @@ DrawInstance :: struct {
 	flags   	: DrawInstanceFlags,
 	mesh_id 	: MeshID,
 	mat_id  	: MaterialID,
-	transform   : Transform,
+	transform   : geo.Transform,
 }

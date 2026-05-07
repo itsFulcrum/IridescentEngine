@@ -1,5 +1,6 @@
 package iricom
 
+import geo "odinary:geometry"
 import "core:encoding/uuid"
 
 MeshID :: distinct i32
@@ -52,7 +53,7 @@ MeshData :: struct {
 	aabb_max : [3]f32,
 
 	// transform data
-	transform : Transform,
+	transform : geo.Transform,
 }
 
 free_mesh_data :: proc(mesh_data : ^MeshData) {

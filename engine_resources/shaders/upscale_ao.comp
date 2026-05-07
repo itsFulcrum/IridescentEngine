@@ -32,7 +32,7 @@ layout(set=2, binding=0) uniform ubo {
 };
 
 
-#define TEST
+#define TEST 3
 
 void main() {
     // runs for each pixel in the dest img.
@@ -46,20 +46,49 @@ void main() {
 
     const int src_mip = _dst_mip + 1;
 
+    vec2 texel_uv = (vec2(texel_coord) + 0.5f) / vec2(_dest_dimentions);
+    
     //vec2  src_texel_f = texel_uv * (vec2(_src_dimentions));
     //ivec2 src_texel  = ivec2(src_texel_f);
     ivec2 src_texel  = texel_coord / 2;
 
     float high_res_depth = texelFetch(_min_max_depth_tex, texel_coord, _dst_mip).x;
-    high_res_depth = linearize_depth(high_res_depth, _camera_near, _camera_far);
+
+    const float near_times_far = _camera_near * _camera_far;
+    const float near_minus_far = _camera_near - _camera_far;
+    const float far = _camera_far;
+
+    //high_res_depth = linearize_depth(high_res_depth, _camera_near, _camera_far);
+    high_res_depth = linearize_depth_precomp(high_res_depth, far, near_times_far, near_minus_far);
     
     float upscaled = 1.0f;
 
+#if TEST == 0
     
-#ifdef TEST
+    // Just Bilinear interpolation
+    // no depth aware
+
+    vec2 src_texel_f = texel_uv * (vec2(_src_dimentions));
+    vec2 fraction = src_texel_f - vec2(src_texel);
+
+    vec4 bilin_weights = vec4(0.0f);
+    bilin_weights.x = (1 - fraction.x) * (1 - fraction.y);
+    bilin_weights.y = (1 - fraction.x) * (    fraction.y);
+    bilin_weights.z = (    fraction.x) * (1 - fraction.y);
+    bilin_weights.w = (    fraction.x) * (    fraction.y);
+
+    vec4 bilin_ao = vec4(0.0f);
+    bilin_ao.x = imageLoad(_src_tex, src_texel + ivec2(0,0)).r;
+    bilin_ao.y = imageLoad(_src_tex, src_texel + ivec2(0,1)).r;
+    bilin_ao.z = imageLoad(_src_tex, src_texel + ivec2(1,0)).r;
+    bilin_ao.w = imageLoad(_src_tex, src_texel + ivec2(1,1)).r;
+
+    upscaled = dot(bilin_weights, bilin_ao);
+
+#elif TEST == 1
     // controll the strength of the 'depth aware' upsampling    
     float spacial_sigma = 1.0f;
-    float depth_sigma   = 10.0f;
+    float depth_sigma   = 100.0f;
 
     float ao_summ = 0.0f;
     float weight_sum = 0.0f;
@@ -76,8 +105,8 @@ void main() {
             ivec2 sample_texel = src_texel + texel_offset; // todo clamp to tex bounds
 
             float sample_depth = texelFetch(_min_max_depth_tex, sample_texel, src_mip).x;
-            //sample_depth = linearize_depth(sample_depth, _camera_near, _camera_far);
-
+            sample_depth = linearize_depth_precomp(sample_depth, far, near_times_far, near_minus_far);
+            
             vec4 value = imageLoad(_src_tex, sample_texel);
             float sample_ao = srgb_to_linear_float_gamma_2_2(value.r);
 
@@ -104,10 +133,10 @@ void main() {
     // convert back to srgb
     ao_summ = linear_to_srgb_float_gamma_2_2(ao_summ);
     upscaled = ao_summ;
-#else 
+#elif TEST == 2
     
     
-    float depth_sigma = 100.0f;
+    float depth_sigma = 1000.0f;
     
     ivec2 texel00 = src_texel + ivec2(0,0);
     ivec2 texel01 = src_texel + ivec2(0,1);
@@ -149,9 +178,9 @@ void main() {
 
     float discontinuety = clamp(discon.x + discon.y + discon.z + discon.w, 0.0, 1.0f);
 
-    vec2 texel_uv = vec2(vec2(texel_coord) ) / vec2(_dest_dimentions);
+   // vec2 texel_uv = vec2(vec2(texel_coord) ) / vec2(_dest_dimentions);
 
-    vec2 src_texel_f = texel_uv * (vec2(_src_dimentions));// - 0.5f;
+    vec2 src_texel_f = texel_uv * (vec2(_src_dimentions)) - 0.5f;
     vec2 fraction = fract(src_texel_f);
 
     vec4 bilin_weights = vec4(0.0f);
@@ -185,7 +214,36 @@ void main() {
     // - lerp(biliear_sample, best_depth_sample, f(depth_discontinuity))
     
     // - bilinear_fetch(lerp(bilinear_texcoords, best_depth_texcoords, f(depth_discontinuity)))
+#elif TEST == 3
+    
 
+    float threshold = 100.0f / high_res_depth;
+
+    float ao_sum = 0.0f;
+    float weight_sum = 0.0f;
+
+    int kernel_size = 1;
+
+
+     for (int x = -kernel_size; x <= kernel_size; x++){
+        for (int y = -kernel_size; y <= kernel_size; y++){
+            
+            const ivec2 s_texel = src_texel + ivec2(x,y);
+            
+            float s_depth = texelFetch(_min_max_depth_tex, s_texel, src_mip).x;
+            float s_lindepth = linearize_depth_precomp(s_depth, far, near_times_far, near_minus_far);
+
+            float w = max(0.001f, 1.0f - saturate(abs(s_lindepth - high_res_depth) * threshold));
+
+            float s_ao = imageLoad(_src_tex, s_texel).r;
+            s_ao = srgb_to_linear_float_gamma_2_2(s_ao);
+
+            ao_sum += s_ao * w;
+            weight_sum += w;
+        }
+    }
+
+    upscaled = linear_to_srgb_float_gamma_2_2(ao_sum / weight_sum);
 
 #endif
 

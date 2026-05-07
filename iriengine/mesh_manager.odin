@@ -3,13 +3,17 @@ package iri
 import "core:log"
 import "core:strings"
 import "core:mem"
+import "core:c"
 import "core:math"
 import "core:math/linalg"
 
 import iricom "iricommon"
 import sdl "vendor:sdl3"
+
 import "odinary:mathy"
-import "odinary:poly/meshopt"
+import geo "odinary:geometry"
+import "odinary:geometry/meshopt"
+
 
 // @Note: MeshID's are runtime stable IDs, not between executable sessions.
 // They are also stable between loaded universes. 
@@ -31,12 +35,24 @@ MeshGPUData :: struct{
 	vertex_layout   : VertexDataLayout,
 }
 
+BlasBvhData :: struct {
+	bvh_nodes_offset : u64,
+	num_bvh_nodes : u64,
+
+	bvh_indecies_offset : u64,
+	num_bvh_indecies : u64,
+
+	bvh_vertecies_offset : u64,
+	num_bvh_vertecies : u64,
+}
+
 Mesh :: struct {
 	used : bool,
 	name : string,
 	gpu_data : MeshGPUData,
-	aabb : AABB,
-	bvh : rawptr, // ptr to a accelartion strutcure of the mesh
+	aabb : geo.AABB, // @Note: technically bvh_data root node will store the same aabb.
+	
+	bvh_data : BlasBvhData, 
 
 	//@Note Transform of the loaded mesh file which we keep stored but its not used for rendering directly but will be copied to a drawables
 	transform : Transform, 
@@ -45,7 +61,7 @@ Mesh :: struct {
 Drawable :: struct {
 	entity : Entity,
 	draw_instance  : DrawInstance,
-	world_oobb : OBB, // world space obb
+	world_oobb : geo.OBB, // world space obb
 	world_mat  : matrix[4,4]f32,
 	prev_physics_world_transform : Transform, // World Transform of the previous physics state!
 }
@@ -54,8 +70,16 @@ MeshManager :: struct {
 	num_loaded_meshes : u32,
 	meshes : #soa[dynamic]Mesh,
 	id_map : map[AssetUUID]MeshID,
-}
 
+	// blas = 'bottom level acceleration structure'
+	blas_vertecies : [dynamic][3]f32,
+	blas_indecies  : [dynamic]u32,
+	blas_bvh_nodes : [dynamic]geo.BvhNode,
+
+	blas_vertecies_freelist : [dynamic]MultiFreelistEntry,
+	blas_indecies_freelist  : [dynamic]MultiFreelistEntry,
+	blas_bvh_nodes_freelist : [dynamic]MultiFreelistEntry,
+}
 
 @(private="package")
 mesh_manager_init :: proc(manager : ^MeshManager){
@@ -82,6 +106,15 @@ mesh_manager_deinit :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice)
 
 	delete_soa(manager.meshes);
 	delete_map(manager.id_map);
+
+
+	delete(manager.blas_vertecies);
+	delete(manager.blas_indecies);
+	delete(manager.blas_bvh_nodes);
+
+	delete(manager.blas_vertecies_freelist);
+	delete(manager.blas_indecies_freelist);
+	delete(manager.blas_bvh_nodes_freelist);
 
 	manager.num_loaded_meshes = 0;
 }
@@ -113,15 +146,95 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 
 	mesh : Mesh;
 	mesh.used = true;
-	//mesh.vertex_layout = mesh_data.vertex_data_layout;
 	mesh.name = strings.clone(mesh_data.name);
 	mesh.gpu_data = gpu_mesh_data;
-	mesh.aabb = AABB{ 
-					min = [4]f32{mesh_data.aabb_min.x, mesh_data.aabb_min.y, mesh_data.aabb_min.z, 0.0}, 
-					max = [4]f32{mesh_data.aabb_max.x, mesh_data.aabb_max.y, mesh_data.aabb_max.z, 0.0}
-				};
-	mesh.bvh = nil;
+	mesh.aabb = geo.aabb_from_min_max_vec3(mesh_data.aabb_min, mesh_data.aabb_max);
 	mesh.transform = mesh_data.transform;
+
+	vertex_position_byte_size : int = size_of([3]f32);
+
+	//mesh.bvh_info = geo.bvh_build_bottom_level(mesh_data.positions, cast(uint)size_of([3]f32), mesh_data.indecies, cast(uint)mesh_data.num_indecies);
+	bvh_info := geo.bvh_build_bottom_level(mesh_data.positions, cast(uint)vertex_position_byte_size, mesh_data.indecies, cast(uint)mesh_data.num_indecies);
+	defer {
+		delete(bvh_info.nodes)
+		delete(bvh_info.indecies)
+	}
+
+	mesh.bvh_data = BlasBvhData{};
+	// Copy mesh and bvh data to respective scene buffers.
+	{
+
+		// Blas Bvh Nodes
+		{
+			num_nodes : int = len(bvh_info.nodes);
+			
+			mesh.bvh_data.num_bvh_nodes = cast(u64)num_nodes;
+
+			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.blas_bvh_nodes_freelist, cast(u64)num_nodes);
+
+			if free_list_entry_index >= 0 {
+
+				free_entry := &manager.blas_bvh_nodes_freelist[free_list_entry_index];
+				mem.copy_non_overlapping(&manager.blas_bvh_nodes[free_entry.index], &bvh_info.nodes[0], num_nodes * size_of(geo.BvhNode));
+
+				mesh.bvh_data.bvh_nodes_offset = free_entry.index;
+
+				multi_freelist_consume_entry_amount(&manager.blas_bvh_nodes_freelist, free_list_entry_index, cast(u64)num_nodes);
+
+			} else {
+				curr_length : int = len(manager.blas_bvh_nodes);
+				mesh.bvh_data.bvh_nodes_offset = cast(u64)curr_length;
+				
+				resize(&manager.blas_bvh_nodes, curr_length + num_nodes);
+				mem.copy_non_overlapping(&manager.blas_bvh_nodes[curr_length], &bvh_info.nodes[0], num_nodes * size_of(geo.BvhNode));
+			}
+		}
+
+		// Blas Indecies 
+		{
+			num_indecies : int = len(bvh_info.indecies);
+			mesh.bvh_data.num_bvh_indecies = cast(u64)num_indecies;
+
+			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.blas_indecies_freelist, cast(u64)num_indecies);
+			if free_list_entry_index >= 0 {
+
+				free_entry := &manager.blas_indecies_freelist[free_list_entry_index];
+				mem.copy_non_overlapping(&manager.blas_indecies[free_entry.index], &bvh_info.indecies[0], num_indecies * size_of(u32));
+
+				multi_freelist_consume_entry_amount(&manager.blas_indecies_freelist, free_list_entry_index, cast(u64)num_indecies);
+			} else {
+				curr_length : int = len(manager.blas_indecies);
+				mesh.bvh_data.bvh_indecies_offset = cast(u64)curr_length;
+				
+				resize(&manager.blas_indecies, curr_length + num_indecies);
+				mem.copy_non_overlapping(&manager.blas_indecies[curr_length], &bvh_info.indecies[0], num_indecies * size_of(u32));
+			}
+		}
+
+		// Blas Vertecies 
+		{
+			num_vertecies : int = cast(int)mesh_data.num_vertecies;
+			mesh.bvh_data.num_bvh_vertecies = cast(u64)num_vertecies;
+
+			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.blas_vertecies_freelist, cast(u64)num_vertecies);
+
+			if free_list_entry_index >= 0 {
+
+				free_entry := &manager.blas_vertecies_freelist[free_list_entry_index];
+				
+				mem.copy(&manager.blas_vertecies[free_entry.index], &mesh_data.positions[0], num_vertecies * vertex_position_byte_size);
+
+				multi_freelist_consume_entry_amount(&manager.blas_vertecies_freelist, free_list_entry_index, cast(u64)num_vertecies);
+			} else {				
+				curr_length : int = len(manager.blas_vertecies);
+				mesh.bvh_data.bvh_vertecies_offset = cast(u64)curr_length;
+				
+				resize(&manager.blas_vertecies, curr_length + num_vertecies);
+				mem.copy_non_overlapping(&manager.blas_vertecies[curr_length], &mesh_data.positions[0], num_vertecies * vertex_position_byte_size);
+			}
+		}
+	}
+
 
 	free_spot : int = -1;
 	for i in 0..<len(manager.meshes){
@@ -143,6 +256,7 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 	if !invalid_uuid {
 		manager.id_map[mesh_data.asset_uuid] = id;
 	}
+
 
 	manager.num_loaded_meshes += 1;
 
@@ -180,6 +294,31 @@ mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDe
 	if manager.meshes[index].gpu_data.vertex_pos_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.vertex_pos_buf);
 	}
+
+
+	bvh_data := manager.meshes[index].bvh_data;
+
+	blas_bvh_nodes_freelist_entry := MultiFreelistEntry{
+		index  = bvh_data.bvh_nodes_offset,
+		amount = bvh_data.num_bvh_nodes,
+	}
+	multi_freelist_add_or_merge_entry(&manager.blas_bvh_nodes_freelist, blas_bvh_nodes_freelist_entry);
+
+	blas_vertecies_freelist_entry := MultiFreelistEntry{
+		index  = bvh_data.bvh_vertecies_offset,
+		amount = bvh_data.num_bvh_vertecies,
+	}
+	multi_freelist_add_or_merge_entry(&manager.blas_vertecies_freelist, blas_vertecies_freelist_entry);
+
+	blas_indecies_freelist_entry := MultiFreelistEntry{
+		index  = bvh_data.bvh_indecies_offset,
+		amount = bvh_data.num_bvh_indecies,
+	}
+	multi_freelist_add_or_merge_entry(&manager.blas_indecies_freelist, blas_indecies_freelist_entry);
+
+
+
+
 
 	last : int = len(manager.meshes) -1;
 	if int(index) == last {
@@ -407,10 +546,10 @@ mesh_manager_get_mesh_gpu_data :: proc(manager : ^MeshManager, id : MeshID) -> ^
 }
 
 @(private="package")
-mesh_manager_get_aabb :: proc(manager : ^MeshManager, id: MeshID) -> AABB {
+mesh_manager_get_aabb :: proc(manager : ^MeshManager, id: MeshID) -> geo.AABB {
 
 	if !mesh_manager_is_valid_id(manager, id) {
-		return AABB{};
+		return geo.AABB{};
 	}
 
 	

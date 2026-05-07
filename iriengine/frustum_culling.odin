@@ -8,7 +8,7 @@ import "core:math/linalg"
 import "core:simd"
 import "base:intrinsics"
 import "odinary:mathy/simdy"
-
+import geo "odinary:geometry"
 
 Plane :: struct {
 	normal : [3]f32,
@@ -45,11 +45,11 @@ create_culling_frustum :: proc "contextless" (aspect_ratio : f32 , fov_radians: 
 
 // @Note: cull objects in shadowmap draw that have samll pixel fill in the shadowmap or if they are outside the frustum.
 // the frustum check is very approximate and useses effective a spherical radius but its very fast at least.
-test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, oobb: OBB, resolution : u32) -> bool {
+test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, obb: geo.OBB, resolution : u32) -> bool {
 
 
-    corner0  : [4]f32 = oobb.center - (oobb.axis[0] * oobb.extents[0]) - (oobb.axis[1] * oobb.extents[1]) - (oobb.axis[2] * oobb.extents[2])
-    corner1  : [4]f32 = oobb.center + (oobb.axis[0] * oobb.extents[0]) + (oobb.axis[1] * oobb.extents[1]) + (oobb.axis[2] * oobb.extents[2])
+    corner0  : [4]f32 = obb.center - (obb.axis[0] * obb.extents[0]) - (obb.axis[1] * obb.extents[1]) - (obb.axis[2] * obb.extents[2])
+    corner1  : [4]f32 = obb.center + (obb.axis[0] * obb.extents[0]) + (obb.axis[1] * obb.extents[1]) + (obb.axis[2] * obb.extents[2])
 
     corner0.w = 1.0;
     corner1.w = 1.0;
@@ -93,7 +93,7 @@ test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, oobb: OBB, resolution 
 }
 
 
-obb_overlaps_frustum :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, world_oobb : OBB) -> bool{
+obb_overlaps_frustum :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, world_oobb : geo.OBB) -> bool{
 
     // using separating axis theorem
     // https://bruop.github.io/improved_frustum_culling/
@@ -104,7 +104,7 @@ obb_overlaps_frustum :: proc(culling_frustum : CullingFrustum, view_mat : matrix
     y_near : f32 = culling_frustum.near_plane_half_height;
     zfar_over_znear : f32 = z_far / z_near;
 
-    oobb : OBB = world_oobb;
+    oobb : geo.OBB = world_oobb;
 
     oobb.center  = view_mat * oobb.center;
     oobb.axis[0] = view_mat * oobb.axis[0];
@@ -366,7 +366,7 @@ obb_overlaps_frustum :: proc(culling_frustum : CullingFrustum, view_mat : matrix
 }
 
 // 'aabb' should be in local/object space, 'to_world' Transform should bring aabb to world space
-frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, aabb : AABB, to_world : Transform) -> bool{
+frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, aabb : geo.AABB, to_world : Transform) -> bool{
 
     // using separating axis theorem
     // https://bruop.github.io/improved_frustum_culling/
@@ -377,7 +377,7 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
     y_near : f32 = culling_frustum.near_plane_half_height;
     zfar_over_znear : f32 = z_far / z_near;
 
-    oobb : OBB = obb_from_aabb_and_transform(aabb, to_world);
+    oobb : geo.OBB = geo.obb_from_aabb_and_transform(aabb, to_world);
 
     // 4 corners of the aabb transform to world space using to_world Transform
     // @note - we could also combine the to_world Transform with the view_matrix but that would require to create a transform matrix for each 
@@ -695,7 +695,7 @@ frustum_test_aabb_inside :: proc(culling_frustum : CullingFrustum, view_mat : ma
 
 
 
-frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : AABB, model_view_mat : matrix[4,4]f32) -> bool{
+frustum_test_obb_inside_simd :: proc(culling_frustum : CullingFrustum, aabb : geo.AABB, model_view_mat : matrix[4,4]f32) -> bool{
 
 	// using separating axis theorem
 	// https://bruop.github.io/improved_frustum_culling/

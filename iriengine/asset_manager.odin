@@ -8,7 +8,7 @@ import "core:strings"
 import "core:encoding/uuid"
 
 import iria "iriasset"
-import reader "iriasset/binary_reader"
+import reader "odinary:readbinary"
 
 AssetUUID 			:: iria.AssetUUID
 AssetUUID_INVALID 	:: iria.AssetUUID_INVALID

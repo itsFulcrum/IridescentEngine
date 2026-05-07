@@ -7,7 +7,7 @@ import "core:os"
 import "core:mem"
 import "core:strings"
 
-import reader "binary_reader"
+import reader "odinary:readbinary"
 import iricom "../iricommon"
 
 

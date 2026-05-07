@@ -5,7 +5,8 @@ import "core:os"
 
 import "base:intrinsics"
 
-import reader "binary_reader"
+import geo "odinary:geometry"
+import reader "odinary:readbinary"
 import iricom "../iricommon"
 
 LIGHT_ASSET_CURRENT_VERSION : u32 : 1
@@ -33,7 +34,7 @@ LightAsset :: struct {
 	shadowmap_res_1 : iricom.ShadowmapResolution,
 	shadowmap_res_2 : iricom.ShadowmapResolution,
 
-	transform : iricom.Transform,
+	transform : geo.Transform,
 }
 
 LightAssetHeader_v1 :: struct #packed {

@@ -51,6 +51,8 @@ draw_debug_display_menu :: proc() {
 		any_changed |= enum_flags_checkbox("Draw Colliders" , iri.DebugDisplayFlag.DrawCollider	, &flags);
 		any_changed |= enum_flags_checkbox("Draw Lights"    , iri.DebugDisplayFlag.DrawLights 	, &flags);
 		any_changed |= enum_flags_checkbox("Draw Camera Frustum" , iri.DebugDisplayFlag.DrawCameraFrustum 	, &flags);
+		any_changed |= enum_flags_checkbox("Draw Scene BVH" , iri.DebugDisplayFlag.DrawSceneBVH 	, &flags);
+		any_changed |= enum_flags_checkbox("Draw Mesh BVH" , iri.DebugDisplayFlag.DrawMeshBVH 	, &flags);
 
 		if any_changed {
 			iri.debug_draw_manager_set_display_flags(flags);

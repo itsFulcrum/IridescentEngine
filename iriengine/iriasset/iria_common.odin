@@ -5,7 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:mem"
 import "core:encoding/uuid"
-import reader "binary_reader"
+import reader "odinary:readbinary"
 
 MAGIC :: [4]byte{'I','R','I','A'}
 FILE_EXTENTION 		: string : ".iria"

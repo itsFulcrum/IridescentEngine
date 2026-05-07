@@ -5,6 +5,7 @@ import "core:strings"
 import "core:math/rand"
 
 import iricom "iricommon"
+import geo "odinary:geometry"
 
 Entity :: iricom.Entity
 EntityInvalid :: iricom.EntityInvalid
@@ -1147,7 +1148,7 @@ ecs_drawable_add :: proc(ecs : ^ECData, entity : Entity, drawable : ^Drawable) -
 
 	if mesh_manager_is_valid_id(engine.mesh_manager, drawable.draw_instance.mesh_id) {	
 		mesh_aabb := mesh_manager_get_aabb(engine.mesh_manager, drawable.draw_instance.mesh_id);
-		drawable.world_oobb = obb_from_aabb_and_transform(mesh_aabb, world_transform);
+		drawable.world_oobb = geo.obb_from_aabb_and_transform(mesh_aabb, world_transform);
 	} else {
 		drawable.draw_instance.flags += DrawInstanceFlags{._Internal_NoValidMesh}
 	}

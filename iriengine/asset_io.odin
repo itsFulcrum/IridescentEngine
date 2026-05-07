@@ -7,7 +7,7 @@ import "core:os"
 
 import "core:strings"
 import "core:math/linalg"
-import "odinary:poly"
+import "odinary:geometry/poly"
 import "odinary:mathy"
 
 import iricom "iricommon"

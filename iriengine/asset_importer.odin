@@ -1,6 +1,5 @@
 package iri
 
-
 import "base:runtime"
 import "core:log"
 import "core:mem"
@@ -10,8 +9,9 @@ import "core:c"
 import "core:strings"
 import "core:math/linalg"
 
-import "odinary:poly"
-import "odinary:poly/meshopt"
+import "odinary:geometry/poly"
+import "odinary:geometry/meshopt"
+//import geo "odinary:geometry"
 import "odinary:mathy"
 
 import iricom "iricommon"

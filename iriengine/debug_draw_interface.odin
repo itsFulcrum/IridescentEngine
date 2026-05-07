@@ -2,6 +2,7 @@ package iri
 
 import "core:math/linalg"
 import "odinary:mathy"
+import geo "odinary:geometry"
 
 DebugDrawColor :: union #no_nil {
 	DebugColor,
@@ -46,11 +47,11 @@ debug_draw_box_transform :: proc(color : DebugDrawColor, trans : Transform) {
 	debug_draw_manager_push_command(command);
 }
 
-debug_draw_box_obb :: proc(color : DebugDrawColor, obb : OBB) {
+debug_draw_box_obb :: proc(color : DebugDrawColor, obb : geo.OBB) {
 	command := DebugDrawCommand {
 		type  = DebugDrawType.Box,
 		color = debug_draw_color_to_f32(color),
-		mat   = obb_to_transform_matrix(obb),
+		mat   = geo.obb_to_transform_matrix(obb),
 	}
 	debug_draw_manager_push_command(command);
 }

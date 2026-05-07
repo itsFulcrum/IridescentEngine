@@ -1,5 +1,6 @@
 package iri
 
+import geo "odinary:geometry"
 import iria "iriasset"
 import "core:math/linalg"
 
@@ -15,7 +16,7 @@ SphereCollider :: struct {
 }
 
 BoxCollider :: struct {
-	world_obb : OBB,
+	world_obb : geo.OBB,
 }
 
 Collider :: union #no_nil {
@@ -152,7 +153,7 @@ comp_collider_recompute_collider_primitve :: proc(comp : ^ColliderComponent) {
 				scale 		= ent_trans.scale * comp.extent,
 				orientation = linalg.quaternion_mul_quaternion(ent_trans.orientation,comp.orientation),
 			}
-			v.world_obb = obb_from_world_transform(world_transform);
+			v.world_obb = geo.obb_from_world_transform(world_transform);
 		}
 	}
 }

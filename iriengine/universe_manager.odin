@@ -5,6 +5,7 @@ import "core:mem"
 import "core:math/linalg"
 import "core:sort"
 import "odinary:mathy"
+import geo "odinary:geometry"
 
 import sdl "vendor:sdl3"
 
@@ -494,7 +495,7 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 			drawables.world_mat[drawable_index] = transform_calc_world_matrix(world_transform);
 
 			aabb := mesh_manager_get_aabb(engine.mesh_manager, drawables.draw_instance[drawable_index].mesh_id);
-			drawables.world_oobb[drawable_index] = obb_from_aabb_and_transform(aabb, world_transform);
+			drawables.world_oobb[drawable_index] = geo.obb_from_aabb_and_transform(aabb, world_transform);
 
 			min_index = min(min_index, cast(int)drawable_index);
 			max_index = max(max_index, cast(int)drawable_index);

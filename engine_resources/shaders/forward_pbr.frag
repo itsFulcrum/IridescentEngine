@@ -201,6 +201,10 @@ void main() {
 		scene_ao = srgb_to_linear_float_gamma_2_2(ao_tex_sample.r);
 	#endif
 
+
+	//frag_color.rgb = vec3(scene_ao);
+	//return;
+
 	PbrMaterial mat = _pbr_materials[_mat_ubo.mat_index];
 
 	SurfaceData surf_data;

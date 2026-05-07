@@ -3,7 +3,7 @@ package iri
 import "core:log"
 import "core:math/linalg"
 import "core:sort"
-
+import geo "odinary:geometry"
 
 CollisionPair :: struct {
 	ent_a : Entity,
@@ -280,15 +280,15 @@ collider_sphere_overlaps_sphere :: #force_inline proc "contextless" (a : SphereC
 }
 
 collider_sphere_overlaps_box :: #force_inline proc "contextless" (sphere : SphereCollider, box : BoxCollider) -> bool {
-	return obb_overlaps_sphere(box.world_obb, sphere.world_position, sphere.world_radius)
+	return geo.obb_overlaps_sphere(box.world_obb, sphere.world_position, sphere.world_radius)
 }
 
 collider_box_overlaps_sphere :: #force_inline proc "contextless" (box : BoxCollider, sphere : SphereCollider) -> bool {
-	return obb_overlaps_sphere(box.world_obb, sphere.world_position, sphere.world_radius)
+	return geo.obb_overlaps_sphere(box.world_obb, sphere.world_position, sphere.world_radius)
 }
 
 
 collider_box_overlaps_box :: #force_inline proc "contextless" (a : BoxCollider, b : BoxCollider) -> bool {
-	return obb_overlaps_obb(a.world_obb, b.world_obb);
+	return geo.obb_overlaps_obb(a.world_obb, b.world_obb);
 }
 

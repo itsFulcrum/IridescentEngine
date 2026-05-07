@@ -5,14 +5,9 @@ import "core:os"
 import "core:mem"
 import "core:strings"
 
-import reader "binary_reader"
+import geo "odinary:geometry"
+import reader "odinary:readbinary"
 import iricom "../iricommon"
-
-// EntityInfoFlags :: distinct bit_set[EntityInfoFlag; u32]
-// EntityInfoFlag :: enum u32 {
-// 	IsEnabled = 0,
-// 	PhysicsInterpolation,
-// }
 
 EntityInfoPacked :: struct {
 	flags 		: iricom.EntityFlags,
@@ -44,7 +39,7 @@ ColliderCompData :: struct #packed {
 
 DrawableAsset :: struct {
 	draw_instance_asset : DrawInstanceAsset,
-	transform : iricom.Transform,
+	transform : geo.Transform,
 }
 
 UniverseAssetSettings :: struct #packed {	
@@ -77,7 +72,7 @@ UniverseAsset :: struct {
 	// These MUST all have length of num_entities!
 	entity_names : []string, 			// @Note: individual strings are not freed by 'free_universe_asset()', expected to be allocated with arena or manually freed by caller.
 	entity_infos : []EntityInfoPacked,
-	entity_trans : []iricom.Transform,
+	entity_trans : []geo.Transform,
 	entity_comp_indexes : []CompIndexes,
 
 
@@ -295,7 +290,7 @@ asset_universe_read_v2 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader
 		switch buf_info.type {
 			case .UniverseSettings:	reader.consume_mem_copy(b_reader, &uni_asset.settings, byte_size) or_return;
 			case .EntityInfos: 		uni_asset.entity_infos = reader.consume_make_slice(b_reader, []EntityInfoPacked, numbr, context.allocator) or_return;
-			case .EntityTransforms: uni_asset.entity_trans = reader.consume_make_slice(b_reader, []iricom.Transform, numbr, context.allocator) or_return;
+			case .EntityTransforms: uni_asset.entity_trans = reader.consume_make_slice(b_reader, []geo.Transform, numbr, context.allocator) or_return;
 			case .EntityComponentIndexes: uni_asset.entity_comp_indexes = reader.consume_make_slice(b_reader, []CompIndexes, numbr, context.allocator) or_return;
 			case .EntityNames: 	{
 				num_ents : int = numbr;
@@ -436,7 +431,7 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 
 	// transforms
 	{
-		byte_size : int = num_ents * size_of(iricom.Transform);
+		byte_size : int = num_ents * size_of(geo.Transform);
 		
 		if byte_size > 0 {
 			
