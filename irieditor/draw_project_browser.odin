@@ -154,13 +154,15 @@ draw_project_browser :: proc(){
 
 			case .Directory: {
 
-				im.PushStyleColorImVec4(im.Col.Button, DIRECTORY_COL);
+				{
+					im.PushStyleColorImVec4(im.Col.Button, DIRECTORY_COL);
+					defer im.PopStyleColor();
 
-				if im.Button(file_btn_label, btn_size) {
-					proj_browser_switch_curr_proj_dir(info.fullpath);
+					if im.Button(file_btn_label, btn_size) {
+						proj_browser_switch_curr_proj_dir(info.fullpath);
+						break files_loop;
+					}
 				}
-
-				im.PopStyleColor();
 				
 				// DRAG DROP TARGET: move files inside this directory.
 				drop: if drop_file_info := file_info_drag_drop_target({.Directory,.AssetFile, .RegularFile}, iri.ASSET_TYPE_FLAGS_ALL); drop_file_info != nil {
@@ -271,6 +273,7 @@ draw_project_browser :: proc(){
 			} else if info.file_type == .RegularFile {
 				txt = "File --";
 			}
+
 			
 			txt_size := im.CalcTextSize(txt);
 

@@ -256,10 +256,12 @@ comp_meshrenderer_append_scene_collection_asset :: proc(comp : ^MeshRendererComp
 }
 
 
-// @Note: 'build_pipeline_cache' should be true if calling this at runtime! if initializing many meshrenderers
-// you can set it to false and instead update the pipeline chache for the entire universe once all drawables are added.
+// @Note: 'build_pipeline_cache' should be true if calling this during a frame! if initializing many meshrenderers
+// you can set it to false and instead update the pipeline chache for the entire universe once all new drawables are added.
 @(private="package")
 comp_meshrenderer_append_drawable_assets :: proc(comp : ^MeshRendererComponent, drawable_assets : []iria.DrawableAsset, build_pipeline_cache : bool = true) {
+	
+	IRI_PROFILE_PROCEDURE()
 
 	// all the managers, get em.
 	asset_manager 		:= engine.asset_manager;
@@ -269,6 +271,10 @@ comp_meshrenderer_append_drawable_assets :: proc(comp : ^MeshRendererComponent, 
 	gpu_device 			:= get_gpu_device();
 
 
+	load_disk_ms : f64 = 0;
+	add_to_mesh_manager_ms : f64 = 0;
+	add_drawables_ms : f64 = 0;
+
 	for &draw_asset in drawable_assets {
 
 		draw_inst_asset := &draw_asset.draw_instance_asset;
@@ -276,7 +282,7 @@ comp_meshrenderer_append_drawable_assets :: proc(comp : ^MeshRendererComponent, 
 		drawable := Drawable{entity = comp.entity};
 		drawable.draw_instance.flags = draw_inst_asset.flags;
 
-		mat_id  := asset_io_load_material_asset_id(asset_manager, material_manager, draw_inst_asset.mat_uuid) or_else material_manager.fallback_material;
+		mat_id  := asset_io_load_material_asset_id(asset_manager, material_manager, draw_inst_asset.mat_uuid) or_else material_manager.fallback_material;		
 		mesh_id := asset_io_load_mesh_asset_id(asset_manager, mesh_manager, draw_inst_asset.mesh_uuid) or_else -1;
 		
 		drawable.draw_instance.mat_id  = mat_id;
@@ -300,7 +306,6 @@ comp_meshrenderer_append_drawable_assets :: proc(comp : ^MeshRendererComponent, 
 			vertex_layout := gpu_data.vertex_layout;
 
 			pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts(pipe_manager, gpu_device, material_manager, mat_id, {vertex_layout});
-	
 		}
 	}
 }

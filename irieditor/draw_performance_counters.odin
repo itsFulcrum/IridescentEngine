@@ -16,6 +16,9 @@ draw_performance_counters :: proc(){
 
 	im.Spacing()
 	im.Spacing()
+	//im.Text("Rendering");
+	im.Text("TL BVH CPU %f ms", perfs.tl_bvh_cpu_ms);
+	im.Spacing()
 
 	im.Text("Rendering");
 	

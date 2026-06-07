@@ -75,9 +75,9 @@ VertexShadowmapUBO :: struct #align(16) {
 
 VertexDrawInstanceUBO :: struct #align(16) {
 	drawable_index : u32,
-	padding1 : u32,
-	padding2 : u32,
-	padding3 : u32,
+	user_1 : u32,
+	user_2 : u32,
+	user_3 : u32,
 }
 
 MatUBO :: struct #align(16) {
@@ -116,11 +116,3 @@ get_sdl_GPUStencilOp_from_StencilOp :: iricom.StencilOp_to_sdl_GPUStencilOp
 get_sdl_GPUBlendOp_from_BlendOp :: iricom.BlendOp_to_sdl_GPUBlendOp
 get_sdl_GPUBlendFactor_from_BlendFactor :: iricom.BlendFactor_to_sdl_GPUBlendFactor
 PrimitiveType_to_sdl_GPUPrimitiveType :: iricom.PrimitiveType_to_sdl_GPUPrimitiveType
-
-
-@(private="package")
-QueryBufferUploadInfo :: struct {
-	requires_upload       : bool,
-	transfer_buf_location : sdl.GPUTransferBufferLocation,
-	transfer_buf_region   : sdl.GPUBufferRegion,
-}

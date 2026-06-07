@@ -6,12 +6,27 @@ import "core:encoding/uuid"
 import "core:strings"
 import iria "iriasset"
 
+import geo "odinary:geometry"
+
 import sdl "vendor:sdl3"
 
 ShadowDrawableInfo :: struct {
     shader_type : DepthOnlyPipelineShaders,
     drawable_index : u32,
     technique_hash : RenderTechniqueHash,
+}
+
+// TODO: move UniverseAssetSettings in here!
+UniverseSettings :: struct {
+	bvh_num_split_planes : u32,
+	bvh_max_tree_depth : u32,
+}
+
+universe_settings_create_default :: proc() -> UniverseSettings {
+	return UniverseSettings{
+		bvh_num_split_planes = 8,
+		bvh_max_tree_depth = 32,
+	}
 }
 
 Universe :: struct {
@@ -30,6 +45,9 @@ Universe :: struct {
 
 	light_manager : LightManager,
 
+
+
+	settings : UniverseSettings,
 	shadow_cascade_near_far_scale 	: f32,
 	shadow_cascade_side_scale 		: f32,
 	shadow_cascade_split_1 			: f32, // percentage between near and far
@@ -40,25 +58,42 @@ Universe :: struct {
     do_frustum_culling 			: bool,
 	frustum_cull_camera_entity 	: Entity, // if we want to use different camera for frustum culling
 
-	matrix_buf : ^sdl.GPUBuffer,
-	matrix_transfer_buf : ^sdl.GPUTransferBuffer,
-	matrix_upload_info : QueryBufferUploadInfo,
+	// matrix and inv_matrix buf share same layout so one upload info and byte size is enough.
 	matrix_buf_byte_size : int,
 
-	// indexes into ecs.drawables
+	matrix_buf 				: ^sdl.GPUBuffer,
+	matrix_transfer_buf 	: ^sdl.GPUTransferBuffer,
+	matrix_upload_info 		: QueryBufferUploadInfo,
+	inv_matrix_buf 			: ^sdl.GPUBuffer,
+	inv_matrix_transfer_buf : ^sdl.GPUTransferBuffer,
+	inv_matrix_upload_info 	: QueryBufferUploadInfo,
+
+	drawables_globals_info_buf : BasicGPUBuffer,
+
+	// Top level acceleration structure.
+	tlas_nodes : [dynamic]geo.BvhNode,
+	tlas_nodes_buf : BasicGPUBuffer,
+
+	// Indexes into ecs.drawables array organised/ordered to be indexable by tl bvh nodes.
+	frame_tl_draw_indecies : [dynamic]u32, 
+	frame_tl_draw_indecies_buf : BasicGPUBuffer,
+
+	// Indexes into ecs.drawables. updated each frame.
 	frame_renderables 	 : [dynamic]u32, // subset ecs.drawables. only drawbles with valid data and enabled entities.
-	frame_shadow_draws   : [dynamic]ShadowDrawableInfo, // subset ecs.drawables. drawables for shadow randering.
+	frame_shadow_draws   : [dynamic]ShadowDrawableInfo, // subset frame_renderables. drawables for shadow randering.
 
 	frame_camera_visible : [dynamic]u32, // subset frame_renderables. camera / distance culled
-	frame_opaques 		 : [dynamic]u32, // subset frame_camera_visible. only opaques
-	frame_alpha_test 	 : [dynamic]u32, // subset frame_camera_visibly. only alpha test
-	frame_alpha_blend 	 : [dynamic]u32, // subset frame_camera_visible. only blend
+	frame_opaques 		 : [dynamic]u32, // subset frame_camera_visible. only opaque
+	frame_alpha_test 	 : [dynamic]u32, // subset frame_camera_visible. only alpha test
+	frame_alpha_blend 	 : [dynamic]u32, // subset frame_camera_visible. only alpha blend
 
 	debug_test_float : f32,
 }
 
 universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = nil) {
 	
+	IRI_PROFILE_PROCEDURE();
+
 	gpu_device := get_gpu_device();
 
 	engine_assert(universe != nil);
@@ -94,6 +129,7 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 	universe.shadow_cascade_split_2 = settings == nil ? 0.25 : settings.shadow_cascade_split_2;
 	universe.shadow_cascade_split_3 = settings == nil ? 0.60 : settings.shadow_cascade_split_3; 
 
+	universe.settings = universe_settings_create_default();
 
 	// Skybox 
 	{
@@ -133,6 +169,7 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 	engine_assert(num_ents == len(uni_asset.entity_infos))
 	engine_assert(num_ents == len(uni_asset.entity_trans))
 	engine_assert(num_ents == len(uni_asset.entity_names))
+
 
 	for id in 0..<num_ents {
 
@@ -179,6 +216,7 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 					comp_light_init_from_light_asset(comp, uni_asset.light_comp_data[ent_comp_indexes.light_index] , true)
 				}
 				case .MeshRenderer: {
+					
 					comp, err := ecs_get_component(&universe.ecs, entity, MeshRendererComponent);
 					engine_assert(comp != nil);
 					engine_assert(ent_comp_indexes.meshren_index > -1)
@@ -188,7 +226,7 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 					num : int = cast(int)meshren_data.num_drawable_assets;
 					offset : int = cast(int)meshren_data.array_offset;
 
-					if num > 0 {
+					if num > 0 {						
 						comp_meshrenderer_append_drawable_assets(comp, uni_asset.drawable_assets_array[offset:offset+num], build_pipeline_cache = false)
 					}
 				}
@@ -201,12 +239,13 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 				}
 			}
 		}
-
-		// update pipe cache for all drawables at once instead of per drawable asset we add.
-		pipe_manager := engine.pipeline_manager;
-		pipe_manager_update_material_and_depthonly_pipeline_cache_for_universe(pipe_manager, gpu_device, universe);
 	}
+
+	// update pipe cache for all drawables at once instead of per drawable asset we add.
+	pipe_manager := engine.pipeline_manager;
+	pipe_manager_update_material_and_depthonly_pipeline_cache_for_universe(pipe_manager, gpu_device, universe);
 	
+
 	
 	// Entity idenfiyers are runtime created and not stored in file so get get it first manually
 	// if for some reason the entity doesn't have the component attached it'll be handled by the ecs call.
@@ -257,12 +296,29 @@ universe_deinit :: proc(universe : ^Universe) {
 		universe.matrix_transfer_buf = nil;
 	}
 
+
+	if universe.inv_matrix_buf != nil {
+		sdl.ReleaseGPUBuffer(gpu_device, universe.inv_matrix_buf);
+		universe.inv_matrix_buf = nil;
+	}
+
+	if universe.inv_matrix_transfer_buf != nil {
+		sdl.ReleaseGPUTransferBuffer(gpu_device, universe.inv_matrix_transfer_buf);
+		universe.inv_matrix_transfer_buf = nil;
+	}
+
+	delete(universe.tlas_nodes);
+	gpu_buffer_release_buffers(gpu_device, &universe.tlas_nodes_buf);
+	gpu_buffer_release_buffers(gpu_device, &universe.frame_tl_draw_indecies_buf);
+	gpu_buffer_release_buffers(gpu_device, &universe.drawables_globals_info_buf);
+
 	if len(universe.name) > 0 {
 		delete_string(universe.name)
 	}
 
 	light_manager_deinit(gpu_device, &universe.light_manager);
 
+	delete(universe.frame_tl_draw_indecies)
 	delete(universe.frame_renderables)
 	delete(universe.frame_shadow_draws)
 	delete(universe.frame_camera_visible)

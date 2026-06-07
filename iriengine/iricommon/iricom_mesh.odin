@@ -42,15 +42,19 @@ MeshData :: struct {
 	num_vertecies : u32,
 	vertex_data_layout : VertexDataLayout,
 
-	positions	 : [^]byte,	
+	positions	 : [^]byte,	// position xyzw (16 bytes)
 	vertex_data  : [^]byte, // interleaved according to vertex_data_layout
 
 	num_indecies : u32,
 	indecies: 	[^]u32,
-	shadow_indecies : [^]u32,
+	//shadow_indecies : [^]u32, // not used atm.
 
 	aabb_min : [3]f32,
 	aabb_max : [3]f32,
+
+	bvh_num_nodes : u32,
+	bvh_indecies  : [^]u32, // num bvh indecies is same as num indecies
+	bvh_nodes     : [^]geo.BvhNode,
 
 	// transform data
 	transform : geo.Transform,
@@ -71,10 +75,10 @@ free_mesh_data :: proc(mesh_data : ^MeshData) {
 		mesh_data.indecies = nil;
 	}
 
-	if mesh_data.shadow_indecies != nil {
-		free(mesh_data.shadow_indecies);
-		mesh_data.shadow_indecies = nil;
-	}
+	// if mesh_data.shadow_indecies != nil {
+	// 	free(mesh_data.shadow_indecies);
+	// 	mesh_data.shadow_indecies = nil;
+	// }
 
 	if mesh_data.vertex_data != nil {
 		free(mesh_data.vertex_data);
@@ -83,6 +87,14 @@ free_mesh_data :: proc(mesh_data : ^MeshData) {
 
 	if len(mesh_data.name) > 0 {
 		delete(mesh_data.name);
+	}
+
+	if mesh_data.bvh_indecies != nil {
+		free(mesh_data.bvh_indecies);
+	}
+
+	if mesh_data.bvh_nodes != nil {
+		free(mesh_data.bvh_nodes)
 	}
 
 	free(mesh_data);

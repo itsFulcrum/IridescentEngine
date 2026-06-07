@@ -91,7 +91,6 @@ debug_gui_deinit :: proc() {
 	input_unregister_sdl_event_callback(&debug_gui_ctx.sdl_event_callback_id);
 }
 
-@(private="package")
 debug_gui_want_capture_input :: proc() -> bool {
 	return debug_gui_ctx.imgui_io.WantCaptureMouse || debug_gui_ctx.imgui_io.WantCaptureKeyboard; 
 }
@@ -103,6 +102,8 @@ debug_gui_process_sdl_event :: proc(event: ^sdl.Event){
 
 @(private="package")
 debug_gui_process_frame :: proc(active_universe : ^Universe = nil, update_callbacks : ^UniverseUpdateCallbacks = nil){
+
+	IRI_PROFILE_PROCEDURE()
 
 	if debug_gui_ctx.enable_next_frame {
 		debug_gui_ctx.is_enabled = true;
@@ -149,6 +150,8 @@ debug_gui_process_frame :: proc(active_universe : ^Universe = nil, update_callba
 @(private="package")
 debug_gui_prepare_and_upload_draw_data :: proc(cmd_buf: ^sdl.GPUCommandBuffer){
 
+	IRI_PROFILE_PROCEDURE()
+
 	if !debug_gui_ctx.is_enabled {
 		return;
 	}
@@ -163,6 +166,8 @@ debug_gui_prepare_and_upload_draw_data :: proc(cmd_buf: ^sdl.GPUCommandBuffer){
 @(private="package")
 debug_gui_draw_frame :: proc(cmd_buf: ^sdl.GPUCommandBuffer, render_pass: ^sdl.GPURenderPass, pipeline: ^sdl.GPUGraphicsPipeline = nil) {
 
+	IRI_PROFILE_PROCEDURE()
+	
 	imgui_sdl3gpu.RenderDrawData(debug_gui_ctx.imgui_curr_draw_data, cmd_buf, render_pass, pipeline);
 	debug_gui_ctx.imgui_curr_draw_data = nil;
 }

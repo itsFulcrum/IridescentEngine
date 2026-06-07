@@ -2,13 +2,14 @@ package iricom
 
 import geo "odinary:geometry"
 
-DRAW_INSTANCE_FLAGS_DEFAULT :: DrawInstanceFlags{.IsVisible, .CastShadows}
+DRAW_INSTANCE_FLAGS_DEFAULT :: DrawInstanceFlags{.IsVisible, .CastShadows,.IsRaycastVisible}
 DRAW_INSTANCE_FLAGS_INTERNAL :: DrawInstanceFlags{._Internal_NoValidMesh, ._Internal_ReuploadMatrixGPU}
 DrawInstanceFlags :: distinct bit_set[DrawInstanceFlag]
 DrawInstanceFlag :: enum u32 {
 	IsStatic = 0,
 	IsVisible,
 	CastShadows,
+	IsRaycastVisible,
 	// Internal Usage only..
 	_Internal_NoValidMesh,
 	_Internal_ReuploadMatrixGPU, // notfy the matrix buffer update that this drawable must recompute/reupload the transform matrix.

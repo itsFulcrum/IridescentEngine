@@ -65,6 +65,7 @@ event_manager_deinit :: proc(manager : ^EventManager){
 @(private="package")
 event_manager_update :: proc(manager : ^EventManager, delta_time : f32, true_delta_time : f32) {
 
+	IRI_PROFILE_PROCEDURE()
 
 	event_manager_update_time_events(manager, delta_time, true_delta_time);
 	event_manager_update_interval_events(manager, delta_time, true_delta_time);

@@ -1,7 +1,7 @@
 #version 450 core
 
 // Vertex Attribute Data
-layout (location=0) in vec3 a_pos;
+layout (location=0) in vec4 a_pos;
 
 #define RES_MATRIX_BUFFER_SET 0
 #define RES_MATRIX_BUFFER_BIND 0
@@ -20,5 +20,7 @@ layout(set=1, binding=0) uniform draw_instance_vertex_ubo {
 
 void main() {
 
-	gl_Position = _shadowmap_buffer.infos[_draw_inst.shadowmap_info_index].view_proj *  vec4(_matrix_buffer.data[_draw_inst.drawable_index] * vec4(a_pos.xyz, 1.0f));
+	// @Note: I dont know how but if can get rid of the extra 'shadowmap_info_index' (packing ?) we could abuse gl_InstanceIndex and set it to the drawable index 
+	// and can get rid of the uniform buffer compleatly
+	gl_Position = _shadowmap_buffer.infos[_draw_inst.shadowmap_info_index].view_proj *  vec4(_matrix_buffer[_draw_inst.drawable_index] * vec4(a_pos.xyz, 1.0f));
 }

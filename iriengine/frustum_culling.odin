@@ -10,6 +10,7 @@ import "base:intrinsics"
 import "odinary:mathy/simdy"
 import geo "odinary:geometry"
 
+
 Plane :: struct {
 	normal : [3]f32,
 	position : [3]f32, // we can prob just store distance to closest point on plane
@@ -43,55 +44,46 @@ create_culling_frustum :: proc "contextless" (aspect_ratio : f32 , fov_radians: 
     }
 }
 
-// @Note: cull objects in shadowmap draw that have samll pixel fill in the shadowmap or if they are outside the frustum.
-// the frustum check is very approximate and useses effective a spherical radius but its very fast at least.
+
 test_shadow_draw :: proc (view_proj_mat : matrix[4,4]f32, obb: geo.OBB, resolution : u32) -> bool {
+    
+    // consider only the enclosing sphere of the obb for speed.
+    radius_ws : f32 = linalg.length(obb.extents.xyz);
 
+    // get center to clip space.
+    center_cs := view_proj_mat * obb.center;
 
-    corner0  : [4]f32 = obb.center - (obb.axis[0] * obb.extents[0]) - (obb.axis[1] * obb.extents[1]) - (obb.axis[2] * obb.extents[2])
-    corner1  : [4]f32 = obb.center + (obb.axis[0] * obb.extents[0]) + (obb.axis[1] * obb.extents[1]) + (obb.axis[2] * obb.extents[2])
+    // approximate projected sphere radius in clip space
+    proj_scale := view_proj_mat[1][1];
+    r_cs := radius_ws * proj_scale;
 
-    corner0.w = 1.0;
-    corner1.w = 1.0;
-
-    corner0 = view_proj_mat * corner0;
-    corner1 = view_proj_mat * corner1;
-
-    corner0.xyz /= corner0.w;
-    corner1.xyz /= corner1.w;
-
-    diagonal := (corner1.xyz - corner0.xyz);
-
-
-    radius : f32 = linalg.length(diagonal);
-
-    PIXEL_THRESHOLD :: 8
-
-    pixels_fill : f32 = radius * f32(resolution);
-
-    if pixels_fill < PIXEL_THRESHOLD {
-        return false;
+    // cull sphere outside frustum in homogenous clip space.
+    if center_cs.z + r_cs < 0 {
+        return false; // entire sphere is behind us
+    }
+    
+    if center_cs.z - r_cs > center_cs.w {
+        return false; // entier sphere is behind far plane
     }
 
-    radius *= 0.5;
-    center : [3]f32 = corner0.xyz + (diagonal * 0.5);
+    if center_cs.x + r_cs < -center_cs.w do return false;
+    if center_cs.x - r_cs >  center_cs.w do return false;
+    if center_cs.y + r_cs < -center_cs.w do return false;
+    if center_cs.y - r_cs >  center_cs.w do return false;
+    
 
-    if center.z + radius < 0 {
-        
-        return false;
-    }
+    radius_ndc := r_cs / center_cs.w;
 
-    if center.x + radius < -1 || center.x - radius > 1{
-        return false;
-    }
+    PIXEL_THRESHOLD :: 4
 
-    if center.y + radius < -1 || center.y - radius > 1 {
+    pixels_radius : f32 = radius_ndc * 0.5 * f32(resolution);
+
+    if pixels_radius < PIXEL_THRESHOLD {
         return false;
     }
 
     return true;
 }
-
 
 obb_overlaps_frustum :: proc(culling_frustum : CullingFrustum, view_mat : matrix[4,4]f32, world_oobb : geo.OBB) -> bool{
 

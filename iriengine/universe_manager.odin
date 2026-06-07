@@ -15,6 +15,8 @@ tmp_store_universe_ptr : ^Universe = nil; // because we need it inside sort proc
 @(private="package")
 universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, frame_size : [2]u32, fixed_alpha_interpolator : f32){
 
+	IRI_PROFILE_PROCEDURE()
+
 	perfs := get_performance_counters();
 
 	universe_update_timer := timer_begin();
@@ -73,9 +75,10 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 	// ==== update drawables ====
 
 	{
-		// Here we produce a subset of drawables that include all renderable drawables
+		IRI_PROFILE_SCOPE("Universe Update: Update Drawables")
+		// Here we produce a subset of drawables that includes all renderable drawables
 		// which means they have a valid mesh/material to render with 
-		// and entity is not disables. We update _Internal draw inst flags accordingly.
+		// and entity is enabled. We update _Internal draw inst flags accordingly.
 		clear(&universe.frame_renderables);
 
 		entity : Entity = EntityInvalid;
@@ -118,12 +121,19 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 
 	universe_update_matrix_buffer(gpu_device, universe, &universe.frame_renderables, fixed_alpha_interpolator);
 
-
+	// @Note: this we could do on another thread or do a worker job.
+	{
+		tlas_timer := timer_begin();
+		tl_bvh_rebuild(gpu_device, universe, engine.mesh_manager, universe.settings.bvh_num_split_planes, universe.settings.bvh_max_tree_depth);
+		perfs.tl_bvh_cpu_ms = timer_end_get_miliseconds(tlas_timer);
+	}
 
 	// Create a list of indexes into drawables that are inside camera frustum
 
 	// Cull Drawables for Camera into frame_renderables
 	{
+		IRI_PROFILE_SCOPE("Universe Update: Camera Frustum Culling")
+
 		cull_timer := timer_begin();
 		culled_instances : u32 = 0;
 		defer {
@@ -176,31 +186,35 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 
 	// Sort renderables into subbuckets of Opaque, Alpha test and Alpha Blend
 
-	clear(&universe.frame_opaques);
-	clear(&universe.frame_alpha_test);
-	clear(&universe.frame_alpha_blend);
+	{
+		IRI_PROFILE_SCOPE("Universe Update: Bucket sort frame camera visible")
 
-	for drawable_index in universe.frame_camera_visible {
-		
-		mat_id := drawables.draw_instance[drawable_index].mat_id;
+		clear(&universe.frame_opaques);
+		clear(&universe.frame_alpha_test);
+		clear(&universe.frame_alpha_blend);
 
-        material := material_get_by_id(mat_id);
-        
-        engine_assert(material != nil); // if id is invalid this should return us the default mat.
-        
-        switch material.render_technique.alpha_mode {
-        	case .Opaque: 	append(&universe.frame_opaques, drawable_index);
-        	case .Clip:		append(&universe.frame_alpha_test, drawable_index);
-        	case .Hashed:	append(&universe.frame_alpha_test, drawable_index);
-        	case .Blend: 	append(&universe.frame_alpha_blend, drawable_index);
-        }
-    
-    }
+		for drawable_index in universe.frame_camera_visible {
+			
+			mat_id := drawables.draw_instance[drawable_index].mat_id;
+
+	        material := material_get_by_id(mat_id);
+	        
+	        engine_assert(material != nil); // if id is invalid this should return us the default mat.
+	        
+	        switch material.render_technique.alpha_mode {
+	        	case .Opaque: 	append(&universe.frame_opaques, drawable_index);
+	        	case .Clip:		append(&universe.frame_alpha_test, drawable_index);
+	        	case .Hashed:	append(&universe.frame_alpha_test, drawable_index);
+	        	case .Blend: 	append(&universe.frame_alpha_blend, drawable_index);
+	        }
+	    
+	    }
+	}
 
     // Sort 
 
-    when true {
-
+    {
+    	IRI_PROFILE_SCOPE("Universe Update: Sort Frame Opaque by render technique")	
     	// @Note: here we are 'bubble' sorting frame_opaques by technique hash
     	material_manager := engine.material_manager;
 
@@ -257,6 +271,8 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
     	}
 
     	if len(universe.frame_shadow_draws) > 2 {
+    		IRI_PROFILE_SCOPE("Universe Update: Sort Shadowmap Draws by render technique")
+
     		tmp_store_universe_ptr = universe;
 	    	defer tmp_store_universe_ptr = nil;   		
 
@@ -271,6 +287,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
     when SORT_BLEND_MESHES_BY_DISTANCE {
 
     	if len(universe.frame_alpha_blend) > 1 {
+    		IRI_PROFILE_SCOPE("Universe Update: Sort Frame alpha blend draws by camera distance")
 
 	    	tmp_store_universe_ptr = universe;
 	    	defer tmp_store_universe_ptr = nil;
@@ -330,6 +347,7 @@ universe_query_skybox_buffer_upload :: proc(gpu_device : ^sdl.GPUDevice, univers
 @(private="file")
 universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ratio : f32, fixed_alpha_interpolator : f32){
 
+	IRI_PROFILE_PROCEDURE()
 
 	info : ^FrameCameraInfo = &universe.frame_camera_info;
 
@@ -426,8 +444,9 @@ universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ra
     }
 }
 
-@(private="file")
-universe_manager_recreate_matrix_buffers :: proc(gpu_device: ^sdl.GPUDevice, curr_gpu_buffer : ^sdl.GPUBuffer, curr_transfer_buffer : ^sdl.GPUTransferBuffer, byte_size : u32) -> (^sdl.GPUBuffer, ^sdl.GPUTransferBuffer){
+@(private="package")
+universe_manager_recreate_gpu_buffers :: proc(gpu_device: ^sdl.GPUDevice, curr_gpu_buffer : ^sdl.GPUBuffer, curr_transfer_buffer : ^sdl.GPUTransferBuffer, byte_size : u32) -> (^sdl.GPUBuffer, ^sdl.GPUTransferBuffer){
+	IRI_PROFILE_PROCEDURE()
 
 	if curr_gpu_buffer != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, curr_gpu_buffer);
@@ -456,21 +475,35 @@ universe_manager_recreate_matrix_buffers :: proc(gpu_device: ^sdl.GPUDevice, cur
 @(private="file")
 universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^Universe, frame_renderables : ^[dynamic]u32, fixed_alpha_interpolator : f32) {
 
+	IRI_PROFILE_PROCEDURE()
+
 	ecs := &universe.ecs;
 	drawables : ^#soa[dynamic]Drawable = &universe.ecs.drawables;
 
-	universe.matrix_upload_info.requires_upload = false;
-	universe.matrix_upload_info.transfer_buf_location = {};
-	universe.matrix_upload_info.transfer_buf_region = {};
+	// Reset upload infos.
+	universe.matrix_upload_info.requires_upload 		= false;
+	universe.matrix_upload_info.transfer_buf_location 	= {};
+	universe.matrix_upload_info.transfer_buf_region   	= {};
 	
+	universe.inv_matrix_upload_info.requires_upload 	  = false;
+	universe.inv_matrix_upload_info.transfer_buf_location = {};
+	universe.inv_matrix_upload_info.transfer_buf_region   = {};
+
+	upload_info_reset(&universe.drawables_globals_info_buf.upload_info);
+	// universe.tlas_leaf_info_upload_info.requires_upload 	  = false;
+	// universe.tlas_leaf_info_upload_info.transfer_buf_location = {};
+	// universe.tlas_leaf_info_upload_info.transfer_buf_region   = {};
+
+
 	if len(drawables) == 0 {
 		return;
 	}
 
+	// These are effective drawable indexes
 	min_index : int = len(drawables);
 	max_index : int = -1;
 
-	// update drawables and track where we need to update the matrix buffer!
+	// update drawables and track where we need to update the data!
 	{
 		// We only need to update what may be visibile in any way so we operate on the frame_renderables
 		// which already sorted out drawables with no valid meshes and disabled entities.
@@ -493,16 +526,54 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 			}
 
 			drawables.world_mat[drawable_index] = transform_calc_world_matrix(world_transform);
+			drawables.inv_world_mat[drawable_index] = linalg.inverse(drawables.world_mat[drawable_index]);
 
-			aabb := mesh_manager_get_aabb(engine.mesh_manager, drawables.draw_instance[drawable_index].mesh_id);
+			mesh_id := drawables.draw_instance[drawable_index].mesh_id;
+
+			aabb := mesh_manager_get_aabb(engine.mesh_manager, mesh_id);
 			drawables.world_oobb[drawable_index] = geo.obb_from_aabb_and_transform(aabb, world_transform);
+			drawables.world_aabb[drawable_index] = geo.obb_to_aabb(drawables.world_oobb[drawable_index]);
+
+			// not sure if we actually need to copy this but playing safe for now.
+			// @Note: FIXME: these global buf infos dont actually change on a frame to frame basis, 
+			// only if drawables change the underlying mesh which i belive just removes the drawables compleatly and creates a new one anyway.
+			// This shouldn't really be handled here.
+			mesh_global_buf_info := engine.mesh_manager.meshes[mesh_id].global_buf_info;
+			drawables.global_buf_info[drawable_index] = DrawableGlobalBufferInfo {
+				bl_bvh_root_offset      = mesh_global_buf_info.bvh_nodes_offset,
+				global_indecies_offset  = mesh_global_buf_info.indecies_offset,
+				global_vertecies_offset = mesh_global_buf_info.vertecies_offset,
+			}
 
 			min_index = min(min_index, cast(int)drawable_index);
 			max_index = max(max_index, cast(int)drawable_index);
+			upload_info_update_min_max(&universe.drawables_globals_info_buf.upload_info, cast(int)drawable_index, cast(int)drawable_index)
 		}
 	}
 
+	// drawables Globals. TODO: should not happen in here really.
+	{
+		globals_buf := &universe.drawables_globals_info_buf;
+		upinfo      := &globals_buf.upload_info;
 
+		drawables_globals_element_size : int = size_of(DrawableGlobalBufferInfo)
+		drawables_globals_required_byte_size : int = len(drawables) * drawables_globals_element_size;
+
+		if drawables_globals_required_byte_size > cast(int)globals_buf.curr_byte_size {
+
+			gpu_buffer_reallocate_buffers(gpu_device, &universe.drawables_globals_info_buf, cast(u32)drawables_globals_required_byte_size);
+			upinfo.requires_upload = true;
+			upinfo.region_min_index = 0;
+			upinfo.region_max_index = len(drawables) - 1;
+		}
+
+		if upinfo.region_max_index >= upinfo.region_min_index {
+			upinfo.requires_upload = true;
+			gpu_buffer_memcopy_upload_info_min_max_region_to_transfer_buffer(gpu_device,&universe.drawables_globals_info_buf, &drawables.global_buf_info[0],drawables_globals_element_size, true);
+		}
+	}
+
+	// This accounts for both matrix buffer and inv_matrix buffer!
 	required_gpu_buf_byte_size : int = len(drawables) * size_of(matrix[4,4]f32);
 
 	require_complete_reupload : bool = required_gpu_buf_byte_size != universe.matrix_buf_byte_size;
@@ -518,32 +589,57 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 		}
 
 		universe.matrix_upload_info.requires_upload = true;
-		universe.matrix_buf, universe.matrix_transfer_buf = universe_manager_recreate_matrix_buffers(gpu_device, universe.matrix_buf, universe.matrix_transfer_buf, cast(u32)required_gpu_buf_byte_size);
+		universe.matrix_buf, universe.matrix_transfer_buf = universe_manager_recreate_gpu_buffers(gpu_device, universe.matrix_buf, universe.matrix_transfer_buf, cast(u32)required_gpu_buf_byte_size);
+		
+		universe.inv_matrix_upload_info.requires_upload = true;
+		universe.inv_matrix_buf, universe.inv_matrix_transfer_buf = universe_manager_recreate_gpu_buffers(gpu_device, universe.inv_matrix_buf, universe.inv_matrix_transfer_buf, cast(u32)required_gpu_buf_byte_size);
 
+		drawables_globals_element_size : int = size_of(DrawableGlobalBufferInfo)
+		drawables_globals_required_byte_size : int = len(drawables) * drawables_globals_element_size;
 
-		// Reupload entire gpu buffer to transfer buffer
-		transfer_buf_data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf, false);
+		// matrix buffer
 		{
-			byte_ptr: [^]byte = cast([^]byte)transfer_buf_data_ptr;
-			
-			mem.copy_non_overlapping(&byte_ptr[0], &drawables.world_mat[0], required_gpu_buf_byte_size);
+
+			transfer_buf_data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf, false);
+			{
+				mem.copy_non_overlapping(transfer_buf_data_ptr, &drawables.world_mat[0], required_gpu_buf_byte_size);
+			}
+			sdl.UnmapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf);
+
+			universe.matrix_upload_info.transfer_buf_location = {
+	    		transfer_buffer = universe.matrix_transfer_buf,
+	    		offset = 0,
+	    	}
+
+	    	universe.matrix_upload_info.transfer_buf_region = {
+	    		buffer = universe.matrix_buf,
+	    		offset = 0,
+	    		size = cast(u32)required_gpu_buf_byte_size,
+	    	}
 		}
-		sdl.UnmapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf);
 
-		universe.matrix_upload_info.transfer_buf_location = {
-    		transfer_buffer = universe.matrix_transfer_buf,
-    		offset = 0,
-    	}
+		// inverse matrix buffer
+		{
+			inv_matrix_transfer_buf_data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, universe.inv_matrix_transfer_buf, false);
+			{
+				mem.copy_non_overlapping(inv_matrix_transfer_buf_data_ptr, &drawables.inv_world_mat[0], required_gpu_buf_byte_size);
+			}
+			sdl.UnmapGPUTransferBuffer(gpu_device, universe.inv_matrix_transfer_buf);
 
-    	universe.matrix_upload_info.transfer_buf_region = {
-    		buffer = universe.matrix_buf,
-    		offset = 0,
-    		size = cast(u32)required_gpu_buf_byte_size,
-    	}
+			universe.inv_matrix_upload_info.transfer_buf_location = {
+	    		transfer_buffer = universe.inv_matrix_transfer_buf,
+	    		offset = 0,
+	    	}
+
+	    	universe.inv_matrix_upload_info.transfer_buf_region = {
+	    		buffer = universe.inv_matrix_buf,
+	    		offset = 0,
+	    		size = cast(u32)required_gpu_buf_byte_size,
+	    	}
+		}
 
     	return;
 	}
-
 
 	num_drawables : int = len(drawables);
 
@@ -551,36 +647,48 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 		return;
 	}
 
-
 	engine_assert(min_index >= 0 && min_index < num_drawables);
 	engine_assert(max_index >= 0 && max_index < num_drawables);
 	engine_assert(max_index >= min_index);
 
-
-	mat_size : int = size_of(matrix[4,4]f32);
-
-	starting_byte : int = min_index *  mat_size;
-	copy_byte_size : int = (max_index + 1 - min_index) * mat_size;
-
-
-	transfer_buf_data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf, true);
+	// update region for matrix and inv_matrix buffer which is same byte region just on different buffers.
 	{
-		byte_ptr: [^]byte = cast([^]byte)transfer_buf_data_ptr;
-		
-		mem.copy_non_overlapping(&byte_ptr[starting_byte], &drawables.world_mat[min_index], copy_byte_size);
-	}
-	sdl.UnmapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf);
+		matrix_byte_size : int = size_of(matrix[4,4]f32);
 
-	universe.matrix_upload_info.requires_upload = true;
+		starting_byte : int = min_index *  matrix_byte_size;
+		copy_byte_size : int = (max_index + 1 - min_index) * matrix_byte_size;
 
-	universe.matrix_upload_info.transfer_buf_location = {
-		transfer_buffer = universe.matrix_transfer_buf,
-		offset = cast(u32)starting_byte,
-	}
+		mat_transfer_buf_data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf, true);
+		{
+			byte_ptr: [^]byte = cast([^]byte)mat_transfer_buf_data_ptr;			
+			mem.copy_non_overlapping(&byte_ptr[starting_byte], &drawables.world_mat[min_index], copy_byte_size);
+		}
+		sdl.UnmapGPUTransferBuffer(gpu_device, universe.matrix_transfer_buf);
 
-	universe.matrix_upload_info.transfer_buf_region = {
-		buffer = universe.matrix_buf,
-		offset = cast(u32)starting_byte,
-		size   = cast(u32)copy_byte_size,
+
+		inv_mat_transfer_buf_data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, universe.inv_matrix_transfer_buf, true);
+		{
+			byte_ptr: [^]byte = cast([^]byte)inv_mat_transfer_buf_data_ptr;			
+			mem.copy_non_overlapping(&byte_ptr[starting_byte], &drawables.inv_world_mat[min_index], copy_byte_size);
+		}
+		sdl.UnmapGPUTransferBuffer(gpu_device, universe.inv_matrix_transfer_buf);
+
+		universe.matrix_upload_info.requires_upload = true;
+		universe.inv_matrix_upload_info.requires_upload = true;
+
+		universe.matrix_upload_info.transfer_buf_location = {
+			transfer_buffer = universe.matrix_transfer_buf,
+			offset = cast(u32)starting_byte,
+		}
+
+		universe.matrix_upload_info.transfer_buf_region = {
+			buffer = universe.matrix_buf,
+			offset = cast(u32)starting_byte,
+			size   = cast(u32)copy_byte_size,
+		}
+		// same as matrix buffer just other buffers lel.
+		universe.inv_matrix_upload_info = universe.matrix_upload_info;
+		universe.inv_matrix_upload_info.transfer_buf_location.transfer_buffer = universe.inv_matrix_transfer_buf;
+		universe.inv_matrix_upload_info.transfer_buf_region.buffer = universe.inv_matrix_buf;
 	}
 }

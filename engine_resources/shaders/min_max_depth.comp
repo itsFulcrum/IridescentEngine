@@ -1,6 +1,8 @@
 #version 450 core
 layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
+#include "../shader_lib/mathy.glsl"
+
 precision highp float;
 precision highp sampler2D;
 
@@ -26,7 +28,7 @@ layout(set=2, binding=0) uniform ubo {
 };
 
 
-// We do a custom max operation because if a value in the depth buffer is 1 it means nothing was rendered there, aka it will be sky
+// custom max operation because if a value in the depth buffer is 1 it means nothing was rendered there, aka it will be sky
 // but what we really want is the max of a valid rendered to pixel. 
 float max_c(float a, float b){
     
@@ -59,6 +61,11 @@ void main() {
 
         float depth = texelFetch(_depth_buffer, dst_texel, 0).r;
 
+        // TODO: pass near and far as uniformas!
+        //const float near = 0.01f;
+        //const float far = 1000.0f; 
+        //depth = linearize_depth(depth, near, far);
+        
         // Flip texture here so we dont have to in all other shaders
         dst_texel.y = int(_dst_dimentions.y) - dst_texel.y - 1;
         imageStore(_dst_mip, dst_texel, vec4(depth, depth, 0.0f, 0.0f));

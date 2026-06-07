@@ -13,7 +13,7 @@
 
 // Set and binding of 0 work for all vertex shaders atm.
 layout (std140, set=RES_MATRIX_BUFFER_SET, binding=RES_MATRIX_BUFFER_BIND) readonly buffer matrix_buffer {
-    mat4 data[];
-} _matrix_buffer;
+    mat4 _matrix_buffer[];
+};
 
 #endif

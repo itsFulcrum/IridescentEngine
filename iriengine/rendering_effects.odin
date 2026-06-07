@@ -3,22 +3,25 @@ import "core:log"
 import "core:mem"
 import "core:strings"
 import "core:os"
+import "core:math"
 import sdl "vendor:sdl3"
 import "odinary:picy"
 
 
-RENDERING_EFFECT_FLAGS_ALL :: RenderingEffectFlags{.GTAO, .SMAA}
-RENDERING_EFFECT_FLAGS_DEFAULT :: RenderingEffectFlags{.GTAO, .SMAA}
+RENDERING_EFFECT_FLAGS_ALL :: RenderingEffectFlags{.GTAO, .SMAA, .RACA}
+RENDERING_EFFECT_FLAGS_DEFAULT :: RenderingEffectFlags{.GTAO, .SMAA, .RACA}
 RenderingEffectFlags :: distinct bit_set[RenderingEffectFlag]
 RenderingEffectFlag :: enum u32 {
-	GTAO,
-	SMAA
+	GTAO, // Ground Truth Ambient Occlusion
+	SMAA, // Subpixel Morphological Anti Aliasing
+	RACA, // Radiance Cascades
 }
 
 
 RenderEffectsData :: struct {
 	gtao : ^RenEffectGTAO,
 	smaa : ^RenEffectSMAA,
+	raca : ^RenEffectRACA,
 }
 
 
@@ -40,11 +43,23 @@ render_effects_reinit :: proc(gpu_device: ^sdl.GPUDevice, effects : ^RenderEffec
 
 		if effects.smaa == nil {
 			effects.smaa = new(RenEffectSMAA);
-			effects.smaa.settings = ren_effect_SMAA_create_default_settings()
+			effects.smaa.settings = ren_effect_SMAA_create_default_settings();
 		}
 
 		if !engine.in_init_phase {
 			ren_effect_SMAA_reinit(gpu_device, effects.smaa, frame_size);
+		}
+	}
+
+	if .RACA in effect_flags {
+
+		if effects.raca == nil {
+			effects.raca = new(RenEffectRACA);
+			effects.raca.settings = ren_effect_RACA_create_default_settings();
+		}
+
+		if !engine.in_init_phase {
+			ren_effect_RACA_reinit(gpu_device, effects.raca, frame_size);
 		}
 	}
 }
@@ -61,20 +76,20 @@ render_effects_deinit_and_destroy :: proc(render_context : ^RenderContext, gpu_d
 		effects.gtao = nil;
 	}
 
-
 	if effects.smaa != nil && .SMAA in effect_flags{
 		ren_effect_SMAA_deinit(gpu_device, effects.smaa);
 		free(effects.smaa);
 		effects.smaa = nil;
 	}
 
+	if effects.raca != nil && .RACA in effect_flags {
+		ren_effect_RACA_deinit(gpu_device, effects.raca);
+		free(effects.raca);
+		effects.raca = nil;
+	}
 
 	render_context.config.ren_effect_flags -= effect_flags;
 }
-
-
-
-
 
 
 // ==============================================================
@@ -252,7 +267,6 @@ ren_effect_SMAA_reinit :: proc(gpu_device: ^sdl.GPUDevice, smaa : ^RenEffectSMAA
    			render_effects_deinit_and_destroy(engine.render_context, gpu_device, {.SMAA});
    			return;
    		}
-
    	}
 
 }
@@ -282,3 +296,149 @@ ren_effect_SMAA_deinit :: proc(gpu_device: ^sdl.GPUDevice, smaa : ^RenEffectSMAA
     }
 }
 
+
+
+// ==============================================================
+// RACA - Radiance Cascades
+// ==============================================================
+
+RenEffectRACA :: struct {
+	ao_tex_0 : ^sdl.GPUTexture,
+	ao_tex_1 : ^sdl.GPUTexture,
+
+	cascade_array_tex : ^sdl.GPUTexture,
+	settings : RenEffectRACASettings
+}
+
+RenEffectRACASettings :: struct {
+	temporary_disabled : bool,
+	num_cascades : u32,
+	base_ray_length  : f32,
+	base_probe_size  : u32, // how many pixel c0 probes have in one axis. e.g  4 means 4x4px = 16 pxiels aka samples. 
+	pixels_per_probe : u32, // how many screen pixels c0 probes occupy.
+	depth_bias : f32,
+}
+
+ren_effect_RACA_create_default_settings :: proc() -> RenEffectRACASettings {
+
+	return RenEffectRACASettings{
+		temporary_disabled = false,
+		num_cascades 	 = 5,
+		base_ray_length  = 0.1,
+		base_probe_size  = 4,
+		pixels_per_probe = 4,
+		depth_bias = 0.0001,
+	};
+}
+
+ren_effect_RACA_require_reinit :: proc(curr_settings, new_settings : RenEffectRACASettings) -> bool{
+	do_reinit : bool = false;
+
+    do_reinit |= (curr_settings.num_cascades != new_settings.num_cascades);
+    do_reinit |= (curr_settings.base_probe_size != new_settings.base_probe_size);
+    do_reinit |= (curr_settings.pixels_per_probe != new_settings.pixels_per_probe);
+
+    return do_reinit;
+}
+
+ren_effect_RACA_reinit :: proc(gpu_device: ^sdl.GPUDevice, raca : ^RenEffectRACA, frame_size: [2]u32) {
+
+	engine_assert(raca != nil)
+	//log.warnf("RACA reinit")
+	ren_effect_RACA_deinit(gpu_device, raca);
+
+    ao_tex_format := sdl.GPUTextureFormat.R32G32B32A32_FLOAT;
+
+
+	// TODO: account for unevenes and possibly add 1 more probe.
+	base_probe_count : [2]u32 = ren_effect_RACA_get_base_probe_counts(raca.settings.pixels_per_probe, frame_size);
+	resolution  : [2]u32 = base_probe_count * raca.settings.base_probe_size;
+	
+	cascades_format := sdl.GPUTextureFormat.R8G8_UNORM;
+	array_count := raca.settings.num_cascades;
+
+	raca.ao_tex_1 = texture_create_2D(gpu_device, resolution, ao_tex_format, false, {.SAMPLER, .COMPUTE_STORAGE_READ, .COMPUTE_STORAGE_WRITE, .COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE});
+	raca.ao_tex_0 = texture_create_2D(gpu_device, resolution, ao_tex_format, false, {.SAMPLER, .COMPUTE_STORAGE_READ, .COMPUTE_STORAGE_WRITE, .COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE});
+
+
+	LOG_CASCADES_INFO :: false
+	when LOG_CASCADES_INFO {
+		log.warnf("Cascade Texture: base_counts {}x{} | TexResolution: {}x{}", base_probe_count.x, base_probe_count.y, resolution.x, resolution.y);
+
+		for c in 0..<raca.settings.num_cascades {
+			
+			cascade_index : u32 = cast(u32)c;
+			probe_counts    : [2]u32 = ren_effect_RACA_get_probe_counts_for_cascade(cascade_index, base_probe_count);
+	        probe_size      : u32    = ren_effect_RACA_get_probe_size_for_cascade(cascade_index, raca.settings.base_probe_size);
+	         //cascade_interval_range  : [2]f32 = ren_effect_RACA_get_interval_range(cascade_index, raca.settings.base_ray_length);
+
+	        log.warnf("Cadcade: {}, probe_count {}x{} 	| probe_size = {}x{} = {}", cascade_index, probe_counts.x, probe_counts.y, probe_size, probe_size, probe_size*probe_size)
+		}
+	}
+
+	cascade_array_create_info : sdl.GPUTextureCreateInfo = {
+    	type = sdl.GPUTextureType.D2_ARRAY, 
+    	format = cascades_format,
+    	usage  = sdl.GPUTextureUsageFlags{.COMPUTE_STORAGE_WRITE, .SAMPLER},
+    	width  = resolution.x,
+    	height = resolution.y,
+    	layer_count_or_depth = array_count,
+    	num_levels   = 1, // no mip levels
+    	sample_count = sdl.GPUSampleCount._1,
+	}
+
+	raca.cascade_array_tex = sdl.CreateGPUTexture(gpu_device, cascade_array_create_info);
+}
+
+ren_effect_RACA_deinit :: proc(gpu_device: ^sdl.GPUDevice, raca : ^RenEffectRACA){
+
+	engine_assert(raca != nil)
+
+	if raca.ao_tex_0 != nil {
+        sdl.ReleaseGPUTexture(gpu_device, raca.ao_tex_0);
+        raca.ao_tex_0 = nil;
+    }
+
+    if raca.ao_tex_1 != nil {
+        sdl.ReleaseGPUTexture(gpu_device, raca.ao_tex_1);
+        raca.ao_tex_1 = nil;
+    }
+
+    if raca.cascade_array_tex != nil {
+        sdl.ReleaseGPUTexture(gpu_device, raca.cascade_array_tex);
+        raca.cascade_array_tex = nil;
+    }
+}
+
+
+ren_effect_RACA_get_base_probe_counts :: proc "contextless" (pixels_per_probe : u32, frame_size : [2]u32) -> [2]u32{
+	
+	base_counts : [2]u32 = frame_size / pixels_per_probe;
+	
+	if( frame_size.x % pixels_per_probe > 0) {base_counts.x += 1;}
+	if( frame_size.y % pixels_per_probe > 0) {base_counts.y += 1;}
+
+	return base_counts;
+}
+
+ren_effect_RACA_get_probe_counts_for_cascade :: proc "contextless" (cascade_index : u32, base_counts : [2]u32) -> [2]u32 {
+	
+	//base_counts : [2]u32 = frame_size / pixels_per_probe;	
+	return base_counts / (u32(1) << cascade_index); // bit shift equivalent to: cast(u32)mathy.pow_i32(2 , cast(i32)cascade);
+}
+
+ren_effect_RACA_get_interval_range :: proc "contextless" (cascade_index : u32, base_length: f32) -> [2]f32 {
+
+	intervall_scale_0 : f32 = cascade_index == 0 ? 0.0 : math.pow(4.0, f32(cascade_index));
+	intervall_scale_1 : f32 = math.pow(4.0, f32(cascade_index + 1));
+
+	start : f32 = base_length * intervall_scale_0;
+	end   : f32 = base_length * intervall_scale_1;
+
+	return [2]f32{start, end};
+}
+
+ren_effect_RACA_get_probe_size_for_cascade :: proc "contextless" (cascade_index : u32, base_probe_size: u32) -> u32 {
+
+	return base_probe_size * (1 << cascade_index) // base_probe_size * 2^cascade_index
+}

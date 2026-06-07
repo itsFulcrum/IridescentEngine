@@ -35,15 +35,16 @@ MeshGPUData :: struct{
 	vertex_layout   : VertexDataLayout,
 }
 
-BlasBvhData :: struct {
-	bvh_nodes_offset : u64,
-	num_bvh_nodes : u64,
+MeshGlobalBufferInfo :: struct {
+	bvh_nodes_offset     : u32,
+	num_bvh_nodes        : u32,
 
-	bvh_indecies_offset : u64,
-	num_bvh_indecies : u64,
+	// @Note: the indecies are reorder for pupose of bvh traversal and not optimally chache friend as what meshoptimizer would give us.
+	indecies_offset  : u32,
+	num_indecies     : u32,
 
-	bvh_vertecies_offset : u64,
-	num_bvh_vertecies : u64,
+	vertecies_offset : u32,
+	num_vertecies    : u32,
 }
 
 Mesh :: struct {
@@ -52,17 +53,29 @@ Mesh :: struct {
 	gpu_data : MeshGPUData,
 	aabb : geo.AABB, // @Note: technically bvh_data root node will store the same aabb.
 	
-	bvh_data : BlasBvhData, 
+	global_buf_info : MeshGlobalBufferInfo, 
 
 	//@Note Transform of the loaded mesh file which we keep stored but its not used for rendering directly but will be copied to a drawables
 	transform : Transform, 
 }
 
+// @Note: Struct replicated on GPU
+// Similar to MeshGlobalBufferInfo but less info and we use this one to upload to gpu.
+DrawableGlobalBufferInfo :: struct #align(16) {
+	bl_bvh_root_offset      : u32, // offset into global bl bvh buffer
+	global_indecies_offset  : u32, // offset into global index buffer
+	global_vertecies_offset : u32, // offset into global vertex buffer
+	_ : u32, // Padding. Maybe material ID ? but then we need material type too. or we say only pbr materials are supported for gpu raytracing.
+}
+
 Drawable :: struct {
 	entity : Entity,
 	draw_instance  : DrawInstance,
-	world_oobb : geo.OBB, // world space obb
+	world_aabb : geo.AABB, // world space aabb
+	world_oobb : geo.OBB,  // world space obb
 	world_mat  : matrix[4,4]f32,
+	inv_world_mat  : matrix[4,4]f32,
+	global_buf_info : DrawableGlobalBufferInfo,
 	prev_physics_world_transform : Transform, // World Transform of the previous physics state!
 }
 
@@ -71,14 +84,18 @@ MeshManager :: struct {
 	meshes : #soa[dynamic]Mesh,
 	id_map : map[AssetUUID]MeshID,
 
-	// blas = 'bottom level acceleration structure'
-	blas_vertecies : [dynamic][3]f32,
-	blas_indecies  : [dynamic]u32,
-	blas_bvh_nodes : [dynamic]geo.BvhNode,
+	global_vertecies 	: [dynamic][4]f32,
+	// @Note: the indecies are reorderd for pupose of bvh traversal and not optimally chache friendly as what meshoptimizer would give us.
+	global_indecies  	: [dynamic]u32,
+	global_bl_bvh_nodes : [dynamic]geo.BvhNode, // 'bottom level acceleration structure'
 
-	blas_vertecies_freelist : [dynamic]MultiFreelistEntry,
-	blas_indecies_freelist  : [dynamic]MultiFreelistEntry,
-	blas_bvh_nodes_freelist : [dynamic]MultiFreelistEntry,
+	global_vertecies_freelist 		: [dynamic]MultiFreelistEntry,
+	global_indecies_freelist  	 	: [dynamic]MultiFreelistEntry,
+	global_bl_bvh_nodes_freelist 	: [dynamic]MultiFreelistEntry,
+
+	global_bl_bvh_nodes_buf 		: BasicGPUBuffer,
+	global_vertecies_buf 			: BasicGPUBuffer,
+	global_indecies_buf 			: BasicGPUBuffer,
 }
 
 @(private="package")
@@ -107,20 +124,131 @@ mesh_manager_deinit :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice)
 	delete_soa(manager.meshes);
 	delete_map(manager.id_map);
 
+	delete(manager.global_vertecies);
+	delete(manager.global_indecies);
+	delete(manager.global_bl_bvh_nodes);
 
-	delete(manager.blas_vertecies);
-	delete(manager.blas_indecies);
-	delete(manager.blas_bvh_nodes);
+	delete(manager.global_vertecies_freelist);
+	delete(manager.global_indecies_freelist);
+	delete(manager.global_bl_bvh_nodes_freelist);
 
-	delete(manager.blas_vertecies_freelist);
-	delete(manager.blas_indecies_freelist);
-	delete(manager.blas_bvh_nodes_freelist);
+	gpu_buffer_release_buffers(gpu_device, &manager.global_bl_bvh_nodes_buf);
+	gpu_buffer_release_buffers(gpu_device, &manager.global_vertecies_buf);
+	gpu_buffer_release_buffers(gpu_device, &manager.global_indecies_buf);
 
 	manager.num_loaded_meshes = 0;
 }
 
+
+// update any buffer uploads and put them into transfer buffers for next frames copy data pass. 
+@(private="package")
+mesh_manager_frame_update :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice){
+
+	bl_bvh_nodes_buf: {
+
+		// check if required size is bigger than curr size
+		buf_data := &manager.global_bl_bvh_nodes_buf;
+		upinfo   := &buf_data.upload_info;
+
+		element_byte_size  : int = size_of(geo.BvhNode);
+		required_byte_size : int = len(manager.global_bl_bvh_nodes) * element_byte_size;
+
+		if required_byte_size == 0 {
+			break bl_bvh_nodes_buf;
+		}
+
+		if required_byte_size > cast(int)buf_data.curr_byte_size {
+			// Reupload everything
+			usage_flags := sdl.GPUBufferUsageFlags{.COMPUTE_STORAGE_READ}
+			gpu_buffer_reallocate_buffers(gpu_device, buf_data, cast(u32)required_byte_size,usage_flags);
+			// Define the entire buffer as the new upload region
+			upinfo.requires_upload = true;
+			upinfo.region_min_index = 0;
+			upinfo.region_max_index = len(manager.global_bl_bvh_nodes) - 1;
+		}
+
+		if upinfo.region_max_index < upinfo.region_min_index {
+			upinfo.requires_upload = false;
+			break bl_bvh_nodes_buf;
+		}
+		
+		upinfo.requires_upload = true;
+
+		gpu_buffer_memcopy_upload_info_min_max_region_to_transfer_buffer(gpu_device, buf_data, &manager.global_bl_bvh_nodes[0], element_byte_size, false);
+	}
+
+	global_indecies_buf: {
+
+		// check if required size is bigger than curr size
+		buf_data := &manager.global_indecies_buf;
+		upinfo   := &buf_data.upload_info;
+
+		element_byte_size  : int = size_of(u32);
+		required_byte_size : int = len(manager.global_indecies) * element_byte_size;
+
+		if required_byte_size == 0 {
+			break global_indecies_buf;
+		}
+
+		if required_byte_size > cast(int)buf_data.curr_byte_size {
+			// Reupload everything
+			usage_flags := sdl.GPUBufferUsageFlags{.COMPUTE_STORAGE_READ, .INDEX}
+			gpu_buffer_reallocate_buffers(gpu_device, buf_data, cast(u32)required_byte_size, usage_flags);
+			// Define the entire buffer as the new upload region
+			upinfo.requires_upload = true;
+			upinfo.region_min_index = 0;
+			upinfo.region_max_index = len(manager.global_indecies) - 1;
+		}
+
+		if upinfo.region_max_index < upinfo.region_min_index {
+			upinfo.requires_upload = false;
+			break global_indecies_buf;
+		}
+		
+		upinfo.requires_upload = true;
+
+		gpu_buffer_memcopy_upload_info_min_max_region_to_transfer_buffer(gpu_device, buf_data, &manager.global_indecies[0], element_byte_size, false);
+	}
+
+	global_vertecies_buf: {
+
+		// check if required size is bigger than curr size
+		buf_data := &manager.global_vertecies_buf;
+		upinfo   := &buf_data.upload_info;
+
+		element_byte_size  : int = size_of([4]f32);
+		required_byte_size : int = len(manager.global_vertecies) * element_byte_size;
+
+		if required_byte_size == 0 {
+			break global_vertecies_buf;
+		}
+		
+		if required_byte_size > cast(int)buf_data.curr_byte_size {
+			// Reupload everything
+			usage_flags := sdl.GPUBufferUsageFlags{.COMPUTE_STORAGE_READ, .VERTEX}
+			gpu_buffer_reallocate_buffers(gpu_device, buf_data, cast(u32)required_byte_size, usage_flags);
+			// Define the entire buffer as the new upload region
+			upinfo.requires_upload = true;
+			upinfo.region_min_index = 0;
+			upinfo.region_max_index = len(manager.global_vertecies) - 1;
+		}
+
+		if upinfo.region_max_index < upinfo.region_min_index {
+			upinfo.requires_upload = false;
+			break global_vertecies_buf;
+		}
+		
+		upinfo.requires_upload = true;
+
+		gpu_buffer_memcopy_upload_info_min_max_region_to_transfer_buffer(gpu_device, buf_data, &manager.global_vertecies[0], element_byte_size, false);
+	}
+
+}
+
 @(private="package")
 mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice, mesh_data : ^MeshData) -> MeshID {
+
+	IRI_PROFILE_PROCEDURE()
 
 	engine_assert(mesh_data != nil);
 
@@ -151,90 +279,102 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 	mesh.aabb = geo.aabb_from_min_max_vec3(mesh_data.aabb_min, mesh_data.aabb_max);
 	mesh.transform = mesh_data.transform;
 
-	vertex_position_byte_size : int = size_of([3]f32);
+	vertex_position_byte_size : int = size_of([4]f32);
 
-	//mesh.bvh_info = geo.bvh_build_bottom_level(mesh_data.positions, cast(uint)size_of([3]f32), mesh_data.indecies, cast(uint)mesh_data.num_indecies);
-	bvh_info := geo.bvh_build_bottom_level(mesh_data.positions, cast(uint)vertex_position_byte_size, mesh_data.indecies, cast(uint)mesh_data.num_indecies);
-	defer {
-		delete(bvh_info.nodes)
-		delete(bvh_info.indecies)
-	}
-
-	mesh.bvh_data = BlasBvhData{};
+	mesh.global_buf_info = MeshGlobalBufferInfo{};
 	// Copy mesh and bvh data to respective scene buffers.
 	{
-
 		// Blas Bvh Nodes
 		{
-			num_nodes : int = len(bvh_info.nodes);
+			num_nodes : int = cast(int)mesh_data.bvh_num_nodes;
 			
-			mesh.bvh_data.num_bvh_nodes = cast(u64)num_nodes;
+			mesh.global_buf_info.num_bvh_nodes = cast(u32)num_nodes;
 
-			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.blas_bvh_nodes_freelist, cast(u64)num_nodes);
+			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.global_bl_bvh_nodes_freelist, cast(u64)num_nodes);
 
 			if free_list_entry_index >= 0 {
 
-				free_entry := &manager.blas_bvh_nodes_freelist[free_list_entry_index];
-				mem.copy_non_overlapping(&manager.blas_bvh_nodes[free_entry.index], &bvh_info.nodes[0], num_nodes * size_of(geo.BvhNode));
+				free_entry := &manager.global_bl_bvh_nodes_freelist[free_list_entry_index];
+				mesh.global_buf_info.bvh_nodes_offset = cast(u32)free_entry.index;
+				
+				upload_info_update_min_max(&manager.global_bl_bvh_nodes_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_nodes);
 
-				mesh.bvh_data.bvh_nodes_offset = free_entry.index;
-
-				multi_freelist_consume_entry_amount(&manager.blas_bvh_nodes_freelist, free_list_entry_index, cast(u64)num_nodes);
+				mem.copy_non_overlapping(&manager.global_bl_bvh_nodes[free_entry.index], &mesh_data.bvh_nodes[0], num_nodes * size_of(geo.BvhNode));
+				multi_freelist_consume_entry_amount(&manager.global_bl_bvh_nodes_freelist, free_list_entry_index, cast(u64)num_nodes);
 
 			} else {
-				curr_length : int = len(manager.blas_bvh_nodes);
-				mesh.bvh_data.bvh_nodes_offset = cast(u64)curr_length;
+
+				curr_len : int = len(manager.global_bl_bvh_nodes);
+
+				mesh.global_buf_info.bvh_nodes_offset = cast(u32)curr_len;
+				non_zero_append_elems(&manager.global_bl_bvh_nodes, ..mesh_data.bvh_nodes[0:num_nodes]);
 				
-				resize(&manager.blas_bvh_nodes, curr_length + num_nodes);
-				mem.copy_non_overlapping(&manager.blas_bvh_nodes[curr_length], &bvh_info.nodes[0], num_nodes * size_of(geo.BvhNode));
+				now_last_index : int = len(manager.global_bl_bvh_nodes) - 1;
+
+				upload_info_update_min_max(&manager.global_bl_bvh_nodes_buf.upload_info, curr_len, now_last_index);
 			}
 		}
 
 		// Blas Indecies 
 		{
-			num_indecies : int = len(bvh_info.indecies);
-			mesh.bvh_data.num_bvh_indecies = cast(u64)num_indecies;
+			num_indecies : int = cast(int)mesh_data.num_indecies;
+			mesh.global_buf_info.num_indecies = cast(u32)num_indecies;
 
-			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.blas_indecies_freelist, cast(u64)num_indecies);
+			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.global_indecies_freelist, cast(u64)num_indecies);
 			if free_list_entry_index >= 0 {
 
-				free_entry := &manager.blas_indecies_freelist[free_list_entry_index];
-				mem.copy_non_overlapping(&manager.blas_indecies[free_entry.index], &bvh_info.indecies[0], num_indecies * size_of(u32));
+				free_entry := &manager.global_indecies_freelist[free_list_entry_index];
+				mesh.global_buf_info.indecies_offset = cast(u32)free_entry.index;
 
-				multi_freelist_consume_entry_amount(&manager.blas_indecies_freelist, free_list_entry_index, cast(u64)num_indecies);
+				upload_info_update_min_max(&manager.global_indecies_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_indecies);
+
+				mem.copy_non_overlapping(&manager.global_indecies[free_entry.index], &mesh_data.bvh_indecies[0], num_indecies * size_of(u32));
+				multi_freelist_consume_entry_amount(&manager.global_indecies_freelist, free_list_entry_index, cast(u64)num_indecies);
 			} else {
-				curr_length : int = len(manager.blas_indecies);
-				mesh.bvh_data.bvh_indecies_offset = cast(u64)curr_length;
 				
-				resize(&manager.blas_indecies, curr_length + num_indecies);
-				mem.copy_non_overlapping(&manager.blas_indecies[curr_length], &bvh_info.indecies[0], num_indecies * size_of(u32));
+				curr_len : int = len(manager.global_indecies);
+
+				mesh.global_buf_info.indecies_offset = cast(u32)len(manager.global_indecies);
+				non_zero_append_elems(&manager.global_indecies, ..mesh_data.bvh_indecies[0:num_indecies]);
+				
+				now_last_index : int = len(manager.global_indecies) - 1;
+
+				upload_info_update_min_max(&manager.global_indecies_buf.upload_info, curr_len, now_last_index);
 			}
 		}
 
 		// Blas Vertecies 
 		{
 			num_vertecies : int = cast(int)mesh_data.num_vertecies;
-			mesh.bvh_data.num_bvh_vertecies = cast(u64)num_vertecies;
+			mesh.global_buf_info.num_vertecies = cast(u32)num_vertecies;
 
-			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.blas_vertecies_freelist, cast(u64)num_vertecies);
+			free_list_entry_index : int = multi_freelist_try_find_entry(&manager.global_vertecies_freelist, cast(u64)num_vertecies);
 
 			if free_list_entry_index >= 0 {
 
-				free_entry := &manager.blas_vertecies_freelist[free_list_entry_index];
-				
-				mem.copy(&manager.blas_vertecies[free_entry.index], &mesh_data.positions[0], num_vertecies * vertex_position_byte_size);
+				free_entry := &manager.global_vertecies_freelist[free_list_entry_index];
+				mesh.global_buf_info.vertecies_offset = cast(u32)free_entry.index;
 
-				multi_freelist_consume_entry_amount(&manager.blas_vertecies_freelist, free_list_entry_index, cast(u64)num_vertecies);
-			} else {				
-				curr_length : int = len(manager.blas_vertecies);
-				mesh.bvh_data.bvh_vertecies_offset = cast(u64)curr_length;
-				
-				resize(&manager.blas_vertecies, curr_length + num_vertecies);
-				mem.copy_non_overlapping(&manager.blas_vertecies[curr_length], &mesh_data.positions[0], num_vertecies * vertex_position_byte_size);
+				upload_info_update_min_max(&manager.global_vertecies_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_vertecies);
+
+				mem.copy_non_overlapping(&manager.global_vertecies[free_entry.index], &mesh_data.positions[0], num_vertecies * vertex_position_byte_size);
+				multi_freelist_consume_entry_amount(&manager.global_vertecies_freelist, free_list_entry_index, cast(u64)num_vertecies);
+			} else {
+				// cast to slice of same type to global_vertecies so we can use appen_elems
+				_positions      : [^][4]f32 = cast([^][4]f32)mesh_data.positions;
+				positions_slice : [][4]f32 = _positions[0:num_vertecies];
+
+				curr_len : int = len(manager.global_vertecies);
+
+				mesh.global_buf_info.vertecies_offset = cast(u32)len(manager.global_vertecies);
+				non_zero_append_elems(&manager.global_vertecies, ..positions_slice[:]);
+
+				now_last_index : int = len(manager.global_vertecies) - 1;
+
+				upload_info_update_min_max(&manager.global_vertecies_buf.upload_info, curr_len, now_last_index);
 			}
 		}
 	}
-
 
 	free_spot : int = -1;
 	for i in 0..<len(manager.meshes){
@@ -266,6 +406,8 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 @(private="package")
 mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice, id : ^MeshID){
 
+	IRI_PROFILE_PROCEDURE()
+
 	engine_assert(id != nil)
 
 	mesh_id : MeshID = id^;
@@ -296,28 +438,25 @@ mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDe
 	}
 
 
-	bvh_data := manager.meshes[index].bvh_data;
+	global_buf_info := manager.meshes[index].global_buf_info;
 
-	blas_bvh_nodes_freelist_entry := MultiFreelistEntry{
-		index  = bvh_data.bvh_nodes_offset,
-		amount = bvh_data.num_bvh_nodes,
+	global_bl_bvh_nodes_freelist_entry := MultiFreelistEntry{
+		index  = cast(u64)global_buf_info.bvh_nodes_offset,
+		amount = cast(u64)global_buf_info.num_bvh_nodes,
 	}
-	multi_freelist_add_or_merge_entry(&manager.blas_bvh_nodes_freelist, blas_bvh_nodes_freelist_entry);
+	multi_freelist_add_or_merge_entry(&manager.global_bl_bvh_nodes_freelist, global_bl_bvh_nodes_freelist_entry);
 
-	blas_vertecies_freelist_entry := MultiFreelistEntry{
-		index  = bvh_data.bvh_vertecies_offset,
-		amount = bvh_data.num_bvh_vertecies,
+	global_vertecies_freelist_entry := MultiFreelistEntry{
+		index  = cast(u64)global_buf_info.vertecies_offset,
+		amount = cast(u64)global_buf_info.num_vertecies,
 	}
-	multi_freelist_add_or_merge_entry(&manager.blas_vertecies_freelist, blas_vertecies_freelist_entry);
+	multi_freelist_add_or_merge_entry(&manager.global_vertecies_freelist, global_vertecies_freelist_entry);
 
-	blas_indecies_freelist_entry := MultiFreelistEntry{
-		index  = bvh_data.bvh_indecies_offset,
-		amount = bvh_data.num_bvh_indecies,
+	global_indecies_freelist_entry := MultiFreelistEntry{
+		index  = cast(u64)global_buf_info.indecies_offset,
+		amount = cast(u64)global_buf_info.num_indecies,
 	}
-	multi_freelist_add_or_merge_entry(&manager.blas_indecies_freelist, blas_indecies_freelist_entry);
-
-
-
+	multi_freelist_add_or_merge_entry(&manager.global_indecies_freelist, global_indecies_freelist_entry);
 
 
 	last : int = len(manager.meshes) -1;
@@ -353,20 +492,14 @@ mesh_manager_get_num_loaded_meshes :: proc(manager : ^MeshManager) -> u32 {
 @(private="file")
 mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_data: ^MeshData) -> (MeshGPUData, bool) {
 	
+	IRI_PROFILE_PROCEDURE()
+
 	engine_assert(mesh_data != nil);
 
 	num_indecies  : u32 = mesh_data.num_indecies;
 	num_vertecies : u32 = mesh_data.num_vertecies;
-
-	// Not in use atm.
-	// shadow_indecies : [^]u32 = make_multi_pointer([^]u32, cast(int)num_indecies);
-	// defer free(shadow_indecies)
-	// meshopt.generateShadowIndexBuffer(&shadow_indecies[0], &mesh_data.indecies[0], cast(uint)num_indecies, &mesh_data.positions[0], cast(uint)num_vertecies, cast(uint)size_of([3]f32), cast(uint)size_of([3]f32));
-	// meshopt.optimizeVertexCache(&shadow_indecies[0], &shadow_indecies[0], cast(uint)num_indecies, cast(uint)num_vertecies);
-
 	
 	layout := mesh_data.vertex_data_layout;
-
 
 	// Index Buffer
 	index_buf_create_info : sdl.GPUBufferCreateInfo = {
@@ -376,12 +509,11 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 
 	// Vertex Buffer positions only
 	vertex_pos_buf_create_info : sdl.GPUBufferCreateInfo = {
-		size  = num_vertecies * size_of([3]f32),
+		size  = num_vertecies * size_of([4]f32),
 		usage = {sdl.GPUBufferUsageFlag.VERTEX},
 	}
 
 	// Vertex Buffer Interleaved vert data
-
 	interleaved_buf_byte_size : int = cast(int)mesh_data.num_vertecies * iricom.get_vertex_layout_byte_size(mesh_data.vertex_data_layout);
 
 	vertex_buf_create_info : sdl.GPUBufferCreateInfo = {
@@ -394,7 +526,6 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	gpu_data.num_indecies  = num_indecies;
 	gpu_data.num_vertecies = num_vertecies;
 	gpu_data.index_buf      = sdl.CreateGPUBuffer(gpu_device, index_buf_create_info);
-	//gpu_data.shadow_index_buf  = sdl.CreateGPUBuffer(gpu_device, index_buf_create_info); // can use same index buf create info.
 	gpu_data.vertex_buf     = sdl.CreateGPUBuffer(gpu_device, vertex_buf_create_info);
 	gpu_data.vertex_pos_buf = sdl.CreateGPUBuffer(gpu_device, vertex_pos_buf_create_info)
 
@@ -404,8 +535,6 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	// copy into transfer buffer
 	transfer_buf_info : sdl.GPUTransferBufferCreateInfo = {
 		size = index_buf_create_info.size + vertex_pos_buf_create_info.size + vertex_buf_create_info.size,
-		// shadow index buf 
-		//size = index_buf_create_info.size + index_buf_create_info.size + vertex_pos_buf_create_info.size + vertex_buf_create_info.size,
 		usage = sdl.GPUTransferBufferUsage.UPLOAD,
 	}
 
@@ -420,10 +549,7 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 	dst_offset : int = 0;
 	mem.copy(&transfer_buf_data[dst_offset], &mesh_data.indecies[0], cast(int)index_buf_create_info.size);
 	dst_offset += cast(int)index_buf_create_info.size;
-	// Shadow Index Buffer of same size
-	//mem.copy(&transfer_buf_data[dst_offset], &shadow_indecies[0], cast(int)index_buf_create_info.size);
-	//dst_offset += cast(int)index_buf_create_info.size;
-
+	
 	// Vertex Pos Buffer
 	mem.copy(&transfer_buf_data[dst_offset], &mesh_data.positions[0], cast(int)vertex_pos_buf_create_info.size);
 	dst_offset += cast(int)vertex_pos_buf_create_info.size;
@@ -450,17 +576,6 @@ mesh_manager_upload_mesh_data_to_gpu :: proc(gpu_device: ^sdl.GPUDevice, mesh_da
 		}
 
 		sdl.UploadToGPUBuffer(copy_pass, transfer_loc, index_region, false);
-
-
-		// shadow_index_region : sdl.GPUBufferRegion = {
-		// 	buffer 	= gpu_data.shadow_index_buf,
-		// 	size 	= index_buf_create_info.size,
-		// 	offset 	= 0,
-		// }
-
-		// transfer_loc.offset = index_buf_create_info.size;		
-		// sdl.UploadToGPUBuffer(copy_pass, transfer_loc, shadow_index_region, false);
-
 
 		// Position vertex Buffer
 		pos_region : sdl.GPUBufferRegion = {
@@ -551,8 +666,6 @@ mesh_manager_get_aabb :: proc(manager : ^MeshManager, id: MeshID) -> geo.AABB {
 	if !mesh_manager_is_valid_id(manager, id) {
 		return geo.AABB{};
 	}
-
-	
 	return manager.meshes.aabb[cast(i32)id];
 }
 
@@ -565,4 +678,22 @@ mesh_manager_get_original_transform :: proc(manager :^MeshManager, id : MeshID) 
 	}
 
 	return manager.meshes.transform[cast(i32)id];
+}
+
+// ===================================================================
+// public interface 
+// ===================================================================
+
+
+// get a copy of the mesh name allocated using context.temp_allocator.
+// returns empty string on failure.
+mesh_get_mesh_name :: proc(id : MeshID) -> string {
+	manager :^MeshManager = engine.mesh_manager;
+
+
+	if !mesh_manager_is_valid_id(manager, id) {
+		return "";
+	}
+
+	return strings.clone(manager.meshes[id].name, context.temp_allocator);
 }

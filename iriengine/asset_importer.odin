@@ -9,25 +9,16 @@ import "core:c"
 import "core:strings"
 import "core:math/linalg"
 
+import "odinary:mathy"
 import "odinary:geometry/poly"
 import "odinary:geometry/meshopt"
-//import geo "odinary:geometry"
-import "odinary:mathy"
+import geo "odinary:geometry"
 
 import iricom "iricommon"
 import iria "iriasset"
 
-// Meshopt optimization tests.
-
-// lumberyard test scene, fixed camera, and 3440x1369px. All in release builds.
-// renderDoc: raw gltf. validation layer  ON, | FPS: ~31-35   | DepthPass: | ShadowmapPass: | ForwardPass:
-// renderDoc: raw gltf. validation layer OFF, | FPS: ~165-182 | DepthPass: ~0.6 ms | ShadowmapPass: ~1.3-2.0 ms | ForwardPass: ~ 1.2-1.5 ms (skybox ~ 0.2 ms)
-// renderDoc: meshopt gltf. -- no measurable diffrence to raw gltf...
-
-
-// nsight: meshopt gltf. validation layer OFF, | FPS: ~165-182 | DepthPass: ~1.3 ms | ShadowmapPass: ~2.5 ms | ForwardPass: ~ 1.8-2.2 ms (skybox ~ 0.2 ms)
-
-
+BVH_NUM_SPLIT_PLANES :: 64
+BVH_MAX_TREE_DEPTH :: 32
 
 
 // @Note: The Importers job generally is to take common interchange formats, like glTF or .png etc 
@@ -406,177 +397,14 @@ importer_get_poly_load_flags_from_asset_import_flags :: proc(import_flags : Asse
 	return load_flags;
 }
 
-importer_make_MeshData_from_poly_MeshData_no_meshopt :: proc(poly_mesh : ^poly.MeshData, import_flags : AssetImportFlags) -> (^MeshData, bool) {
-	
-	forced_layout : VertexDataLayout = .Minimal;
-	force_layout : bool = .MeshForceVertexLayout in import_flags;
-
-	if force_layout {
-		if .MeshForceVertexLayoutMinimal in import_flags {
-			forced_layout = .Minimal;
-		} else if .MeshForceVertexLayoutStandard in import_flags {
-			forced_layout = .Standard;
-		} else if .MeshForceVertexLayoutExtended in import_flags {
-			forced_layout = .Extended;
-		}
-	}
-
-	if poly_mesh == nil {
-		return nil, false;
-	}
-
-	if poly_mesh.num_indecies == 0 || poly_mesh.num_vertecies == 0 {
-		return nil, false;
-	}
-
-	if poly_mesh.positions == nil {
-		return nil, false;
-	}
-
-	if poly_mesh.indecies == nil {
-		return nil, false;
-	}
-
-	mesh_data: ^MeshData = new(MeshData, context.allocator);
-	mesh_data.name = strings.clone(poly_mesh.name);
-
-	mesh_data.transform = cast(Transform)poly_mesh.transform;
-
-	mesh_data.aabb_min = poly_mesh.aabb_min;
-	mesh_data.aabb_max = poly_mesh.aabb_max;
-		
-	mesh_data.num_indecies  = poly_mesh.num_indecies;
-	mesh_data.num_vertecies = poly_mesh.num_vertecies;	
-
-	num_indecies  : int = cast(int)poly_mesh.num_indecies;
-	num_vertecies : int = cast(int)poly_mesh.num_vertecies;
-	
-	mesh_data.indecies = make_multi_pointer([^]u32, num_indecies);
-	mem.copy(&mesh_data.indecies[0], &poly_mesh.indecies[0], num_indecies * size_of(u32));
-
-	layout : iria.VertexDataLayout = .Minimal;
-
-	if force_layout {
-		layout = forced_layout;
-	} else {
-		// Find the layout that contains all data that is present
-
-		 if poly_mesh.texcoords_1 != nil || poly_mesh.colors_1 != nil {
-		 	layout = .Extended;
-		 } else if poly_mesh.colors_0 != nil {
-		 	layout = .Standard;
-		 }
-	}
-
-	mesh_data.vertex_data_layout = layout;
-
-	positions_buf_byte_size : int = num_vertecies * size_of([3]f32);
-
-	mesh_data.positions   = make_multi_pointer([^]byte, positions_buf_byte_size, context.allocator);
-	mem.copy(&mesh_data.positions[0], &poly_mesh.positions[0], positions_buf_byte_size);
-	
-	vert_layout_byte_size : int = iricom.get_vertex_layout_byte_size(layout);
-	vertex_data_buf_byte_size : int = num_vertecies * vert_layout_byte_size;
-
-	mesh_data.vertex_data = make_multi_pointer([^]byte, vertex_data_buf_byte_size, context.allocator);
-
-	// @Note: does no bound checking and assumes positions are present.
-	get_valid_normal :: proc(poly_mesh : ^poly.MeshData, index : int) -> [3]f32 {
-
-		if poly_mesh.normals != nil {
-			return linalg.normalize(poly_mesh.normals[index]);
-		}
-
-		// as fallback we can maybe use normalized position as normal.
-		// better than nothing.
-		N : [3]f32 = poly_mesh.positions[index];
-
-		if linalg.length(N) < 0.0001 {
-			return TRANSFORM_WORLD_UP;	
-		}
-
-		return linalg.normalize(N);
-	}
-
-	// @Note: does no bound checking.
-	get_valid_tangent :: proc(poly_mesh : ^poly.MeshData, index : int, normal : [3]f32) -> [4]f32 {
-
-		T : [4]f32 = {0,0,0,1};
-
-		if poly_mesh.tangents != nil {
-			T = poly_mesh.tangents[0];
-		}
-
-		// Gram-Schmidt orthogonalize
-		// because its quite possible that we get some drift in loading vertex data from files.
-		T.xyz = T.xyz - normal * linalg.dot(normal, T.xyz);
-		
-		// If tangents are invalid (length 0)
-		// we fallback to something so we get at least correct normals in vertex shader decoding		
-		if linalg.length(T.xyz) < 1e-5 {
-		    // invalid tanget, compute anything perpendicular to normal as fallback
-			T.xyz = mathy.any_perpendicular(normal);
-		} else {
-		    T.xyz = linalg.normalize(T.xyz);
-		}
-
-		return T;
-	}
-
-	switch layout {
-		case .Minimal: {
-			buf_minimal : [^]VertexDataMinimal = cast([^]VertexDataMinimal)mesh_data.vertex_data;
-			for v in 0..<num_vertecies {
-
-				normal  : [3]f32 = get_valid_normal(poly_mesh, v);
-				tangent : [4]f32 = get_valid_tangent(poly_mesh, v, normal);
-
-				buf_minimal[v] = VertexDataMinimal {
-					qtangent = importer_encode_qtangent(normal, tangent),
-					texcoord_0 = poly_mesh.texcoords_0 == nil ? [2]f32{0,0} : poly_mesh.texcoords_0[v],
-				}
-			}
-		}
-		case .Standard: {
-			buf_standard : [^]VertexDataStandard = cast([^]VertexDataStandard)mesh_data.vertex_data;
-			
-			for v in 0..<num_vertecies {
-
-				normal  : [3]f32 = get_valid_normal(poly_mesh, v);
-				tangent : [4]f32 = get_valid_tangent(poly_mesh, v, normal);
-
-				buf_standard[v] = VertexDataStandard {
-					qtangent    = importer_encode_qtangent(normal, tangent),
-					texcoord_0  = poly_mesh.texcoords_0 != nil ? poly_mesh.texcoords_0[v] : [2]f32{0,0},
-					color_0 	= poly_mesh.colors_0    != nil ? poly_mesh.colors_0[v]    : [4]f32{1,1,1,1},
-				}
-			}
-		}
-		case .Extended: {
-			buf_extended : [^]VertexDataExtended = cast([^]VertexDataExtended)mesh_data.vertex_data;
-			
-			for v in 0..<num_vertecies {
-
-				normal  : [3]f32 = get_valid_normal(poly_mesh, v);
-				tangent : [4]f32 = get_valid_tangent(poly_mesh, v, normal);
-
-				buf_extended[v] = iria.VertexDataExtended {
-					qtangent    = importer_encode_qtangent(normal, tangent),
-					texcoord_0  = poly_mesh.texcoords_0 != nil ? poly_mesh.texcoords_0[v] : [2]f32{0,0},
-					texcoord_1  = poly_mesh.texcoords_1 != nil ? poly_mesh.texcoords_1[v] : [2]f32{0,0},
-					color_0 	= poly_mesh.colors_0    != nil ? poly_mesh.colors_0[v]    : [4]f32{1,1,1,1},
-					color_1 	= poly_mesh.colors_1    != nil ? poly_mesh.colors_1[v]    : [4]f32{1,1,1,1},
-				}
-			}
-		}
-	}
-
-
-	return mesh_data, true;
-}
-
 importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, import_flags : AssetImportFlags) -> (^MeshData, bool) {
 	
+	engine_assert(poly_mesh != nil);
+	engine_assert(poly_mesh.num_indecies != 0);
+	engine_assert(poly_mesh.num_vertecies != 0);
+	engine_assert(poly_mesh.positions != nil);
+	engine_assert(poly_mesh.indecies != nil);
+
 	forced_layout : VertexDataLayout = .Minimal;
 	force_layout : bool = .MeshForceVertexLayout in import_flags;
 
@@ -590,21 +418,6 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 		}
 	}
 
-	if poly_mesh == nil {
-		return nil, false;
-	}
-
-	if poly_mesh.num_indecies == 0 || poly_mesh.num_vertecies == 0 {
-		return nil, false;
-	}
-
-	if poly_mesh.positions == nil {
-		return nil, false;
-	}
-
-	if poly_mesh.indecies == nil {
-		return nil, false;
-	}
 
 	mesh_data: ^MeshData = new(MeshData, context.allocator);
 	mesh_data.name = strings.clone(poly_mesh.name);
@@ -621,7 +434,6 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 		layout = forced_layout;
 	} else {
 		// Find the layout that contains all data that is present
-
 		 if poly_mesh.texcoords_1 != nil || poly_mesh.colors_1 != nil {
 		 	layout = .Extended;
 		 } else if poly_mesh.colors_0 != nil {
@@ -636,25 +448,34 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 	src_num_indecies  : int = cast(int)poly_mesh.num_indecies;
 	src_num_vertecies : int = cast(int)poly_mesh.num_vertecies;
 
+	// Convert postions from float3 (xyz) to float4 (xyzw).
+	positions_float4 : [^][4]f32 = make_multi_pointer([^][4]f32, src_num_vertecies, context.allocator);
+	defer free(positions_float4); 
+
+	for i in 0..<src_num_vertecies {
+		positions_float4[i] = [4]f32{poly_mesh.positions[i].x, poly_mesh.positions[i].y, poly_mesh.positions[i].z, 1.0};
+	}
+
+	position_byte_size : int = size_of([4]f32);
+
 	// setup minimum streams.	
 	position_stream := meshopt.Stream {
-		data   = &poly_mesh.positions[0],
-		size = cast(c.size_t)size_of(poly_mesh.positions[0]),
-		stride = cast(c.size_t)size_of(poly_mesh.positions[0]),
+		data   = &positions_float4[0],
+		size   = cast(c.size_t)position_byte_size,
+		stride = cast(c.size_t)position_byte_size,
 	}
 
 	normals_stream := meshopt.Stream {
 		data   = &poly_mesh.normals[0],
-		size = cast(c.size_t)size_of(poly_mesh.normals[0]),
+		size   = cast(c.size_t)size_of(poly_mesh.normals[0]),
 		stride = cast(c.size_t)size_of(poly_mesh.normals[0]),
 	}
 
 	tangents_stream := meshopt.Stream {
 		data   = &poly_mesh.tangents[0],
-		size = cast(c.size_t)size_of(poly_mesh.tangents[0]),
+		size   = cast(c.size_t)size_of(poly_mesh.tangents[0]),
 		stride = cast(c.size_t)size_of(poly_mesh.tangents[0]),
 	}
-
 
 	streams : [dynamic]meshopt.Stream;
 	defer delete(streams);
@@ -670,7 +491,7 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 	if poly_mesh.texcoords_0 != nil {
 		uv0_stream := meshopt.Stream {
 			data   = &poly_mesh.texcoords_0[0],
-			size = cast(c.size_t)size_of(poly_mesh.texcoords_0[0]),
+			size   = cast(c.size_t)size_of(poly_mesh.texcoords_0[0]),
 			stride = cast(c.size_t)size_of(poly_mesh.texcoords_0[0]),
 		}
 		append(&streams, uv0_stream);
@@ -681,7 +502,7 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 		if poly_mesh.colors_0 != nil {
 			col0_stream := meshopt.Stream {
 				data   = &poly_mesh.colors_0[0],
-				size = cast(c.size_t)size_of(poly_mesh.colors_0[0]),
+				size   = cast(c.size_t)size_of(poly_mesh.colors_0[0]),
 				stride = cast(c.size_t)size_of(poly_mesh.colors_0[0]),
 			}
 			append(&streams, col0_stream);
@@ -693,7 +514,7 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 		if poly_mesh.texcoords_1 != nil {
 			uv1_stream := meshopt.Stream {
 				data   = &poly_mesh.texcoords_1[0],
-				size = cast(c.size_t)size_of(poly_mesh.texcoords_1[0]),
+				size   = cast(c.size_t)size_of(poly_mesh.texcoords_1[0]),
 				stride = cast(c.size_t)size_of(poly_mesh.texcoords_1[0]),
 			}
 			append(&streams, uv1_stream);
@@ -710,25 +531,20 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 	}
 
 
-
 	// Generate base reamp table.
 	remap_table : [^]c.uint = make_multi_pointer([^]c.uint, src_num_vertecies, context.allocator);
 	defer free(remap_table);
 	
-
 	src_index_count : c.size_t = cast(c.size_t)src_num_indecies;
 	num_remapped_verts := meshopt.generateVertexRemapMulti(remap_table, &poly_mesh.indecies[0], src_index_count, cast(c.size_t)src_num_vertecies, &streams[0], cast(c.size_t)len(streams));
 
-
 	// Apply base remap table to all attribute array we will use for vertex layout packing.
-
 	new_indecies : [^]u32 = make_multi_pointer([^]u32, src_num_indecies);
 	meshopt.remapIndexBuffer(&new_indecies[0], &poly_mesh.indecies[0], src_index_count, &remap_table[0]);
 	defer free(new_indecies); // remapped later.
 
-
-	new_pos_buf := make_multi_pointer([^][3]f32, num_remapped_verts, context.allocator);
-	meshopt.remapVertexBuffer(&new_pos_buf[0],  &poly_mesh.positions[0], cast(c.size_t)src_num_vertecies, cast(c.size_t)size_of(poly_mesh.positions[0]), &remap_table[0]);
+	new_pos_buf := make_multi_pointer([^][4]f32, num_remapped_verts, context.allocator);
+	meshopt.remapVertexBuffer(&new_pos_buf[0],  &positions_float4[0], cast(c.size_t)src_num_vertecies, cast(c.size_t)position_byte_size, &remap_table[0]);
 	defer free(new_pos_buf) // remapped later
 
 	// For everything but indecies and positions we replace the buffers in the poly mesh
@@ -780,22 +596,18 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 			}
 		}
 	}
-
 	
 	// works in place apparently
 	meshopt.optimizeVertexCache(&new_indecies[0], &new_indecies[0], src_index_count, num_remapped_verts);
-	meshopt.optimizeOverdraw(&new_indecies[0], &new_indecies[0], src_index_count, cast(^f32)&new_pos_buf[0], num_remapped_verts, vertex_positions_stride = cast(c.size_t)size_of([3]f32), threshold = 1.05);
+	meshopt.optimizeOverdraw(&new_indecies[0], &new_indecies[0], src_index_count, cast(^f32)&new_pos_buf[0], num_remapped_verts, vertex_positions_stride = cast(c.size_t)position_byte_size, threshold = 1.05);
 
 	
 	// Produce Interleaverd vertex buffer
-
 	vert_layout_byte_size : int = iricom.get_vertex_layout_byte_size(layout);
 	vertex_data_buf_byte_size : int = cast(int)num_remapped_verts * vert_layout_byte_size;
 
-
 	vertex_buf : [^]byte = make_multi_pointer([^]byte, vertex_data_buf_byte_size, context.allocator);
 	defer free(vertex_buf); // reampped later.
-
 
 	// @Note: does no bound checking.
 	get_valid_tangent :: proc(poly_mesh : ^poly.MeshData, index : int, normal : [3]f32) -> [4]f32 {
@@ -870,7 +682,6 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 		}
 	}
 
-
 	// Allocate final buffers and perform vertex fetch remapping.
 	
 	// @Note: we can reuse the remap table buffer we already alloccated before since we know it'll have enough space.
@@ -880,11 +691,8 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 	meshopt.remapIndexBuffer(&mesh_data.indecies[0], &new_indecies[0], src_index_count, &remap_table[0]);
 	
 
-	position_byte_size : int = size_of([3]f32);
 	positions_buf_byte_size : int = cast(int)fetch_num_remapped_verts * position_byte_size;
-
 	mesh_data.positions = make_multi_pointer([^]byte, positions_buf_byte_size, context.allocator);
-
 
 	meshopt.remapVertexBuffer(&mesh_data.positions[0],  &new_pos_buf[0], num_remapped_verts, cast(c.size_t)position_byte_size, &remap_table[0]);
 
@@ -893,24 +701,17 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 	mesh_data.vertex_data = make_multi_pointer([^]byte, vertex_data_buf_byte_size, context.allocator);	
 	meshopt.remapVertexBuffer(&mesh_data.vertex_data[0],  &vertex_buf[0], num_remapped_verts, cast(c.size_t)vert_layout_byte_size, &remap_table[0]);
 
-	
 	mesh_data.num_vertecies = cast(u32)fetch_num_remapped_verts;
 	mesh_data.num_indecies 	= cast(u32)src_num_indecies;
 
+	// Generate bvh.
+	num_split_planes : u32 = BVH_NUM_SPLIT_PLANES;
+	max_tree_depth   : u32 = BVH_MAX_TREE_DEPTH;
+	bvh_info := geo.bvh_build_bottom_level(mesh_data.positions, cast(uint)position_byte_size, mesh_data.indecies, cast(uint)mesh_data.num_indecies, num_split_planes, max_tree_depth);
 
-	shadow_indecies : [^]u32 = make_multi_pointer([^]u32, src_num_indecies);
-	meshopt.generateShadowIndexBuffer(&shadow_indecies[0], &mesh_data.indecies[0], src_index_count, &mesh_data.positions[0], fetch_num_remapped_verts, cast(c.size_t)position_byte_size, cast(c.size_t)position_byte_size);
-
-
-	meshopt.optimizeVertexCache(&shadow_indecies[0], &shadow_indecies[0], src_index_count, fetch_num_remapped_verts);
-	
-	
-	// if fetch_num_remapped_verts <= 32 {
-	// 	for i in 0..<src_num_indecies{
-	// 		log.warnf("Indecie: {}, normal: {} - shadow {}", i, mesh_data.indecies[i], shadow_indecies[i]);
-	// 	}
-	// }
-
+	mesh_data.bvh_num_nodes = cast(u32)len(bvh_info.nodes);
+	mesh_data.bvh_indecies 	= cast([^]u32)&bvh_info.indecies[0];
+	mesh_data.bvh_nodes 	= cast([^]geo.BvhNode)&bvh_info.nodes[0];
 
 	return mesh_data, true;
 }

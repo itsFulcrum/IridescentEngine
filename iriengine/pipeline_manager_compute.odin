@@ -12,6 +12,8 @@ ComputePipelineShader :: enum {
     UPSCALE_AO,
     EQUIRECTANGULAR_TO_CUBEMAP,
     SHADOWMAP_BLUR_TWO_PASS,
+    RACA, // Radiance Cascades
+    RC_MERGE_AO,
 }
 
 ComputePipeManager :: struct {
@@ -38,12 +40,13 @@ compute_pipe_manager_init :: proc(manager : ^ComputePipeManager, gpu_device : ^s
 
         switch compute_shader {
             case .BRDF_LUT_GEN:                 id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "brdf_lut_gen.comp"              }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = false);
-            case .MIN_MAX_DEPTH_HIERARCHY:      id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "min_max_depth.comp"             }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = true);
-            //case .GTAO:                         id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "gtao.comp"                      }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = true);
-            case .GTAO:                         id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "gtao2.comp"                      }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = true);
-            case .UPSCALE_AO:                   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "upscale_ao.comp"                }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = true);
+            case .MIN_MAX_DEPTH_HIERARCHY:      id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "min_max_depth.comp"             }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = false);
+            case .GTAO:                         id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "gtao2.comp"                     }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = true);
+            case .UPSCALE_AO:                   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "upscale_ao.comp"                }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = false);
             case .EQUIRECTANGULAR_TO_CUBEMAP:   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "equirectangular_to_cubemap.comp"}, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = false);
             case .SHADOWMAP_BLUR_TWO_PASS:      id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "shadowmap_blur.comp"            }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = false);
+            case .RACA:                         id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "radiance_cascades.comp"         }, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = true);
+            case .RC_MERGE_AO:                  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "radiance_cascades_ao_merge.comp"}, "/", context.temp_allocator) , .COMPUTE, enable_hot_reloading = true);
             case:
         }
 

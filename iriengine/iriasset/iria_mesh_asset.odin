@@ -27,8 +27,9 @@ MeshAssetHeader_v1 :: struct #packed {
 	has_name : b32,
 	vertex_data_layout : VertexDataLayout,
 
-	num_vertecies : u32,
 	num_indecies  : u32,
+	num_vertecies : u32,
+	num_bvh_nodes : u32,
 	
 	aabb_min : [3]f32,
 	aabb_max : [3]f32,
@@ -36,14 +37,19 @@ MeshAssetHeader_v1 :: struct #packed {
 	transform_position       : [3]f32,
 	transform_scale          : [3]f32,
 	transform_orientation    : quaternion128,
+
+	_ : [6]u32, // reserved
 }
 
+// @Note: Do not reorder!
 MeshAssetBufferType :: enum u16 {
-	NameStr = 0,
-	Indecies_u16,
-	Indecies_u32,
-	Positions_3f32,
-	VertexData,
+	NameStr 		= 0,
+	Indecies_u16 	= 1,
+	Indecies_u32 	= 2,
+	Positions_4f32 	= 3,
+	VertexData 		= 4,
+	BvhNodes  		= 5,
+	BvhIndecies_u32 = 6,
 }
 
 MeshAssetBufferInfo :: struct #packed {
@@ -113,9 +119,11 @@ asset_mesh_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) ->
 		mesh_data.transform.position 	= mesh_hdr.transform_position;
 		mesh_data.transform.scale 		= mesh_hdr.transform_scale;
 		mesh_data.transform.orientation = mesh_hdr.transform_orientation;
+
+		mesh_data.bvh_num_nodes = mesh_hdr.num_bvh_nodes;
 	}
 
-	for reader.remaining_bytes(b_reader) > 0 {
+	file_loop: for reader.remaining_bytes(b_reader) > 0 {
 
 		buf_info : MeshAssetBufferInfo = reader.consume_copy_type(b_reader, MeshAssetBufferInfo) or_return;
 		buf_size : int = cast(int)buf_info.byte_size;
@@ -133,11 +141,11 @@ asset_mesh_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) ->
 				assert(expected_byte_size == buf_size);
 
 				mesh_data.indecies = make_multi_pointer([^]u32, cast(int)mesh_data.num_indecies, context.allocator);
-				reader.consume_mem_copy(b_reader, &mesh_data.indecies[0], expected_byte_size) or_return;			
+				reader.consume_mem_copy(b_reader, &mesh_data.indecies[0], expected_byte_size) or_return;
 			}
-			case .Positions_3f32: {
+			case .Positions_4f32: {
 				
-				expected_byte_size : int = cast(int)mesh_data.num_vertecies * size_of([3]f32);
+				expected_byte_size : int = cast(int)mesh_data.num_vertecies * size_of([4]f32);
 				assert(expected_byte_size == buf_size);
 
 				mesh_data.positions = make_multi_pointer([^]byte, expected_byte_size, context.allocator);
@@ -150,6 +158,20 @@ asset_mesh_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) ->
 				mesh_data.vertex_data = make_multi_pointer([^]byte, expected_byte_size, context.allocator);
 				reader.consume_mem_copy(b_reader, &mesh_data.vertex_data[0], expected_byte_size) or_return;
 			}
+			case .BvhIndecies_u32: {
+				expected_byte_size : int = cast(int)mesh_data.num_indecies * size_of(u32);
+				assert(expected_byte_size == buf_size);
+
+				mesh_data.bvh_indecies =  make_multi_pointer([^]u32, mesh_data.num_indecies, context.allocator);
+				reader.consume_mem_copy(b_reader, &mesh_data.bvh_indecies[0], buf_size) or_return;
+			}
+			case .BvhNodes: {
+				expected_byte_size : int = cast(int)mesh_data.bvh_num_nodes * size_of(geo.BvhNode);
+				assert(expected_byte_size == buf_size);
+
+				mesh_data.bvh_nodes = make_multi_pointer([^]geo.BvhNode, mesh_data.bvh_num_nodes, context.allocator);
+				reader.consume_mem_copy(b_reader, &mesh_data.bvh_nodes[0], buf_size) or_return;
+			}
 		}
 	}
 
@@ -161,6 +183,10 @@ asset_mesh_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) ->
 
 	assert(mesh_data.num_indecies > 0);
 	assert(mesh_data.num_vertecies > 0);
+
+	assert(mesh_data.bvh_num_nodes > 0);
+	assert(mesh_data.bvh_indecies != nil);
+	assert(mesh_data.bvh_nodes != nil);
 
 	return mesh_data, true,
 }
@@ -235,8 +261,7 @@ asset_mesh_write_to_file :: proc(filepath : string, mesh_data : ^MeshData, write
 		hdr : IriAssetCommonHeader = create_common_header(AssetType.Mesh, mesh_data.asset_uuid);
 
 		written_bytes , write_err := os.write_ptr(file, &hdr, size_of(IriAssetCommonHeader));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
-				
+		is_no_write_error(write_err, filepath, log_errors) or_return;		
 	}
 	
 	// Mesh Header
@@ -254,6 +279,7 @@ asset_mesh_write_to_file :: proc(filepath : string, mesh_data : ^MeshData, write
 		mesh_hdr.transform_position     = mesh_data.transform.position;
 		mesh_hdr.transform_scale 		= mesh_data.transform.scale;
 		mesh_hdr.transform_orientation  = mesh_data.transform.orientation;
+		mesh_hdr.num_bvh_nodes = mesh_data.bvh_num_nodes;
 
 		written_bytes , write_err := os.write_ptr(file, &mesh_hdr, size_of(MeshAssetHeader_v1));
 		is_no_write_error(write_err, filepath, log_errors) or_return;
@@ -296,11 +322,11 @@ asset_mesh_write_to_file :: proc(filepath : string, mesh_data : ^MeshData, write
 
 	// Positions 
 	{
-		position_elem_size  : int = size_of([3]f32);
-		position_buf_size  : int = cast(int)mesh_data.num_vertecies * position_elem_size;
+		position_elem_size  : int = size_of([4]f32);
+		position_buf_size   : int = cast(int)mesh_data.num_vertecies * position_elem_size;
 		
 		buf_info := MeshAssetBufferInfo{
-			type = MeshAssetBufferType.Positions_3f32,
+			type = MeshAssetBufferType.Positions_4f32,
 			byte_size = cast(u64)position_buf_size,
 		}
 		info_written_bytes , info_write_err := os.write_ptr(file, &buf_info, size_of(MeshAssetBufferInfo));
@@ -324,6 +350,45 @@ asset_mesh_write_to_file :: proc(filepath : string, mesh_data : ^MeshData, write
 
 		buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.vertex_data[0], vert_data_buf_size);
 		is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+	}
+
+
+	// Bvh Indecies data
+	{
+		if mesh_data.bvh_indecies != nil {
+			indecie_elem_size   : int = size_of(u32);
+			indecies_buf_size   : int = cast(int)mesh_data.num_indecies * indecie_elem_size; 
+			
+			buf_info := MeshAssetBufferInfo{
+				type = MeshAssetBufferType.BvhIndecies_u32,
+				byte_size = cast(u64)indecies_buf_size,
+			}
+
+			info_written_bytes, info_write_err := os.write_ptr(file, &buf_info, size_of(MeshAssetBufferInfo));
+			is_no_write_error(info_write_err, filepath, log_errors) or_return;
+
+			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.bvh_indecies[0], indecies_buf_size);
+			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+		}
+	}
+
+	// bvh nodes
+	{
+		if mesh_data.bvh_nodes != nil {
+			node_elem_size   : int = size_of(geo.BvhNode);
+			node_buf_size   : int = cast(int)mesh_data.bvh_num_nodes * node_elem_size; 
+			
+			buf_info := MeshAssetBufferInfo{
+				type = MeshAssetBufferType.BvhNodes,
+				byte_size = cast(u64)node_buf_size,
+			}
+
+			info_written_bytes, info_write_err := os.write_ptr(file, &buf_info, size_of(MeshAssetBufferInfo));
+			is_no_write_error(info_write_err, filepath, log_errors) or_return;
+
+			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.bvh_nodes[0], node_buf_size);
+			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+		}
 	}
 
 	// we need to set this to true here so we dont run any cleanup from the defer block above.

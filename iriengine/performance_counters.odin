@@ -8,6 +8,10 @@ PerformanceCounters :: struct {
 	frustum_culling_time_ms : f64,
 
 
+    // TL Bvh consturction 
+    tl_bvh_cpu_ms : f64,
+
+
 	// Rendering
     //num_rendered_meshes_instances : u32,
 

@@ -74,7 +74,9 @@ InputSystemState :: struct{
 	relative_mouse_pos : [2]f32, // relative to the focused window.
 	global_mouse_pos : [2]f32, // global to the entire screen
 	mouse_delta : [2]f32,
-	mouse_btn_state_flags : sdl.MouseButtonFlags, 
+
+	mouse_btn_state_flags_last  : sdl.MouseButtonFlags, 
+	mouse_btn_state_flags 		: sdl.MouseButtonFlags, 
 
 
 	keyboard_state : [^]bool,
@@ -120,6 +122,8 @@ input_system_init :: proc(){
 @(private="package")
 input_system_update :: proc(){
 
+	IRI_PROFILE_PROCEDURE()
+	
 	event : sdl.Event;
 
 	// NOTE:
@@ -219,6 +223,7 @@ input_system_update :: proc(){
 
 	new_relative_mouse_pos : [2]f32;
 	//istate.mouse_btn_state_flags = sdl.GetMouseState(&istate.rel_mouse_pos.x, &istate.rel_mouse_pos.y);
+	istate.mouse_btn_state_flags_last = istate.mouse_btn_state_flags;
 	istate.mouse_btn_state_flags = sdl.GetMouseState(&new_relative_mouse_pos.x, &new_relative_mouse_pos.y);
 	
 	istate.mouse_delta = new_relative_mouse_pos - istate.relative_mouse_pos;
@@ -413,22 +418,52 @@ input_call_mouse_button_callbacks_continuous_presses :: proc(mouse_pos : [2]f32)
 	}
 }
 
+// Return true if mouse button is currently being pressed.
 input_is_mouse_button_pressed :: proc(mouse_button : MouseButton) -> bool {
 
 	if(!istate.process_user_inputs){
 		return false;
 	}
 
-	// SDL MouseButtonFlag is defined like this
-	// MouseButtonFlag :: enum Uint32 {
-	// 	LEFT   = 1 - 1,
-	// 	MIDDLE = 2 - 1,
-	// 	RIGHT  = 3 - 1,
-	// 	X1     = 4 - 1,
-	// 	X2     = 5 - 1,
-	// }
+	return input_mouse_button_to_sdl_mouse_button_flag(mouse_button) in istate.mouse_btn_state_flags;
+}
 
-	return cast(sdl.MouseButtonFlag)u32(cast(u32)mouse_button - 1) in istate.mouse_btn_state_flags;
+// Return true if mouse button went from not pressed to pressed.
+input_was_mouse_button_pressed :: proc(mouse_button : MouseButton) -> bool {
+
+	if(!istate.process_user_inputs){
+		return false;
+	}
+
+	mouse_btn := #force_inline input_mouse_button_to_sdl_mouse_button_flag(mouse_button);
+	
+	was_down_last : bool = mouse_btn in istate.mouse_btn_state_flags_last;
+	is_down_now : bool = mouse_btn in istate.mouse_btn_state_flags;
+
+	if is_down_now && !was_down_last {
+		return true;
+	}
+
+	return false;
+}
+
+// Return true if mouse button went from pressed to not pressed.
+input_was_mouse_button_released :: proc(mouse_button : MouseButton) -> bool {
+
+	if(!istate.process_user_inputs){
+		return false;
+	}
+
+	mouse_btn := #force_inline input_mouse_button_to_sdl_mouse_button_flag(mouse_button);
+	
+	was_down_last : bool = mouse_btn in istate.mouse_btn_state_flags_last;
+	is_down_now : bool = mouse_btn in istate.mouse_btn_state_flags;
+
+	if !is_down_now && was_down_last {
+		return true;
+	}
+
+	return false;
 }
 
 // ============================================================================================================================
@@ -561,11 +596,12 @@ input_call_mouse_motion_callbacks :: proc(mouse_pos : [2]f32, mouse_delta : [2]f
 	}
 }
 
-
+// Get the OS Mouse Cursor position in pixels on monitor setup.
 input_get_global_mouse_position :: proc() -> [2]f32{
 	return istate.global_mouse_pos;
 }
 
+// Get mouse position in pixels relative to the window.
 input_get_relative_mouse_position :: proc() -> [2]f32{
 	return istate.relative_mouse_pos;
 }

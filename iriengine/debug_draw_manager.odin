@@ -1,6 +1,7 @@
 package iri 
 
 import "core:log"
+import "core:math"
 import "core:math/linalg"
 import "odinary:mathy"
 
@@ -113,48 +114,60 @@ debug_draw_manager_push_universe_components :: proc(manager : ^DebugDrawManager,
 
             if .DrawAABB in disp_flags {
             	// Note maybe can construct transform mat directly from obb stored in drawable ??
-            	model_mat := geo.aabb_transform_by_mat4_and_get_tranform_mat(aabb, ecs.drawables.world_mat[drawable_index]);
+            	//model_mat := geo.aabb_transform_by_mat4_and_get_tranform_mat(aabb, ecs.drawables.world_mat[drawable_index]);
+            	world_aabb := geo.obb_to_aabb(ecs.drawables.world_oobb[drawable_index]);
+            	model_mat := geo.aabb_to_transform_matrix(world_aabb);
             	debug_draw_box(DebugColor.Black,  model_mat);
             }
 
             if .DrawOOBB in disp_flags {
-            	model_mat := ecs.drawables.world_mat[drawable_index] * geo.aabb_to_transform_matrix(aabb)
+            	//model_mat := ecs.drawables.world_mat[drawable_index] * geo.aabb_to_transform_matrix(aabb);
+            	model_mat := geo.obb_to_transform_matrix(ecs.drawables.world_oobb[drawable_index]);
 				debug_draw_box(DebugColor.Blue,  model_mat);
             }
         }
 	}
+	hash_color :: proc(i: u32) -> [3]f32 {
+	    // Golden ratio distribution
+	    h := math.mod(f32(i) * 0.61803398875, 1.0)
+
+	    return mathy.hsv_to_rgb(h, 0.65, 0.95)
+	}
 
 	if .DrawMeshBVH in disp_flags {
 
-		
+
 		mesh_manager := engine.mesh_manager;
 
-		draw_bvh_nodes_recursive :: proc(mesh_manager : ^MeshManager, bvh_data : ^BlasBvhData, realtive_node_index : u32, world_mat : matrix[4,4]f32, tree_depth : u32 = 1) {
+		draw_bvh_nodes_recursive :: proc(mesh_manager : ^MeshManager, global_buf_info : ^DrawableGlobalBufferInfo, realtive_node_index : u32, world_mat : matrix[4,4]f32, tree_depth : u32 = 1) {
 			
-			DRAW_TRIANGLES :: true;
+			DRAW_TRIANGLES :: false;
 			
-			node : ^geo.BvhNode = &mesh_manager.blas_bvh_nodes[bvh_data.bvh_nodes_offset + cast(u64)realtive_node_index];
+			node : ^geo.BvhNode = &mesh_manager.global_bl_bvh_nodes[global_buf_info.bl_bvh_root_offset + realtive_node_index];
 
 			max_depth : f32 = 8;
 			norm_depth : f32 = linalg.clamp(f32(tree_depth) / max_depth, 0.0, 1.0);
-			color := [3]f32{1.0, 1.0, 1.0} * (1.0 - norm_depth);
+			//color := [3]f32{1.0, 1.0, 1.0} * (1.0 - norm_depth);
+			color := hash_color(tree_depth);
 			
 			if !geo.bvh_is_leaf_node(node) {
 					
 				debug_draw_bvh_node(color, node, world_mat);
 				
-				draw_bvh_nodes_recursive(mesh_manager, bvh_data, node.left_first  , world_mat, tree_depth + 1); // left child
-				draw_bvh_nodes_recursive(mesh_manager, bvh_data, node.left_first+1, world_mat, tree_depth + 1); // right child
+				draw_bvh_nodes_recursive(mesh_manager, global_buf_info, node.left_first  , world_mat, tree_depth + 1); // left child
+				draw_bvh_nodes_recursive(mesh_manager, global_buf_info, node.left_first+1, world_mat, tree_depth + 1); // right child
 			
 			} else {
 				
-				debug_draw_bvh_node(DebugColor.Yellow, node, world_mat);
+				//debug_draw_bvh_node(DebugColor.Yellow, node, world_mat);
+				debug_draw_bvh_node(color, node, world_mat);
 				
-				if DRAW_TRIANGLES {
+				when DRAW_TRIANGLES {
 
-					for i : u32 = 0; i < node.tri_count; i+=1 {
-						tri : [3][3]f32 = #force_inline get_bvh_get_triangle(mesh_manager, bvh_data, node.left_first + i);
-						debug_draw_bvh_triangle(DebugColor.Magenta, &tri, world_mat);
+					for i : u32 = 0; i < node.count; i+=1 {
+						tri : [3][3]f32 = #force_inline get_bvh_triangle(mesh_manager, global_buf_info, node.left_first + i);
+						//debug_draw_bvh_triangle(DebugColor.Magenta, &tri, world_mat);
+						debug_draw_bvh_triangle(color, &tri, world_mat);
 					}
 				}
 			}			
@@ -163,11 +176,46 @@ debug_draw_manager_push_universe_components :: proc(manager : ^DebugDrawManager,
 
 		for drawable_index in universe.frame_camera_visible {
 
-            mesh_id : MeshID = ecs.drawables[drawable_index].draw_instance.mesh_id;
-            bvh_data := mesh_manager.meshes[mesh_id].bvh_data;
+            global_buf_info := ecs.drawables[drawable_index].global_buf_info;
 
-            draw_bvh_nodes_recursive(mesh_manager, &bvh_data, realtive_node_index = 0 , world_mat = ecs.drawables.world_mat[drawable_index], tree_depth = 1);
+            draw_bvh_nodes_recursive(mesh_manager, &global_buf_info, realtive_node_index = 0 , world_mat = ecs.drawables.world_mat[drawable_index], tree_depth = 1);
         }
+	}
+
+	if .DrawSceneBVH in disp_flags {
+		//mesh_manager := engine.mesh_manager;
+
+		draw_tl_bvh_nodes_recursive :: proc(tlas_nodes : []geo.BvhNode, node_index : u32, tree_depth : u32 = 1) {
+						
+			node : ^geo.BvhNode = &tlas_nodes[node_index];
+
+			//max_depth : f32 = 8;
+			//norm_depth : f32 = linalg.clamp(f32(tree_depth) / max_depth, 0.0, 1.0);
+			//color := [3]f32{1.0, 1.0, 1.0} * (1.0 - norm_depth);
+			color := hash_color(tree_depth);
+			
+			if tree_depth == 1 {
+
+				color = [3]f32{1.0,1.0,1.0}		
+			}
+
+			if !geo.bvh_is_leaf_node(node) {
+				debug_draw_tl_bvh_node(color, node);
+				//debug_draw_bvh_node(color, node, world_mat);
+				
+				draw_tl_bvh_nodes_recursive(tlas_nodes, node.left_first  , tree_depth + 1); // left child
+				draw_tl_bvh_nodes_recursive(tlas_nodes, node.left_first+1, tree_depth + 1); // right child
+			
+			} else {
+				
+				//debug_draw_bvh_node(DebugColor.Yellow, node, world_mat);
+				debug_draw_tl_bvh_node(color, node);
+			}
+		}
+
+		if len(universe.tlas_nodes) > 0 {
+			draw_tl_bvh_nodes_recursive(universe.tlas_nodes[:], 0);
+		}
 	}
 
 

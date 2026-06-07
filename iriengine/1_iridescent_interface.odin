@@ -35,6 +35,16 @@ get_swapchain_size :: proc() -> [2]u32 {
 	return engine.render_context.current_swapchain_size
 }
 
+get_window_size :: proc() -> [2]u32 {
+	size : [2]i32 = window_context_get_size_pixels(&engine.window);
+	return [2]u32{cast(u32)size.x, cast(u32)size.y};
+}
+
+get_window_aspect_ratio :: proc() -> f32{
+	size : [2]i32 = window_context_get_size_pixels(&engine.window);
+	return cast(f32)size.x / cast(f32)size.y;
+}
+
 quit_application :: proc(store_active_universe : bool = false) {
 
 	engine.running = false;
@@ -128,6 +138,8 @@ overwrite_universe_update_callback_procs :: proc(callbacks : UniverseUpdateCallb
 // obtain the asset uuid and provide new update callback procedures.
 multiverse_jump :: proc(asset_uuid : AssetUUID, update_callbacks : UniverseUpdateCallbacks, store_active_universe : bool) {
 	
+	IRI_PROFILE_PROCEDURE();
+
 	asset_manager := engine.asset_manager;
 
 	curr_universe := engine.universe;
@@ -139,14 +151,14 @@ multiverse_jump :: proc(asset_uuid : AssetUUID, update_callbacks : UniverseUpdat
 		}
 	}
 
-	// - validate that we can load the universe at uuid
-	// - load and init new universe
+	// - 1. validate that we can load the universe at uuid
+	// - 2. load and init new universe
 	new_universe, load_ok := asset_io_load_universe_asset(asset_uuid);
 	if !load_ok {
 		return
 	}
-	
-	// - run active universe deinit
+
+	// - run current universe deinit
 	if curr_universe != nil {
 		if engine.universe_update_callbacks.deinit != nil {
 			engine.universe_update_callbacks.deinit(curr_universe);
@@ -170,6 +182,9 @@ multiverse_jump :: proc(asset_uuid : AssetUUID, update_callbacks : UniverseUpdat
 	}
 
 	collision_manager_reset(engine.collision_manager);
+	
+	// TODO: maybe inform mesh manager of universe switch so it can 
+	// deallocate unusesd meshses.
 
 	// - switch universe pointer
 	engine.universe = new_universe;

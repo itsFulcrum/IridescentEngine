@@ -8,7 +8,11 @@ import "core:strings"
 import "core:os"
 import "core:io"
 
+import "core:sync"
+import "core:prof/spall"
+
 import sdl "vendor:sdl3"
+
 
 EngineContext :: struct {
 	default_context : runtime.Context,
@@ -57,10 +61,19 @@ EngineInitInfo :: struct {
 @(private="package")
 engine : ^EngineContext;
 
-
 @(private="package")
 @(require_results)
 iri_init :: proc(init_info : EngineInitInfo) -> bool  {
+
+
+	when ENGINE_SPALL_PROFILING {
+		spall_ctx = spall.context_create("iriengine_profile_trace.spall");
+		spall_backing_buffer = make([]u8, spall.BUFFER_DEFAULT_SIZE);
+		spall_buffer = spall.buffer_create(spall_backing_buffer, u32(sync.current_thread_id()));
+	}
+
+	IRI_PROFILE_PROCEDURE()
+	//spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure);
 
 	if engine != nil {
 		log.errorf("Iri Engine is already initialized.");
@@ -207,14 +220,14 @@ iri_init :: proc(init_info : EngineInitInfo) -> bool  {
 @(private="package")
 iri_run :: proc() {
 	
+	IRI_PROFILE_PROCEDURE()
+
 	engine_assert(engine != nil);
 
 	// post init setup
 	if engine.in_init_phase {
-		
 		end_init_phase()
 	}
-
 
 	log.debug("Engine Run");
 
@@ -222,6 +235,9 @@ iri_run :: proc() {
 
     // THE LOOP
     for engine.running {
+
+    	IRI_PROFILE_SCOPE("Iri Engine Frame")
+
     	fixed_timestep : f64 = clock_get_physics_timestep();
     	delta_time : f64 = clock_tick_frame();
     	true_delta_time : f64 = clock_get_true_delta_time();
@@ -237,7 +253,6 @@ iri_run :: proc() {
     	
     	input_system_set_process_user_input(process_user_inputs);
     	
-
     	// Input System
     	// poll and broadcast events
     	input_system_update();
@@ -253,17 +268,8 @@ iri_run :: proc() {
 
     	// Physics UPDATE
     	for clock_should_advance_fixed_timestep() {
-    		if engine.universe != nil {
-				// @Note: this should run before physics any integration. (previous_state = current state)
-				physics_universe_update_previous_transform_state(engine.collision_manager, engine.universe, cast(f32)fixed_timestep);
-			}	
 
     		iri_global_physics_update(fixed_timestep);
-    		
-    		if engine.universe != nil {
-    			ecs_process_pending_destroy(&engine.universe.ecs)
-    		}
-
 
     		clock_advance_fixed_timestep();
     	}
@@ -284,6 +290,7 @@ iri_run :: proc() {
     	universe_manager_update_universe(engine.window.gpu_device, engine.universe, engine.render_context.current_frame_size, cast(f32)fixed_alpha_interpolator);
     	
 
+    	mesh_manager_frame_update(engine.mesh_manager, engine.window.gpu_device);
     	// RENDERING
     	if engine.universe != nil {
     		debug_draw_manager_push_universe_components(engine.debug_draw_manager, engine.universe);
@@ -307,69 +314,79 @@ iri_run :: proc() {
 @(private="package")
 iri_deinit :: proc() {
 	
-	input_system_shutdown();
+	{
+		IRI_PROFILE_PROCEDURE()
 
-	debug_gui_deinit();
+		input_system_shutdown();
 
-	if engine.universe != nil {
-		universe_deinit(engine.universe);
-		free(engine.universe);
-		engine.universe = nil;
+		debug_gui_deinit();
+
+		if engine.universe != nil {
+			universe_deinit(engine.universe);
+			free(engine.universe);
+			engine.universe = nil;
+		}
+		
+		gpu_device := engine.window.gpu_device;
+
+		pipe_manager_deinit(engine.pipeline_manager, gpu_device);
+		free(engine.pipeline_manager);
+		engine.pipeline_manager = nil;
+
+		compute_pipe_manager_deinit(engine.compute_pipe_manager, gpu_device);
+		free(engine.compute_pipe_manager);
+		engine.compute_pipe_manager = nil;
+
+		shader_manager_deinit(engine.shader_manager, gpu_device);
+		free(engine.shader_manager);
+		engine.shader_manager = nil;
+		
+		collision_manager_deinit(engine.collision_manager);
+		free(engine.collision_manager);
+		engine.collision_manager = nil;	
+
+	    debug_draw_manager_deinit(engine.debug_draw_manager);
+	    free(engine.debug_draw_manager);
+	    engine.debug_draw_manager = nil;
+
+		renderer_deinit(engine.render_context, gpu_device);
+		free(engine.render_context);
+		engine.render_context = nil;
+		
+		mesh_manager_deinit(engine.mesh_manager, gpu_device);
+		free(engine.mesh_manager);
+		engine.mesh_manager = nil;
+		
+		material_manager_deinit(engine.material_manager, gpu_device);
+		free(engine.material_manager);
+		engine.material_manager = nil;
+
+		event_manager_deinit(engine.event_manager);
+		free(engine.event_manager);
+
+		asset_manager_deinit(engine.asset_manager);
+		free(engine.asset_manager);
+		engine.asset_manager = nil;
+
+		delete_string(engine.project_path);
+		delete_string(engine.project_content_path);
+		delete_string(engine.engine_resources_path);
+
+		window_destroy_context(&engine.window);
+
+	    sdl.Quit();
+
+	    free(engine);
+	    engine = nil;
+
+	    free_all(context.temp_allocator);
 	}
-	
-	gpu_device := engine.window.gpu_device;
 
-	pipe_manager_deinit(engine.pipeline_manager, gpu_device);
-	free(engine.pipeline_manager);
-	engine.pipeline_manager = nil;
-
-	compute_pipe_manager_deinit(engine.compute_pipe_manager, gpu_device);
-	free(engine.compute_pipe_manager);
-	engine.compute_pipe_manager = nil;
-
-	shader_manager_deinit(engine.shader_manager, gpu_device);
-	free(engine.shader_manager);
-	engine.shader_manager = nil;
-	
-	collision_manager_deinit(engine.collision_manager);
-	free(engine.collision_manager);
-	engine.collision_manager = nil;	
-
-    debug_draw_manager_deinit(engine.debug_draw_manager);
-    free(engine.debug_draw_manager);
-    engine.debug_draw_manager = nil;
-
-	renderer_deinit(engine.render_context, gpu_device);
-	free(engine.render_context);
-	engine.render_context = nil;
-	
-	mesh_manager_deinit(engine.mesh_manager, gpu_device);
-	free(engine.mesh_manager);
-	engine.mesh_manager = nil;
-	
-	material_manager_deinit(engine.material_manager, gpu_device);
-	free(engine.material_manager);
-	engine.material_manager = nil;
-
-	event_manager_deinit(engine.event_manager);
-	free(engine.event_manager);
-
-	asset_manager_deinit(engine.asset_manager);
-	free(engine.asset_manager);
-	engine.asset_manager = nil;
-
-	delete_string(engine.project_path);
-	delete_string(engine.project_content_path);
-	delete_string(engine.engine_resources_path);
-
-	window_destroy_context(&engine.window);
-
-    sdl.Quit();
-
-    free(engine);
-    engine = nil;
-
-    free_all(context.temp_allocator);
+    when ENGINE_SPALL_PROFILING {
+		spall.buffer_destroy(&spall_ctx, &spall_buffer);
+		delete(spall_backing_buffer);
+    	spall.context_destroy(&spall_ctx);
+    }
 }
 
 
@@ -403,43 +420,62 @@ iri_end_init_phase :: proc() {
 
 @(private="file")
 iri_global_physics_update :: proc(timestep : f64) {
+	IRI_PROFILE_PROCEDURE()
+
+	if engine.universe != nil {
+		// @Note: this should run before physics any integration. (previous_state = current state)
+		physics_universe_update_previous_transform_state(engine.collision_manager, engine.universe, cast(f32)timestep);
+	}
+    		
 
 	ts : f32 = cast(f32)timestep;
 
 	if engine.global_physics_update_callback != nil {
+		IRI_PROFILE_SCOPE("Global Physics Update Callback")
 		engine.global_physics_update_callback(ts);
 	}
 
 	if engine.universe != nil {
 
 		if engine.universe_update_callbacks.physics_update != nil {
+			IRI_PROFILE_SCOPE("Universe Physics Update Callback")
 			engine.universe_update_callbacks.physics_update(engine.universe, ts)
 		}
 
 		if engine.universe_update_callbacks.physics_update_late != nil {
+			IRI_PROFILE_SCOPE("Universe Physics Update Late Callback")
 			engine.universe_update_callbacks.physics_update_late(engine.universe, ts)
 		}
 		
 		physics_universe_update(engine.collision_manager, engine.universe, ts);
+	}
+	
+	if engine.universe != nil {
+		ecs_process_pending_destroy(&engine.universe.ecs)
 	}
 }
 
 @(private="file")
 iri_global_frame_update :: proc(delta_time : f64) {
 	
+	IRI_PROFILE_PROCEDURE()
+
 	dt : f32 = cast(f32)delta_time;
 
 	if engine.global_frame_update_callback != nil {
+		IRI_PROFILE_SCOPE("Global Frame Update Callback")
 		engine.global_frame_update_callback(dt);	
 	}
 
 	if engine.universe != nil {
 
 		if engine.universe_update_callbacks.frame_update != nil {
+			IRI_PROFILE_SCOPE("Universe Frame Update Callback")
 			engine.universe_update_callbacks.frame_update(engine.universe, dt)
 		}
 
 		if engine.universe_update_callbacks.frame_update_late != nil {
+			IRI_PROFILE_SCOPE("Universe Frame Update Late Callback")
 			engine.universe_update_callbacks.frame_update_late(engine.universe, dt)
 		}
 	}

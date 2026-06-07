@@ -9,11 +9,11 @@ MouseButtonAction :: enum u8{
 }
 
 MouseButton :: enum u8 {
-	LEFT 	= 1,
-	MIDDLE 	= 2,
-	RIGHT 	= 3,
-	X1 		= 4,
-	X2 		= 5,
+	LEFT 	= 0,
+	MIDDLE 	= 1,
+	RIGHT 	= 2,
+	X1 		= 3,
+	X2 		= 4,
 }
 
 KeyActionSet :: bit_set[KeyAction]

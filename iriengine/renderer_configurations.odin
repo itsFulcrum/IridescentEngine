@@ -180,3 +180,39 @@ renderer_set_ren_effect_SMAA_settings :: proc(ren_ctx : ^RenderContext, gpu_devi
 
     log.warnf("Renderer: Render Effect SMAA is not enabled, Cannot Enable before applying settings")
 }
+
+
+@(private="package")
+renderer_get_ren_effect_RACA_settings :: proc(ren_ctx : ^RenderContext) -> RenEffectRACASettings {
+
+    if .RACA in ren_ctx.config.ren_effect_flags {
+        engine_assert(ren_ctx.effects.raca != nil);
+
+        return ren_ctx.effects.raca.settings;
+    }
+
+    log.warnf("Renderer: Render Effect RACA is not enabled, return empty SettingsStruct.")
+
+    return RenEffectRACASettings{};
+}
+
+@(private="package")
+renderer_set_ren_effect_RACA_settings :: proc(ren_ctx : ^RenderContext, gpu_device : ^sdl.GPUDevice, settings : RenEffectRACASettings) {
+
+    if .RACA in ren_ctx.config.ren_effect_flags {
+        engine_assert(ren_ctx.effects.raca != nil);
+
+        curr_settings := &ren_ctx.effects.raca.settings;
+
+        reinit : bool = ren_effect_RACA_require_reinit(ren_ctx.effects.raca.settings, settings);
+        
+        ren_ctx.effects.raca.settings = settings;
+
+        if reinit {
+            render_effects_reinit(gpu_device, &ren_ctx.effects, {.RACA}, ren_ctx.current_frame_size);
+        }
+        return;
+    }
+
+    log.warnf("Renderer: Cannot apply settings for Render Effect RACA. The Effect must be enabled first.")
+}

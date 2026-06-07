@@ -212,6 +212,5 @@ primitive_create_uniticosphere :: proc(gpu_device : ^sdl.GPUDevice) -> ^Primitiv
     
     primitive_upload_to_gpu(gpu_device, prim, cast(rawptr)&vertices);
     
-
     return prim;
 }

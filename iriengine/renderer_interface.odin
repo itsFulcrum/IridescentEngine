@@ -2,6 +2,18 @@ package iri
 
 import sdl "vendor:sdl3"
 
+/*
+	The Renderer Interface generally works on a get/set bases where you can get the 
+	current configuration state using a get call which will return a copy of the
+	configuration which you can modify and then apply using a set call.
+	The interface works this way because we often have to do a bunch 
+	of work behind the scenes to manage resources, reallocate buffers,
+	recreate render targets even rebuild shader variants and pipline states in some cases.
+	So it would be unergonomical to return a mutable pointer to the configuration state.
+*/
+
+
+
 get_render_config :: proc() -> RenderConfig {
     return engine.render_context.config;
 }
@@ -35,7 +47,6 @@ enable_render_effects :: proc(effects : RenderingEffectFlags){
 }
 
 disable_render_effects :: proc(effects : RenderingEffectFlags) {
-
     gpu_device := get_gpu_device();
 	renderer_disable_render_effects(engine.render_context, gpu_device, effects)
 }
@@ -56,4 +67,13 @@ get_ren_effect_SMAA_settings :: proc() -> RenEffectSMAASettings{
 set_ren_effect_SMAA_settings :: proc(settings : RenEffectSMAASettings){
 	gpu_device := get_gpu_device();
 	renderer_set_ren_effect_SMAA_settings(engine.render_context, gpu_device, settings);
+}
+
+get_ren_effect_RACA_settings :: proc() -> RenEffectRACASettings{
+	return renderer_get_ren_effect_RACA_settings(engine.render_context);
+}
+
+set_ren_effect_RACA_settings :: proc(settings : RenEffectRACASettings){
+	gpu_device := get_gpu_device();
+	renderer_set_ren_effect_RACA_settings(engine.render_context, gpu_device, settings);
 }

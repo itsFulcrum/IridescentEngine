@@ -226,4 +226,55 @@ draw_render_settings :: proc(){
 			im.Spacing();
 		}
 	}
+
+
+	// Render Effect RACA
+	{
+		RACA_effect_enabled : bool = .RACA in ren_config.ren_effect_flags;
+
+		if im.Checkbox("RACA Effect Enable", &RACA_effect_enabled){
+
+			if RACA_effect_enabled {
+				iri.enable_render_effects({.RACA});
+			} else {
+				iri.disable_render_effects({.RACA});
+			}
+		}
+		im.SetItemTooltip("Render Effect - Radiance Cascades\ncall: enable_render_effects(RenderingEffectFlags{.RACA})\ncall: set_ren_effect_RACA_settings(settings : RenEffectRACASettings)");
+	
+		if RACA_effect_enabled {
+
+			raca_settings := iri.get_ren_effect_RACA_settings();
+
+			any_changed : bool = false;
+
+			any_changed |= im.Checkbox("Temporary Disable##RACA", &raca_settings.temporary_disabled)
+			
+			num_cascades 		: i32 = cast(i32)raca_settings.num_cascades;
+			base_probe_size 	: i32 = cast(i32)raca_settings.base_probe_size;
+			pixels_per_probe 	: i32 = cast(i32)raca_settings.pixels_per_probe;
+
+			if im.DragInt("Num Cascades", &num_cascades) {
+				any_changed = true;
+				raca_settings.num_cascades = cast(u32)clamp(num_cascades, 1, 16);
+			}
+			if im.DragInt("Base Probe Size", &base_probe_size) {
+				any_changed = true;
+				raca_settings.base_probe_size = cast(u32)clamp(base_probe_size, 2, 1024);
+			}
+			if im.DragInt("Pixels Per Probe", &pixels_per_probe) {
+				any_changed = true;
+				raca_settings.pixels_per_probe = cast(u32)clamp(pixels_per_probe, 1, 1024);
+			}
+
+
+			any_changed |= im.DragFloat("Base Ray Length", &raca_settings.base_ray_length, 0.001, 0.0001, 100.0)
+			
+			any_changed |= im.DragFloat("Depth Bias", &raca_settings.depth_bias, 0.00001, 0.0000001, 1.0);
+
+			if any_changed {
+				iri.set_ren_effect_RACA_settings(raca_settings);
+			}
+		}
+	}
 }

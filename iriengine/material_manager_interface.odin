@@ -1,5 +1,6 @@
 package iri
 
+import "core:strings"
 
 material_manager_get_num_loaded :: proc() -> uint {
 	return cast(uint)len(engine.material_manager.materials);
@@ -47,6 +48,17 @@ material_get_by_id :: proc(mat_id : MaterialID) -> ^Material {
 	return material_manager_get_material_unsafe(manager, mat_id)
 }
 
+// returns a copy of the material name string allocated using context.temp_allocator.
+material_get_name :: proc(mat_id : MaterialID) -> string {
+	manager := engine.material_manager;
+
+	if !material_exists(mat_id) {
+		return "";
+	}
+
+	mat := material_get_by_id(mat_id)
+	return strings.clone(mat.name, context.temp_allocator);
+}
 
 material_load_from_asset_uuid :: proc(asset_uuid : AssetUUID) -> (mat_id : MaterialID, ok : bool){
 	return asset_io_load_material_asset_id(engine.asset_manager, engine.material_manager, asset_uuid)

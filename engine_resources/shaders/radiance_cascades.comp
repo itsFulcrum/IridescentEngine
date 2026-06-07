@@ -1,0 +1,172 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+precision highp float;
+
+#include "../shader_lib/mathy.glsl"
+
+/*
+    For SPIR-V Compute shaders, use the following resource sets:
+    set 0: Sampled textures, followed by read-only storage textures, followed by read-only storage buffers
+    set 1: Read-write storage textures, followed by read-write storage buffers
+    set 2: Uniform buffers
+*/
+
+// Set 0:
+// Sampled Textures
+layout(set=0, binding = 0) uniform sampler2D _min_max_depth;
+
+// Read-Only Storage Textures
+// Read-Only Storage Buffers
+
+// mat4 _matrix_buffer[]
+#define RES_MATRIX_BUFFER_BIND 1
+// mat4 _inv_matrix_buffer[]
+#define RES_INV_MATRIX_BUFFER_BIND 2
+// - Global Tl BvhNodes  | BvhNode _tl_bvh_nodes[];
+#define RES_TL_BVH_NODES_BUFFER_BIND 3
+// - TL Bvh draw Indexes | uint _tl_bvh_draw_indecies
+#define RES_TL_BVH_DRAW_INDECIES_BUFFER_BIND 4
+// - DrawableGlobalBufInfo | DrawInfo _draw_info_buffer[]
+#define RES_DRAW_INFO_BUFFER_BIND 5
+// - Global Bl BvhNodes  | BvhNode _global_bl_bvh_nodes[];
+#define RES_GLOBAL_BL_BVH_NODES_BUFFER_BIND 6
+// - Global Indecies Buffer | uint _global_index_buffer[];
+#define RES_GLOBAL_INDEX_BUFFER_BIND 7
+// - Global Vertecies Buffer | vec3 _global_vertex_buffer[];
+#define RES_GLOBAL_VERTEX_BUFFER_BIND 8
+
+
+#define RAYTRACING_BUFFERS_BIND_OFFSET 2
+
+#include "../shader_lib/raytracing.glsl"
+
+// Set 1:
+// Read-Write Storage Textures
+//layout(rgba8, set=1, binding = 0) uniform writeonly image2D _raca_tex; // target
+layout(rg8, set=1, binding = 0) uniform writeonly image2D _casacade_tex; // target
+layout(rg8, set=1, binding = 1) uniform writeonly image2D _casacade_n1_tex; // target
+
+// Read-Write Storage Buffers
+
+// Set 2: Uniform Buffers.
+layout(set=2, binding=0) uniform ubo {
+    mat4 _inv_view_proj;
+    uvec2 _target_size; // dimentions of the texture we are writing to.
+    uint  _cascade_index;
+    uint  _probe_size; // probe size in px
+    uvec2 _probe_counts;
+    vec2  _interval_range;
+    
+    uvec2 _depth_mip_dimentions; // dimentions of the texture we are writing to.
+    uint _depth_mip_level;
+    uint _write_target; // Either 0 or 1. if 0 we should write to _casacade_tex if 1 write instead to _casacade_n1_tex
+    vec3 _camera_pos_ws;
+    float _depth_bias;
+};
+
+#define DIRECTION_FIRST_LAYOUT
+
+void write_to_target(ivec2 texel_coord, vec4 value){
+    if (_write_target == 0) {
+        imageStore(_casacade_tex, texel_coord, value);
+    } else {
+        imageStore(_casacade_n1_tex, texel_coord, value);
+    }
+}
+
+
+void main() {
+    
+    if(gl_GlobalInvocationID.x >= _target_size.x || gl_GlobalInvocationID.y >= _target_size.y) {
+        return;   
+    }
+    
+    ivec2 texel_coord = ivec2(gl_GlobalInvocationID.xy);
+
+    //vec2 tex_dimentions = vec2(_target_size);
+    //vec2 texel_uv = (vec2(texel_coord) + 0.5f) / tex_dimentions;
+    //vec2 texel_size = 1.0f / vec2(tex_dimentions);
+
+    const uint oct_size = _probe_size;
+
+    #ifdef DIRECTION_FIRST_LAYOUT
+        uvec2 probe_coord   = gl_GlobalInvocationID.xy % _probe_counts;
+        uvec2 oct_texel     = gl_GlobalInvocationID.xy / _probe_counts;
+    #else // Probe First Layout
+        uvec2 probe_coord   = gl_GlobalInvocationID.xy / oct_size;
+        uvec2 oct_texel     = gl_GlobalInvocationID.xy % oct_size;
+    #endif
+    
+    
+    vec2 probe_uv = (vec2(probe_coord) + 0.5) / vec2(_probe_counts);
+    vec2 oct_uv = (vec2(oct_texel) + 0.5f ) / float(oct_size);
+
+    // TODO: for c0 we can skip half rays if the the hemispehre around the face normal is backwards.
+    //      -> and just always assume this in these cases.
+
+    // TODO: Trace both min and max
+    // TODO: bitmasks.
+
+
+
+    vec2 depth_min_max = textureLod(_min_max_depth, probe_uv, float(_depth_mip_level)).xy;
+    float depth_min = depth_min_max.x;
+    float depth_max = depth_min_max.y;
+
+    // Skip if we land on sky/cleared depth
+    if (depth_min_max.x >= 0.9999999999f) {
+        write_to_target(texel_coord, vec4(1,1,0,0));
+        return;
+    }
+    
+    vec3 probe_pos_ws = reconstruct_position_from_depth(probe_uv, depth_min, _inv_view_proj);
+    
+    vec3 max_probe_pos_ws = reconstruct_position_from_depth(probe_uv, depth_max, _inv_view_proj);
+
+    // When using reconstucted normal consider always reconstructing them from highest depth buffer for better accuracy ?
+    vec3 normal = reconstruct_normal_from_depth(_min_max_depth, int(_depth_mip_level), _depth_mip_dimentions, probe_uv, depth_min, probe_pos_ws, _inv_view_proj);
+
+    const float depth_bias = _depth_bias + 0.01;
+
+    vec3 to_camera = normalize(_camera_pos_ws - probe_pos_ws);    
+    probe_pos_ws += to_camera * depth_bias;
+    
+    // @Note: i think constructing normal for hifher cascades with too high depth mip level might be causeing 
+    // more problems because normals probably become very inacurate. but without normal bias its
+    // also pretty bad.. 
+    const float normal_bias = 0.01f;
+    probe_pos_ws += normal * normal_bias * 1.0;
+
+    vec3 ray_dir = oct_decode(oct_uv);
+    vec3 ray_origin = probe_pos_ws + ray_dir * _interval_range.x;
+
+
+    vec3 max_to_camera = normalize(_camera_pos_ws - max_probe_pos_ws);    
+    max_probe_pos_ws += max_to_camera * depth_bias;
+    vec3 max_ray_origin = max_probe_pos_ws + ray_dir * _interval_range.x;
+
+    #if 0
+        // For cascade 0 where ray origins are same as probe postion
+        // we can make the assumtion that rays in the lower hemisphere to the face normal
+        // will always hit the surface. For cascade 1 this already breaks and causes noticable artifacts
+        // Note that because of depth/normal bias results still look different.
+        if (_cascade_index == 0) {
+
+            float NdotR = dot(normal, ray_dir);
+            if (NdotR < 0.0f){
+                write_to_target(texel_coord, vec4(0,0,0,0));
+                return;
+            }
+        }
+    #endif
+
+    // We invert so 0 == Hit and 1 == NO Hit.
+    float occlusion = 1.0 - raycast_tl_bvh_anyhit(ray_origin, ray_dir, _interval_range.y);
+    float max_occlusion = 1.0 - raycast_tl_bvh_anyhit(max_ray_origin, ray_dir, _interval_range.y);
+    
+
+    write_to_target(texel_coord, vec4(occlusion,max_occlusion,0,0));
+
+    return;
+}

@@ -31,22 +31,23 @@ layout (set=2, binding=0) uniform sampler2D _brdf_lut;
 layout (set=2, binding=1) uniform sampler2D _ao_tex;
 layout (set=2, binding=2) uniform samplerCube _skybox_cubemap;
 layout (set=2, binding=3) uniform sampler2DArray _main_light_shadowmap;
+layout (set=2, binding=4) uniform sampler2DArray _raca_tex;
 
 
 #define RES_GLOBAL_FRAG_BUFFER_SET 2
-#define RES_GLOBAL_FRAG_BUFFER_BIND 4
+#define RES_GLOBAL_FRAG_BUFFER_BIND 5
 #include "../shader_lib/resources/resource_global_fragment_buffer.glsl"
 
 
-layout (std140, set=2, binding=5) readonly buffer skybox_buffer {
+layout (std140, set=2, binding=6) readonly buffer skybox_buffer {
     SkyboxData data; // defined in skybox.glsl
 } _skybox;
 
-layout (std140, set=2, binding=6) readonly buffer pbr_material_buffer {
+layout (std140, set=2, binding=7) readonly buffer pbr_material_buffer {
     PbrMaterial _pbr_materials[];
 };
 
-layout (std140, set=2, binding=7) readonly buffer lights_buffer {
+layout (std140, set=2, binding=8) readonly buffer lights_buffer {
     uint num_lights;
     uint directional_lights_end; 
     uint point_lights_end;
@@ -54,7 +55,7 @@ layout (std140, set=2, binding=7) readonly buffer lights_buffer {
     LightData lights[];
 } _lights_buffer;
 
-layout (std140, set=2, binding=8) readonly buffer shadowmap_buffer {
+layout (std140, set=2, binding=9) readonly buffer shadowmap_buffer {
     uint array_len;
     uint padding1; 
     uint padding2;
@@ -187,7 +188,7 @@ void main() {
 
 	frag_color = vec4(0.0f,0.0f,0.0f,1.0f);
 
-	vec2 screen_uv = (vec2(gl_FragCoord.xy) ) / vec2(_global.frame_size);
+	vec2 screen_uv = (vec2(gl_FragCoord.xy) + 0.5f) / vec2(_global.frame_size);
 	screen_uv.y = 1.0f - screen_uv.y;
 
 	float screen_noise = randf(int(gl_FragCoord.x), int(gl_FragCoord.y));
@@ -202,7 +203,14 @@ void main() {
 	#endif
 
 
-	//frag_color.rgb = vec3(scene_ao);
+	//vec4 raca_sample = texture(_ao_tex, screen_uv);
+	
+	//uint array_layer = 0;
+	//uint mip_level = 0;
+	//vec4 raca = textureLod(_raca_tex, vec3(screen_uv.xy, float(array_layer)),float(mip_level));
+	//frag_color.rgb = vec3(pow(raca_sample.r, 3.0f) * 0.2);
+	//frag_color.rg = raca_sample.rg;
+	//scene_ao = raca_sample.g;
 	//return;
 
 	PbrMaterial mat = _pbr_materials[_mat_ubo.mat_index];
@@ -308,7 +316,7 @@ void main() {
 
  		vec3 light_radiance = DiffuseSpecularBRDF(lighting_data.frag_position, lighting_data.view_direction, NdotV, F0, attenuated_radiance, to_light_vec, surf_data, alias_mask_fine);
 
- 		light_radiance *= shadow; 		
+ 		light_radiance *= shadow;// * raca.r; 		
  		direct_radiance += light_radiance;
 
  		debug_color += shadow;

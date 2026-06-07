@@ -40,6 +40,19 @@ draw_universe_settings :: proc(universe: ^iri.Universe){
 	im.Spacing()
 	im.Spacing()
 
+
+	bvh_split_planes : i32 = cast(i32)uni.settings.bvh_num_split_planes;
+	bvh_tree_depth   : i32 = cast(i32)uni.settings.bvh_max_tree_depth;
+	if im.DragInt("BVH Split Planes", &bvh_split_planes) {
+		uni.settings.bvh_num_split_planes = cast(u32)clamp(bvh_split_planes, 1, 1000);
+	}
+	if im.DragInt("BVH Max Tree Depth", &bvh_tree_depth) {
+		uni.settings.bvh_max_tree_depth = cast(u32)clamp(bvh_tree_depth, 2, 32);
+	}
+
+
+
+
 }
 
 // Universe Scene View
@@ -868,6 +881,23 @@ draw_component_editor_meshrenderer :: proc (comp : ^iri.MeshRendererComponent) {
 		iri.comp_meshrenderer_make_all_static(comp, false);
 	}
 
+
+	set_node_open_state_for_all : bool = false;
+	node_open_state : bool = false;
+
+	im.SameLine()
+	if im.Button("Unfold All"){
+		set_node_open_state_for_all = true;
+		node_open_state = true;
+	}
+	im.SameLine()
+	if im.Button("Fold All"){
+		set_node_open_state_for_all = true;
+		node_open_state = false;
+	}
+
+
+
 	im.Selectable("Load/Drag Scene Collection")
 	collection_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.SceneCollection}); file_info != nil {
 		iri.comp_meshrenderer_append_scene_collection_asset(comp, file_info.asset_uuid);
@@ -892,7 +922,18 @@ draw_component_editor_meshrenderer :: proc (comp : ^iri.MeshRendererComponent) {
 		drawable_index : int = comp.drawable_indexes[index]; // index into ecs.drawables array.
 		node_lable := fmt_cstr("DrawInstance: {}", index);
 
-		if im.TreeNodeEx(node_lable, tree_node_flags) {
+		this_tree_node_flags := tree_node_flags;
+		if editor_is_initialized() {
+			if editor.selected_drawable_index == cast(i32)drawable_index{
+				this_tree_node_flags += im.TreeNodeFlags{.Selected}
+			}
+		}
+
+		if set_node_open_state_for_all {
+			im.SetNextItemOpen(node_open_state);
+		}
+
+		if im.TreeNodeEx(node_lable, this_tree_node_flags) {
 			defer im.TreePop();
 			
 			if button_remove_draw_inst_sameline(comp, index) {
@@ -918,19 +959,23 @@ draw_component_editor_meshrenderer :: proc (comp : ^iri.MeshRendererComponent) {
 
 
 			im.Text("DrawableIndex: %d", drawable_index);
-
-			im.BulletText("MeshID: %d", draw_inst.mesh_id);
+			mesh_name : string = iri.mesh_get_mesh_name(draw_inst.mesh_id);
+			mesh_selectable_lable : cstring = fmt_cstr("%s | MeshID : %d", mesh_name, draw_inst.mesh_id);
+			im.BulletText("Mesh:");
 			im.SameLine();
-			im.Selectable("Load/Drag Mesh Asset")
+			im.Selectable(mesh_selectable_lable)
 
 			mesh_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.Mesh}); file_info != nil {	
 				iri.comp_meshrenderer_load_mesh_asset_to_draw_instance(comp,index, file_info.asset_uuid);
 			}
 
 
-			im.BulletText("MatID : %d", draw_inst.mat_id);
+			im.BulletText("Material:");
 			im.SameLine();
-			im.Selectable("Load/Drag Material Asset")
+			mat_name : string = iri.material_get_name(draw_inst.mat_id);
+			mat_selectable_lable : cstring = fmt_cstr("%s | MatID : %d", mat_name, draw_inst.mat_id);
+			
+			im.Selectable(mat_selectable_lable);
 			mat_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.Material}); file_info != nil {
 				iri.comp_meshrenderer_load_material_asset_to_draw_instance(comp,index, file_info.asset_uuid);
 			}

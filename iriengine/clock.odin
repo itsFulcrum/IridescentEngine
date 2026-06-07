@@ -74,6 +74,8 @@ clock_init :: proc(){
 // Call this once per frame
 @(private="package")
 clock_tick_frame :: proc() -> f64{
+	
+	IRI_PROFILE_PROCEDURE()
 
 	new_time : f64 = clock_get_ticks_seconds();
 	clock_data.true_delta_time = new_time - clock_data.true_elapsed_time; 

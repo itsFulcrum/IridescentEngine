@@ -3,6 +3,7 @@ package iri
 import "core:log"
 import "core:strings"
 import "core:math/rand"
+import "core:math/linalg"
 
 import iricom "iricommon"
 import geo "odinary:geometry"
@@ -1145,10 +1146,19 @@ ecs_drawable_add :: proc(ecs : ^ECData, entity : Entity, drawable : ^Drawable) -
 
 	world_transform    := transform_child_by_parent(entity_transform, drawable.draw_instance.transform);
 	drawable.world_mat = transform_calc_world_matrix(world_transform);
+	drawable.inv_world_mat = linalg.inverse(drawable.world_mat);
 
-	if mesh_manager_is_valid_id(engine.mesh_manager, drawable.draw_instance.mesh_id) {	
-		mesh_aabb := mesh_manager_get_aabb(engine.mesh_manager, drawable.draw_instance.mesh_id);
+	if mesh_id := drawable.draw_instance.mesh_id; mesh_manager_is_valid_id(engine.mesh_manager, mesh_id) {	
+		mesh_aabb := mesh_manager_get_aabb(engine.mesh_manager, mesh_id);
 		drawable.world_oobb = geo.obb_from_aabb_and_transform(mesh_aabb, world_transform);
+		drawable.world_aabb = geo.obb_to_aabb(drawable.world_oobb);
+		mesh_global_buf_info := engine.mesh_manager.meshes[mesh_id].global_buf_info;
+		
+		drawable.global_buf_info = DrawableGlobalBufferInfo {
+			bl_bvh_root_offset      = mesh_global_buf_info.bvh_nodes_offset,
+			global_indecies_offset  = mesh_global_buf_info.indecies_offset,
+			global_vertecies_offset = mesh_global_buf_info.vertecies_offset,
+		}
 	} else {
 		drawable.draw_instance.flags += DrawInstanceFlags{._Internal_NoValidMesh}
 	}

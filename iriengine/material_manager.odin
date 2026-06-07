@@ -89,6 +89,7 @@ material_manager_cast_gpu_array_to_byte_multiptr :: proc(manager : ^MaterialMana
 material_manager_init :: proc(manager : ^MaterialManager){
 
 	fallback_mat : Material;
+	fallback_mat.name = strings.clone("Iri Default Fallback", context.allocator);
 	fallback_mat.render_technique = render_technique_create_default_opaque();
 	fallback_mat.variant = UnlitMaterialVariant {
 		albedo_color = {1.0, 0.0, 1.0},

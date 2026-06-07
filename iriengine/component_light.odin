@@ -108,6 +108,9 @@ comp_light_init_from_light_asset :: proc(comp : ^LightComponent, asset : iria.Li
 	comp.color    = asset.color;
 	comp.strength = asset.strength;
 
+	comp.cast_shadows = .CastShadows in asset.flags;
+
+
 	if asset.type == .DIRECTIONAL {
 		dir_variant := DirectionalLightVariant{};
 		dir_variant.shadowmap_cascade_resolutions[0] = asset.shadowmap_res_0;
@@ -154,6 +157,8 @@ comp_light_create_light_asset :: proc(comp : ^LightComponent) -> iria.LightAsset
 	asset.flags = iria.LightAssetFlags{};
 	if comp.cast_shadows {
 		asset.flags += iria.LightAssetFlags{.CastShadows};
+	} else {
+		asset.flags -= iria.LightAssetFlags{.CastShadows};
 	}
 
 	switch &v in comp.variant {

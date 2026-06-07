@@ -1,7 +1,7 @@
 #version 450 core
 
 // Vertex Attribute Data
-layout (location=0) in vec3 a_pos;
+layout (location=0) in vec4 a_pos;
 
 #ifdef VERT_LAYOUT_MINIMAL
 layout (location=1) in vec4 a_qtangent;
@@ -36,13 +36,16 @@ layout(set=1,binding=0) uniform global_vertex_ubo {
 	mat4 view_proj_mat;
 } _global_vertex;
 
-layout(set=1,binding=1) uniform draw_instance_vertex_ubo {
-	uint drawable_index;
-	uint padding1;
-	uint padding2;
-	uint padding3;
-} _draw_inst;
 
+// @Note: as long as we only need drawable_index here we can replace this with gl_InstanceID
+// layout(set=1,binding=1) uniform draw_instance_vertex_ubo {
+// 	uint drawable_index;
+// 	uint padding1;
+// 	uint padding2;
+// 	uint padding3;
+// } _draw_inst;
+
+// TODO: Dont send all this crap per vertex
 // Output Vertex Data
 layout (location = 0) out vertex_data {	
 	vec3 position_ws;
@@ -81,7 +84,8 @@ void decode_qtangent(vec4 q, out vec3 T, out vec3 B, out vec3 N) {
 
 void main() {
 
-	mat4 world_mat = _matrix_buffer.data[_draw_inst.drawable_index];
+	// @Note: gl_InstanceIndex == drawable_index
+	mat4 world_mat = _matrix_buffer[gl_InstanceIndex];
 
 	vec4 position_ws = world_mat * vec4(a_pos.xyz, 1.0f);
 

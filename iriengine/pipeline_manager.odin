@@ -122,7 +122,8 @@ ShaderCombination :: struct{
 
 VertexBufDescriptorType :: enum {
     None = 0,
-    PositionOnly,
+    PositionOnlyFloat4,
+    PositionOnlyFloat3,
     LayoutMinimal,
     LayoutStandard,
     LayoutExtended,
@@ -163,7 +164,7 @@ pipe_manager_get_core_pipeline_shader_combination :: proc(pipeline : CorePipelin
 pipe_manager_get_core_pipeline_vertex_buf_descriptor_type :: proc(pipeline : CorePipeline) -> VertexBufDescriptorType{
     
     switch pipeline {
-        case .Skybox:               return .PositionOnly;
+        case .Skybox:               return .PositionOnlyFloat3;
         case .DearImGUI:            return .DearImgui;
         case .PostColorCorrect:     return .None;
         case .SWAPCHAIN_COMPOSIT:   return .None;
@@ -367,7 +368,18 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
 @(private="file")
 pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescriptorType) -> VertexBufDescriptorInfo {
     
-    pm_append_attr_pos_only :: proc(array: ^[dynamic]sdl.GPUVertexAttribute){
+    pm_append_attr_pos_only_float4 :: proc(array: ^[dynamic]sdl.GPUVertexAttribute){
+        // Position
+        pos : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
+            buffer_slot = 0,
+            location = 0,
+            format = sdl.GPUVertexElementFormat.FLOAT4,
+            offset = 0,
+        };
+        append(array, pos);
+    }
+
+    pm_append_attr_pos_only_float3 :: proc(array: ^[dynamic]sdl.GPUVertexAttribute){
         // Position
         pos : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 0,
@@ -384,7 +396,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
         pos : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 0,
             location = 0,
-            format = sdl.GPUVertexElementFormat.FLOAT3,
+            format = sdl.GPUVertexElementFormat.FLOAT4,
             offset = 0,
         };
         
@@ -416,7 +428,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
         pos : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 0,
             location = 0,
-            format = sdl.GPUVertexElementFormat.FLOAT3,
+            format = sdl.GPUVertexElementFormat.FLOAT4,
             offset = 0,
         };
 
@@ -457,7 +469,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
         pos : sdl.GPUVertexAttribute = sdl.GPUVertexAttribute{
             buffer_slot = 0,
             location = 0,
-            format = sdl.GPUVertexElementFormat.FLOAT3,
+            format = sdl.GPUVertexElementFormat.FLOAT4,
             offset = 0,
         };
 
@@ -550,14 +562,26 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
 
     switch info.type {
         case .None:
-        case .PositionOnly: {
+        case .PositionOnlyFloat3: {
 
-            pm_append_attr_pos_only(&info.attributes);
+            pm_append_attr_pos_only_float3(&info.attributes);
 
             description : sdl.GPUVertexBufferDescription = {
                 slot = 0, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
                 pitch = size_of([3]f32), // vertex byte size
+            }
+
+            append(&info.descriptors,description);
+        }
+        case .PositionOnlyFloat4: {
+
+            pm_append_attr_pos_only_float4(&info.attributes);
+
+            description : sdl.GPUVertexBufferDescription = {
+                slot = 0, // buffer slot
+                input_rate = sdl.GPUVertexInputRate.VERTEX,
+                pitch = size_of([4]f32), // vertex byte size
             }
 
             append(&info.descriptors,description);
@@ -569,7 +593,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_0 : sdl.GPUVertexBufferDescription = {
                 slot = 0, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of([3]f32), // vertex byte size
+                pitch = size_of([4]f32), // vertex byte size
             }
 
             description_1 : sdl.GPUVertexBufferDescription = {
@@ -587,7 +611,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_0 : sdl.GPUVertexBufferDescription = {
                 slot = 0, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of([3]f32), // vertex byte size
+                pitch = size_of([4]f32), // vertex byte size
             }
 
             description_1 : sdl.GPUVertexBufferDescription = {
@@ -605,7 +629,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_0 : sdl.GPUVertexBufferDescription = {
                 slot = 0, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of([3]f32), // vertex byte size
+                pitch = size_of([4]f32), // vertex byte size
             }
 
             description_1 : sdl.GPUVertexBufferDescription = {
@@ -659,10 +683,10 @@ pipe_manager_init :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevic
             case .SKYBOX_VERT:              id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "skybox.vert"               }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .SKYBOX_FRAG:              id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "skybox.frag"               }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);
             case .SCREENQUAD_VERT:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "screenquad.vert"           }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
-            case .POST_COLOR_CORRECT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "post_process.frag"         }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);        
+            case .POST_COLOR_CORRECT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "post_process.frag"         }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);        
             case .DEAR_IMGUI_VERT:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "dear_imgui.vert"           }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .DEAR_IMGUI_FRAG:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "dear_imgui.frag"           }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
-            case .SWAPCHAIN_COMPOSIT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "swapchain_composit.frag"   }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
+            case .SWAPCHAIN_COMPOSIT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "swapchain_composit.frag"   }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);
             case .UNIT_CUBE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "unit_cube.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .LINE_CUBE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_cube.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .LINE_LINE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_line.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
@@ -1427,7 +1451,7 @@ pipe_manager_update_depthonly_pipeline_cache_with_material :: proc(manager : ^Pi
         engine_assert(vert_shader != nil);
         engine_assert(frag_shader != nil);
 
-        pipeline := pipe_manager_create_graphics_pipeline(gpu_device, vert_shader, frag_shader, &pipe_config, &manager.vertex_buf_descriptor_infos[VertexBufDescriptorType.PositionOnly], &render_pass_info);
+        pipeline := pipe_manager_create_graphics_pipeline(gpu_device, vert_shader, frag_shader, &pipe_config, &manager.vertex_buf_descriptor_infos[VertexBufDescriptorType.PositionOnlyFloat4], &render_pass_info);
 
         if pipeline != nil {
             log.debugf("Build Pipeline Variant Depthonly: shader_type: {}, depthonly_pipe_hash: {}", depth_only_shader_type, pipe_hash);

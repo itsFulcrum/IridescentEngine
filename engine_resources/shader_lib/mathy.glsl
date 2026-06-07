@@ -234,8 +234,6 @@ vec3 reconstruct_position_from_depth(vec2 screen_uv, float nonlin_depth_sample, 
     
     // https://wickedengine.net/2019/09/improved-normal-reconstruction-from-depth/
 
-    screen_uv.y = 1.0f - screen_uv.y; // idk for some reason we have to flip this.
-
     screen_uv = fma(screen_uv, vec2(2.0f), vec2(-1.0f) );
     
     vec4 clip_pos  = vec4( screen_uv.xy, nonlin_depth_sample, 1.0f);
@@ -246,7 +244,7 @@ vec3 reconstruct_position_from_depth(vec2 screen_uv, float nonlin_depth_sample, 
 
 vec3 reconstruct_normal_from_depth(sampler2D depth_sampler, int mip, uvec2 depth_tex_dimentions, vec2 uv_center, float depth_at_uv_center, vec3 pos_at_uv_center, mat4 inv_matrix) {
 
-    // ASSUMES DEPTH IS IN THE SAMPLERS .r channels
+    // ASSUMES DEPTH IS IN THE SAMPLERS .r channel
 
     // normal reconstruction based on this blog post: 
     // https://wickedengine.net/2019/09/improved-normal-reconstruction-from-depth/
@@ -302,7 +300,7 @@ vec3 reconstruct_normal_from_depth(sampler2D depth_sampler, int mip, uvec2 depth
     
     // formula: normal = normalize(cross(p2 - p0, p1 - p0))
 
-    
+    // TODO: can we use gather for this ?
     float z_center  = depth_at_uv_center;
     float z_up      = texelFetch(depth_sampler, texel_up   , mip).x;
     float z_right   = texelFetch(depth_sampler, texel_right, mip).x;
@@ -348,7 +346,7 @@ vec3 reconstruct_normal_from_depth(sampler2D depth_sampler, int mip, uvec2 depth
         p2 = reconstruct_position_from_depth(uv_down, z_down, inv_matrix);
     }
 
-    vec3 normal = normalize(cross(p2 - p0, p1 - p0));
+    vec3 normal = normalize(cross(p1 - p0, p2 - p0));
 
     return normal;
 }

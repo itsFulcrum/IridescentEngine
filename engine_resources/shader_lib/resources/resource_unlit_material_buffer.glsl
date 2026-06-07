@@ -20,7 +20,6 @@ struct UnlitMaterial {
 	uint padding3;
 };
 
-
 layout (std140, set=RES_UNLIT_BUF_SET, binding=RES_UNLIT_BUF_BIND) readonly buffer unlit_material_buffer {
     UnlitMaterial _unlit_materials[];
 };

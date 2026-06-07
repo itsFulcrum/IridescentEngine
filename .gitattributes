@@ -1,3 +1,6 @@
+# Macro attribute: Files intended for LFS
+[attr]lfs-file filter=lfs diff=lfs merge=lfs -text
+
 # Creative software
 *.rns lfs-file
 *.reason lfs-file

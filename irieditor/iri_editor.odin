@@ -46,7 +46,10 @@ IriEditor :: struct {
 	universe_rename_buf 		: [^]u8, 
 	universe_rename_buf_len 	: u32,
 
+	// Call select_entity() instead of assinging directly!
 	_selected_entity : iri.Entity,
+	selected_drawable_index : i32, // -1 if none selected.
+
 	// constant (128 byte) buffer for input text edits of project dir path.
 	selected_entity_rename_buf 		: [^]u8, 
 	selected_entity_rename_buf_len 	: u32,
@@ -101,6 +104,7 @@ init :: proc() {
 	iri.debug_gui_set_editor_callback_procedure(draw_imgui_callback);
 
 	editor._selected_entity = iri.Entity{id = -1}
+	editor.selected_drawable_index = -1;
 	editor.selected_entity_rename_buf_len = 128;
 	editor.selected_entity_rename_buf = make_multi_pointer([^]u8, 128, context.allocator);
 	
@@ -207,7 +211,6 @@ draw_imgui_callback :: proc() {
 		return;
 	}
 
-	free_all(editor.tmp_allocator);
 
 	// overwrite the tmp allocator for our purposes
 	context.temp_allocator = editor.tmp_allocator;
@@ -215,11 +218,15 @@ draw_imgui_callback :: proc() {
 	im.DockSpaceOverViewport(flags = im.DockNodeFlags{.PassthruCentralNode},window_class = nil);
 	//im.DockSpaceOverViewport(dockspace_id: ID = {}, viewport: ^Viewport = nil, flags: DockNodeFlags = {}, window_class: ^WindowClass = nil)
 
+	process_viewport();
+
 	draw_window_settings();
 	draw_window_universe_viewer();
 	draw_window_project_browser();
 	draw_window_properties();
 	draw_main_menu_bar();
+	
+	free_all(editor.tmp_allocator);
 }
 
 @(private="package")
@@ -227,6 +234,10 @@ select_entity :: proc(universe : ^iri.Universe, entity : iri.Entity) {
 
 	if !editor_is_initialized(){
 		return;
+	}
+
+	if !iri.entity_exists(entity, universe) {
+		return
 	}
 
 	editor._selected_entity = entity;

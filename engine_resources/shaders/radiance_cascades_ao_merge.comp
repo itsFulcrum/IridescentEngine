@@ -1,0 +1,426 @@
+#version 450 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+precision highp float;
+
+#include "../shader_lib/mathy.glsl"
+
+/*
+    For SPIR-V Compute shaders, use the following resource sets:
+    set 0: Sampled textures, followed by read-only storage textures, followed by read-only storage buffers
+    set 1: Read-write storage textures, followed by read-write storage buffers
+    set 2: Uniform buffers
+*/
+
+// Set 0:
+// Sampled Textures
+layout(set=0, binding = 0) uniform sampler2D _min_max_depth;
+layout(set=0, binding = 1) uniform sampler2DArray _cascade_array;
+
+// Read-Only Storage Textures
+// Read-Only Storage Buffers
+
+// Set 1:
+// Read-Write Storage Textures
+//layout(rgba8, set=1, binding = 0) uniform writeonly image2D _raca_tex; // target
+layout(rg32f, set=1, binding = 0) uniform image2D _casacade_n0;
+layout(rg32f, set=1, binding = 1) uniform image2D _casacade_n1;
+
+// Read-Write Storage Buffers
+
+// Set 2: Uniform Buffers.
+layout(set=2, binding=0) uniform ubo {
+    mat4 _inv_view_proj;
+    
+    uvec2 _target_size; // dimentions of the texture we are writing to.
+    uint  _n0_cascade_index;
+    uint  _n0_oct_size; // probe size in px
+    
+    uvec2 _n0_probe_counts;
+    uint _num_cascades;
+    uint _integrate_last_cascade;
+    
+    uvec2 _n0_depth_mip_dimentions; // dimentions of the texture we are writing to.
+    uint  _n0_depth_mip_level;
+    uint  _padding;
+};
+
+#define DIRECTION_FIRST_LAYOUT
+
+// Merge 2 connected intervals with respect to their visibility term 
+// vec4 merge_intervals_radiance(const vec4 near, const vec4 far) {
+//     // Far radiance can get occluded by near visibility term
+//     const vec3 radiance = near.rgb + (far.rgb * near.a);
+
+//     return vec4(radiance, near.a * far.a);
+// }
+
+vec2 merge_intervals(const vec2 near, const vec2 far) {
+    // value of 0 == fully occluded (hit), value of 1 == no occlusion (no hit)
+    const float radiance = near.r + (far.r * near.g);
+
+    return vec2(radiance, near.g * far.g);
+}
+
+vec4 merge_intervals_min_max(const vec4 near, const vec4 far) {
+    // value of 0 == fully occluded (hit), value of 1 == no occlusion (no hit)
+    
+    const float min_occ = near.r + (far.r * near.g);
+    const float min_vis = near.g * far.g;
+
+    const float max_occ = near.b + (far.b * near.a);
+    const float max_vis = near.a * far.a;
+
+    return vec4(min_occ, min_vis, max_occ,max_vis);
+}
+
+// https://www.shadertoy.com/view/4XXSWS
+// Project a point onto a line and return the parametric distance
+float project_line_perpendicular(vec3 lineStart, vec3 lineEnd, vec3 point) {
+    vec3 line = lineEnd - lineStart;
+    float lineLength2 = dot(line, line);
+    
+    return clamp( dot(point - lineStart, line) / lineLength2, 0.0f , 1.0f);
+}
+
+// Calculate 3D-aware bilinear ratios using iterative approach
+//https://github.com/Qirias/RC-SPWI/blob/main/data/shaders/ray_trace.metal
+vec2 get_bilinear_3d_ratio_iterative(vec3 srcPoints[4], vec3 dstPoint, vec2 initRatio, int iterCount) {
+    vec2 ratio = initRatio;
+    
+    for (int i = 0; i < iterCount; i++) {
+        // Interpolate along Y and find X ratio
+        vec3 mixedY1 = mix(srcPoints[0], srcPoints[2], ratio.y);
+        vec3 mixedY2 = mix(srcPoints[1], srcPoints[3], ratio.y);
+        ratio.x = project_line_perpendicular(mixedY1, mixedY2, dstPoint);
+        
+        // Interpolate along X and find Y ratio
+        vec3 mixedX1 = mix(srcPoints[0], srcPoints[1], ratio.x);
+        vec3 mixedX2 = mix(srcPoints[2], srcPoints[3], ratio.x);
+        ratio.y = project_line_perpendicular(mixedX1, mixedX2, dstPoint);
+    }
+    
+    // for (int i = 0; i < iterCount; i++) {
+    //     // Interpolate along Y and find X ratio
+    //     vec3 mixedY1 = mix(srcPoints[0], srcPoints[2], ratio.y);
+    //     vec3 mixedY2 = mix(srcPoints[1], srcPoints[3], ratio.y);
+    //     //vec3 mixedY1 = mix(srcPoints[2],srcPoints[0], ratio.y);
+    //     //vec3 mixedY2 = mix(srcPoints[3],srcPoints[1], ratio.y);
+
+    //     ratio.x = project_line_perpendicular(mixedY1, mixedY2, dstPoint);
+        
+    //     // Interpolate along X and find Y ratio
+    //     vec3 mixedX1 = mix(srcPoints[0], srcPoints[1], ratio.x);
+    //     vec3 mixedX2 = mix(srcPoints[2], srcPoints[3], ratio.x);
+
+    //     //vec3 mixedX1 = mix(srcPoints[1],srcPoints[0], ratio.x);
+    //     //vec3 mixedX2 = mix(srcPoints[3],srcPoints[2], ratio.x);
+
+    //     ratio.y = project_line_perpendicular(mixedX1, mixedX2, dstPoint);
+    // }
+
+    return ratio;
+}
+
+
+void main() {
+    
+    if(gl_GlobalInvocationID.x >= _target_size.x || gl_GlobalInvocationID.y >= _target_size.y) {
+        return;   
+    }
+
+    const ivec2 texel_coord = ivec2(gl_GlobalInvocationID.xy);
+    
+    if (_integrate_last_cascade == 1){
+        
+        // Integration pass 1: summ up occulsion for each probe and store it packed.
+
+        // If we are here. texel_coord == n0_probe_coord
+
+        uvec2 n0_probe_coord   = gl_GlobalInvocationID.xy;
+        //uvec2 n0_probe_coord   = gl_GlobalInvocationID.xy / _n0_oct_size;
+
+        vec4 ao = vec4(0.0f);
+
+        for (uint x = 0; x < _n0_oct_size; x++){
+            for (uint y = 0; y < _n0_oct_size; y++){
+                
+                uvec2 oct_coord = uvec2(x,y);
+
+                #ifdef DIRECTION_FIRST_LAYOUT
+                    uvec2 oct_probe_texel = (oct_coord * _n0_probe_counts) + n0_probe_coord;
+                #else
+                    uvec2 oct_probe_texel = (n0_probe_coord * _n0_oct_size) + oct_coord;
+                #endif
+
+                ao += imageLoad(_casacade_n1, ivec2(oct_probe_texel)).rgba;
+            }
+        }
+
+        ao = ao / vec4(_n0_oct_size * _n0_oct_size);
+
+        imageStore(_casacade_n0, texel_coord, vec4(ao.rgba));
+        return;
+
+    } else if (_integrate_last_cascade == 2){
+        // here we are back to frame size. aka texel coord == screen pixel
+
+        // probe coord in probe first layout. because we want to find closest probe to current screen pixel 
+        uvec2 probe_coord = gl_GlobalInvocationID.xy / _n0_oct_size;
+        
+        vec2  probe_coord_f   = (vec2(gl_GlobalInvocationID.xy) ) / vec2(_n0_oct_size) ;
+        //uvec2 probe_coord = uvec2(probe_coord_f);
+        
+        ivec2[4] probe_coords;
+        probe_coords[0] = ivec2(probe_coord) + ivec2(0,0);
+        probe_coords[1] = ivec2(probe_coord) + ivec2(1,0);
+        probe_coords[2] = ivec2(probe_coord) + ivec2(0,1);
+        probe_coords[3] = ivec2(probe_coord) + ivec2(1,1);
+
+        vec2 bi_fract = probe_coord_f - vec2(probe_coord ) ; // should be same as fract(probe_coord_f);
+        //vec2 bi_fract = fract(probe_coord_f);// - vec2(probe_coord) ; // should be same as fract(probe_coord_f);
+        vec2 max_bi_fract = bi_fract;
+
+        vec4 min_max_blends = vec4(0.0f);
+
+        #if 1
+
+            //uvec2 n0_probe_coord_probe_first   = gl_GlobalInvocationID.xy / _n0_oct_size;
+
+            vec2 pixel_uv = (vec2(texel_coord) + 0.5) / vec2(_target_size);
+            float pixel_depth_mip = 0.0;
+            vec2 pixel_depth = textureLod(_min_max_depth, pixel_uv, pixel_depth_mip).xy;
+            vec3 pixel_pos_ws = reconstruct_position_from_depth(pixel_uv, pixel_depth.x, _inv_view_proj);
+
+            vec2[4] probe_uvs;
+            probe_uvs[0] = (vec2(probe_coords[0]) + 0.5f) / vec2(_n0_probe_counts);
+            probe_uvs[1] = (vec2(probe_coords[1]) + 0.5f) / vec2(_n0_probe_counts);
+            probe_uvs[2] = (vec2(probe_coords[2]) + 0.5f) / vec2(_n0_probe_counts);
+            probe_uvs[3] = (vec2(probe_coords[3]) + 0.5f) / vec2(_n0_probe_counts);
+
+            float n0_depth_mip = float(_n0_depth_mip_level);
+            vec2[4] probe_depths;
+            // TODO: maybe can use textureGather here?
+            probe_depths[0] = textureLod(_min_max_depth, probe_uvs[0], n0_depth_mip).xy;
+            probe_depths[1] = textureLod(_min_max_depth, probe_uvs[1], n0_depth_mip).xy;
+            probe_depths[2] = textureLod(_min_max_depth, probe_uvs[2], n0_depth_mip).xy;
+            probe_depths[3] = textureLod(_min_max_depth, probe_uvs[3], n0_depth_mip).xy;
+
+
+
+            vec3[4] probe_positions_ws;
+            probe_positions_ws[0] = reconstruct_position_from_depth(probe_uvs[0], probe_depths[0].x, _inv_view_proj);
+            probe_positions_ws[1] = reconstruct_position_from_depth(probe_uvs[1], probe_depths[1].x, _inv_view_proj);
+            probe_positions_ws[2] = reconstruct_position_from_depth(probe_uvs[2], probe_depths[2].x, _inv_view_proj);
+            probe_positions_ws[3] = reconstruct_position_from_depth(probe_uvs[3], probe_depths[3].x, _inv_view_proj);
+
+            vec3[4] max_probe_positions_ws;
+            max_probe_positions_ws[0] = reconstruct_position_from_depth(probe_uvs[0], probe_depths[0].y, _inv_view_proj);
+            max_probe_positions_ws[1] = reconstruct_position_from_depth(probe_uvs[1], probe_depths[1].y, _inv_view_proj);
+            max_probe_positions_ws[2] = reconstruct_position_from_depth(probe_uvs[2], probe_depths[2].y, _inv_view_proj);
+            max_probe_positions_ws[3] = reconstruct_position_from_depth(probe_uvs[3], probe_depths[3].y, _inv_view_proj);
+
+            // float near = 0.01f;
+            // float far = 1000.0f;
+            // float pixel_lin_depth = linearize_depth(pixel_depth.x, near, far);
+            // min_max_blends.x = inverse_lerp(linearize_depth(probe_depths[0].x, near, far), linearize_depth(probe_depths[0].y, near, far), pixel_lin_depth);
+            // min_max_blends.y = inverse_lerp(linearize_depth(probe_depths[1].x, near, far), linearize_depth(probe_depths[1].y, near, far), pixel_lin_depth);
+            // min_max_blends.z = inverse_lerp(linearize_depth(probe_depths[2].x, near, far), linearize_depth(probe_depths[2].y, near, far), pixel_lin_depth);
+            // min_max_blends.w = inverse_lerp(linearize_depth(probe_depths[3].x, near, far), linearize_depth(probe_depths[3].y, near, far), pixel_lin_depth);
+            // min_max_blends = clamp(min_max_blends, 0.0f, 1.0f);
+
+            min_max_blends.x = clamp(inverse_lerp(probe_depths[0].x, probe_depths[0].y, clamp(pixel_depth.x, probe_depths[0].x,probe_depths[0].y)), 0.0f, 1.0f);
+            min_max_blends.y = clamp(inverse_lerp(probe_depths[1].x, probe_depths[1].y, clamp(pixel_depth.x, probe_depths[1].x,probe_depths[1].y)), 0.0f, 1.0f);
+            min_max_blends.z = clamp(inverse_lerp(probe_depths[2].x, probe_depths[2].y, clamp(pixel_depth.x, probe_depths[2].x,probe_depths[2].y)), 0.0f, 1.0f);
+            min_max_blends.w = clamp(inverse_lerp(probe_depths[3].x, probe_depths[3].y, clamp(pixel_depth.x, probe_depths[3].x,probe_depths[3].y)), 0.0f, 1.0f);
+
+            vec2 ratio3d = get_bilinear_3d_ratio_iterative(probe_positions_ws, pixel_pos_ws, bi_fract, 3);
+            vec2 max_ratio3d = get_bilinear_3d_ratio_iterative(max_probe_positions_ws, pixel_pos_ws, bi_fract, 3);
+            bi_fract = ratio3d;
+            max_bi_fract = max_ratio3d;
+        #endif
+
+        float[4] bilin_weights;
+        bilin_weights[0] = (1 - bi_fract.x) * (1 - bi_fract.y);
+        bilin_weights[1] = (    bi_fract.x) * (1 - bi_fract.y);
+        bilin_weights[2] = (1 - bi_fract.x) * (    bi_fract.y);
+        bilin_weights[3] = (    bi_fract.x) * (    bi_fract.y);
+
+        float[4] max_bilin_weights;
+        max_bilin_weights[0] = (1 - max_bi_fract.x) * (1 - max_bi_fract.y);
+        max_bilin_weights[1] = (    max_bi_fract.x) * (1 - max_bi_fract.y);
+        max_bilin_weights[2] = (1 - max_bi_fract.x) * (    max_bi_fract.y);
+        max_bilin_weights[3] = (    max_bi_fract.x) * (    max_bi_fract.y);
+
+        vec2[4] probe_occ_min_max;
+        probe_occ_min_max[0] = imageLoad(_casacade_n1, probe_coords[0]).rb;
+        probe_occ_min_max[1] = imageLoad(_casacade_n1, probe_coords[1]).rb;
+        probe_occ_min_max[2] = imageLoad(_casacade_n1, probe_coords[2]).rb;
+        probe_occ_min_max[3] = imageLoad(_casacade_n1, probe_coords[3]).rb;
+
+        probe_occ_min_max[0].r *= bilin_weights[0];
+        probe_occ_min_max[1].r *= bilin_weights[1];
+        probe_occ_min_max[2].r *= bilin_weights[2];
+        probe_occ_min_max[3].r *= bilin_weights[3];
+
+        probe_occ_min_max[0].g *= max_bilin_weights[0];
+        probe_occ_min_max[1].g *= max_bilin_weights[1];
+        probe_occ_min_max[2].g *= max_bilin_weights[2];
+        probe_occ_min_max[3].g *= max_bilin_weights[3];
+
+
+        float interp = 0.0f;
+        interp += lerp(probe_occ_min_max[0].r, probe_occ_min_max[0].g, min_max_blends.x);
+        interp += lerp(probe_occ_min_max[1].r, probe_occ_min_max[1].g, min_max_blends.y);
+        interp += lerp(probe_occ_min_max[2].r, probe_occ_min_max[2].g, min_max_blends.z);
+        interp += lerp(probe_occ_min_max[3].r, probe_occ_min_max[3].g, min_max_blends.w);
+
+        // vec4 interp = vec4(0.0f);
+        // interp += imageLoad(_casacade_n1, probe_coords[0]).rgba * bilin_weights[0];
+        // interp += imageLoad(_casacade_n1, probe_coords[1]).rgba * bilin_weights[1];
+        // interp += imageLoad(_casacade_n1, probe_coords[2]).rgba * bilin_weights[2];
+        // interp += imageLoad(_casacade_n1, probe_coords[3]).rgba * bilin_weights[3];
+
+        //interp = imageLoad(_casacade_n1, probe_coords[0]).rg;
+
+        imageStore(_casacade_n0, texel_coord, vec4(interp));
+        return;
+    }
+
+    
+    
+
+    // Current ray occlusion interval    
+    vec4 n0_interval = texelFetch(_cascade_array, ivec3(texel_coord, _n0_cascade_index), 0).rrgg; // min,min visibility,max,max visibility
+    
+    // Only merge with higher cascade if current interval did not hit anything.
+    // currently 0 == hit, 1 == no hit.
+    // currently disable because of min max
+    // if (n0_interval.r < 0.001f) {
+    //     imageStore(_casacade_n0, texel_coord, vec4(n0_interval.rgba));
+    //     return;
+    // }
+
+    #ifdef DIRECTION_FIRST_LAYOUT
+        const uvec2 n0_probe_coord  = gl_GlobalInvocationID.xy % _n0_probe_counts;
+        const uvec2 n0_oct_texel    = gl_GlobalInvocationID.xy / _n0_probe_counts;
+    #else // Probe First Layout
+        const uvec2 n0_probe_coord  = gl_GlobalInvocationID.xy / _n0_oct_size;
+        const uvec2 n0_oct_texel    = gl_GlobalInvocationID.xy % _n0_oct_size;
+    #endif
+
+    const uint  _n1_cascade_index  = _n0_cascade_index + 1;
+    const uint  _n1_oct_size       = _n0_oct_size * 2;
+    const uvec2 _n1_probe_counts   = _n0_probe_counts / 2;
+
+    // Get the 4 rays in cascade n1 (as realtive octahedral texels) that match the current ray in n0
+    // Effectivly we subdivide the n0 octahedral texel into 4 sub texels.
+    uvec2[4] n1_oct_coords;
+    n1_oct_coords[0] = (n0_oct_texel * 2) + uvec2(0,0);
+    n1_oct_coords[1] = (n0_oct_texel * 2) + uvec2(1,0);
+    n1_oct_coords[2] = (n0_oct_texel * 2) + uvec2(0,1);
+    n1_oct_coords[3] = (n0_oct_texel * 2) + uvec2(1,1);
+
+    vec2 n1_probe_coord_f = vec2(n0_probe_coord) / 2.0f - 0.5;
+    uvec2 n1_corner_probe = uvec2(n1_probe_coord_f ); // truncate fractional part should leave us with corner probe
+
+    // closest n1 probe coords. -> In Direction First layout this is relative to the oct texel
+    uvec2[4] n1_bilin_probes;
+    n1_bilin_probes[0] = n1_corner_probe + uvec2(0, 0); // bl
+    n1_bilin_probes[1] = n1_corner_probe + uvec2(1, 0); // br
+    n1_bilin_probes[2] = n1_corner_probe + uvec2(0, 1); // tl
+    n1_bilin_probes[3] = n1_corner_probe + uvec2(1, 1); // tr
+
+    // bilinear fraction
+    //vec2 bi_fract = n1_probe_coord_f - vec2(n1_corner_probe);// should be same as fract(n1_cell_coord_f);
+    vec2 bi_fract = n1_probe_coord_f - vec2(n1_corner_probe);// should be same as fract(n1_cell_coord_f);
+    float[4] n1_bilin_weights;
+
+    #define DEPTH_AWARE_INTERP
+    #ifdef DEPTH_AWARE_INTERP
+
+        //uvec2 n0_probe_coord_probe_first   = gl_GlobalInvocationID.xy / _n0_oct_size;
+
+        vec2 n0_probe_uv = (vec2(n0_probe_coord) + 0.5) / vec2(_n0_probe_counts);
+        float n0_depth_mip = float(_n0_depth_mip_level);
+        //n0_depth_mip =0.0f;
+        vec2 n0_depth_min_max = textureLod(_min_max_depth, n0_probe_uv, n0_depth_mip).xy;
+
+        vec3 n0_probe_pos_ws = reconstruct_position_from_depth(n0_probe_uv, n0_depth_min_max.x, _inv_view_proj);
+        
+        vec2[4] n1_probe_uvs;
+        n1_probe_uvs[0] = (vec2(n1_bilin_probes[0]) + 0.5f) / vec2(_n1_probe_counts);
+        n1_probe_uvs[1] = (vec2(n1_bilin_probes[1]) + 0.5f) / vec2(_n1_probe_counts);
+        n1_probe_uvs[2] = (vec2(n1_bilin_probes[2]) + 0.5f) / vec2(_n1_probe_counts);
+        n1_probe_uvs[3] = (vec2(n1_bilin_probes[3]) + 0.5f) / vec2(_n1_probe_counts);
+
+        float n1_depth_mip = float(_n0_depth_mip_level + 1); // should work as long as we have a branching factor of 4.
+        float[4] n1_probe_depths;
+        // TODO: maybe can use textureGather here?
+        n1_probe_depths[0] = textureLod(_min_max_depth, n1_probe_uvs[0], n1_depth_mip).x;
+        n1_probe_depths[1] = textureLod(_min_max_depth, n1_probe_uvs[1], n1_depth_mip).x;
+        n1_probe_depths[2] = textureLod(_min_max_depth, n1_probe_uvs[2], n1_depth_mip).x;
+        n1_probe_depths[3] = textureLod(_min_max_depth, n1_probe_uvs[3], n1_depth_mip).x;
+
+        vec3[4] n1_probe_positions_ws;
+        n1_probe_positions_ws[0] = reconstruct_position_from_depth(n1_probe_uvs[0], n1_probe_depths[0], _inv_view_proj);
+        n1_probe_positions_ws[1] = reconstruct_position_from_depth(n1_probe_uvs[1], n1_probe_depths[1], _inv_view_proj);
+        n1_probe_positions_ws[2] = reconstruct_position_from_depth(n1_probe_uvs[2], n1_probe_depths[2], _inv_view_proj);
+        n1_probe_positions_ws[3] = reconstruct_position_from_depth(n1_probe_uvs[3], n1_probe_depths[3], _inv_view_proj);
+
+        vec2 ratio3d = get_bilinear_3d_ratio_iterative(n1_probe_positions_ws, n0_probe_pos_ws, bi_fract, 2);
+        bi_fract = ratio3d;
+    #endif
+
+    // just standard bilinear
+    n1_bilin_weights[0] = (1 - bi_fract.x) * (1 - bi_fract.y);
+    n1_bilin_weights[1] = (    bi_fract.x) * (1 - bi_fract.y);
+    n1_bilin_weights[2] = (1 - bi_fract.x) * (    bi_fract.y);
+    n1_bilin_weights[3] = (    bi_fract.x) * (    bi_fract.y);
+
+
+    //vec2 merged_occlusion = vec2(0.0f);
+    vec4 merged_occlusion = vec4(0.0f);
+
+    for (uint ray = 0; ray < 4; ray++){
+
+        //vec2 occlusion = vec2(0.0f);
+        vec4 occlusion = vec4(0.0f);
+        // @Note: in direction first layout if we were to just do bilinear interpolation between probes
+        // we could instead just use a linear sampler for cascade texture since probes a
+        for (uint n1_probe = 0; n1_probe < 4; n1_probe++ ) { 
+
+            #ifdef DIRECTION_FIRST_LAYOUT
+                uvec2 n1_probe_ray_texel = (n1_oct_coords[ray] * _n1_probe_counts) + n1_bilin_probes[n1_probe];
+            #else
+                uvec2 n1_probe_ray_texel = (n1_bilin_probes[n1_probe] * _n1_oct_size) + n1_oct_coords[ray];
+            #endif
+            
+
+            //vec2 n1_probe_ray_interval = vec2(0.0f);
+            vec4 n1_probe_ray_interval = vec4(0.0f);
+
+            if (_n1_cascade_index == _num_cascades -1) {
+                n1_probe_ray_interval = texelFetch(_cascade_array, ivec3(n1_probe_ray_texel, _n1_cascade_index), 0).rrgg;
+            } else {
+                n1_probe_ray_interval = imageLoad(_casacade_n1, ivec2(n1_probe_ray_texel)).rgba;
+            }
+            
+            // merge intervals | near * far * spacial_weighting
+            //occlusion += merge_intervals(n0_interval, n1_probe_ray_interval) * n1_bilin_weights[n1_probe];
+            
+            //float occ = n0_interval.g * n1_probe_ray_interval.g * n1_bilin_weights[n1_probe];
+            //occlusion += merge_intervals(n0_interval, n1_probe_ray_interval) * n1_bilin_weights[n1_probe];
+
+            // we would actually need seperate weights for min and for max
+            occlusion += merge_intervals_min_max(n0_interval, n1_probe_ray_interval) * n1_bilin_weights[n1_probe];
+            
+        }
+
+        merged_occlusion += occlusion / 4.0f;
+    }
+
+    imageStore(_casacade_n0, texel_coord, merged_occlusion);
+
+    return;
+}
