@@ -65,7 +65,7 @@ enum_flags_checkbox :: proc(label : cstring, flag : $EnumType,  flags : ^$EnumBi
 		if is_enabled {
 			flags^ += EnumBitset{flag};
 		} else {
-			flags^ -=  EnumBitset{flag};
+			flags^ -= EnumBitset{flag};
 		}
 
 		return true;
@@ -96,4 +96,28 @@ enum_flags_checkbox_include_set :: proc(label : cstring, flag : $EnumType,  flag
 	}
 
 	return false;
+}
+
+
+enum_combo :: proc(label : cstring, curr_selected_cstr : cstring, $T : typeid) -> (T, bool) where intrinsics.type_is_enum(T) {
+
+	selection_made : bool = false;
+	selected_type : T;
+
+	if im.BeginCombo(label, curr_selected_cstr){
+		for type in T {
+
+			type_cstr := fmt_cstr("{}", type);
+
+			if im.Selectable(type_cstr) {
+				selected_type = type;
+				selection_made = true;
+				break;
+			}
+		}
+
+		im.EndCombo();
+	}
+
+	return selected_type, selection_made;
 }

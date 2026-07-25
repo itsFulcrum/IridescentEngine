@@ -255,6 +255,59 @@ comp_meshrenderer_append_scene_collection_asset :: proc(comp : ^MeshRendererComp
 	}
 }
 
+comp_meshrenderer_append_model_asset :: proc(comp : ^MeshRendererComponent, asset_uuid : AssetUUID) {
+
+	// all the managers, get em.
+	asset_manager 		:= engine.asset_manager;
+	material_manager 	:= engine.material_manager;
+	mesh_manager 		:= engine.mesh_manager;
+	pipe_manager 		:= engine.pipeline_manager;
+	gpu_device 			:= get_gpu_device();
+
+
+	//collection, collection_ok := asset_io_load_scene_collection_asset(asset_manager, asset_uuid);
+	// if !collection_ok {
+	// 	log.warnf("Failed to load collection. AssetUUID for scene_collection is not registered with asset manager: {}", asset_uuid);
+	// 	return;
+	// }
+	// defer iria.free_scene_collection_asset(collection);
+
+
+	// for &draw_asset in collection.draw_inst_assets {
+
+	// 	drawable := Drawable{entity = comp.entity};
+	// 	drawable.draw_instance.flags = draw_asset.flags;
+
+	// 	mat_id  := asset_io_load_material_asset_id(asset_manager, material_manager, draw_asset.mat_uuid) or_else material_manager.fallback_material;
+	// 	mesh_id := asset_io_load_mesh_asset_id(asset_manager, mesh_manager, draw_asset.mesh_uuid) or_else -1;
+		
+	// 	drawable.draw_instance.mat_id  = mat_id;
+	// 	drawable.draw_instance.mesh_id = mesh_id
+	// 	drawable.draw_instance.transform = mesh_manager_get_original_transform(mesh_manager, mesh_id);
+		
+
+	// 	drawable_index : int = ecs_drawable_add(comp.parent_ecs, comp.entity, &drawable);
+	// 	append(&comp.drawable_indexes, drawable_index);
+		
+	// 	if mat_id > 0 {
+
+	// 		pipe_manager_update_depthonly_pipeline_cache_with_material(pipe_manager, gpu_device, material_manager, mat_id);
+
+	// 		if !mesh_manager_is_valid_id(mesh_manager, mesh_id) {
+	// 			continue;
+	// 		}
+
+	// 		gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id);
+	// 		engine_assert(gpu_data != nil); // this holds because we checked id for valid above. otherwise it wouldnt!
+
+	// 		vertex_layout := gpu_data.vertex_layout;
+
+	// 		pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts(pipe_manager, gpu_device, material_manager, mat_id, {vertex_layout});
+	
+	// 	}
+	// }
+}
+
 
 // @Note: 'build_pipeline_cache' should be true if calling this during a frame! if initializing many meshrenderers
 // you can set it to false and instead update the pipeline chache for the entire universe once all new drawables are added.

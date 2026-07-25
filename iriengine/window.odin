@@ -9,6 +9,8 @@ import sdl "vendor:sdl3"
 @(private="package")
 window_create_context :: proc(window_title : string, window_size: [2]u32, start_fullscreen: bool = false, enable_validation_layers: bool = false) -> (window_context: WindowContext, ok: bool) {
 
+    IRI_PROFILE_PROCEDURE()
+    
     ctx : WindowContext;
     ctx.handle = nil;
     ctx.gpu_device = nil;

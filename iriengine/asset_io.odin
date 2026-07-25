@@ -79,6 +79,52 @@ asset_io_load_mesh_asset_id :: proc(asset_manager : ^AssetManager, mesh_manager 
 }
 
 
+// asset_io_load_model_asset_id :: proc(asset_manager : ^AssetManager, mesh_manager : ^MeshManager, asset_uuid : AssetUUID) -> (mesh_id : MeshID, ok : bool) {
+	
+// 	IRI_PROFILE_PROCEDURE()
+
+// 	// check if its loaded already
+// 	if m_id, exists := mesh_manager_get_id_from_asset_uuid(mesh_manager, asset_uuid); exists == true {
+// 		return m_id, true;
+// 	}
+
+// 	mesh_id = -1;
+
+// 	path := asset_manager_get_absolute_filepath(asset_manager, asset_uuid, expected_type = .Mesh) or_return;
+
+// 	mesh_data := iria.asset_mesh_read_from_path(path) or_return;
+// 	defer free_mesh_data(mesh_data);
+
+// 	if mesh_data.bvh_num_nodes == 0 {
+		
+// 		// Generate bvh and write back to file.
+
+// 		num_split_planes : u32 = BVH_NUM_SPLIT_PLANES;
+// 		max_tree_depth   : u32 = BVH_MAX_TREE_DEPTH;
+// 		bvh_info := geo.bvh_build_bottom_level(mesh_data.positions, size_of([3]f32), mesh_data.indecies, cast(uint)mesh_data.num_indecies, num_split_planes, max_tree_depth);
+
+// 		mesh_data.bvh_num_nodes = cast(u32)len(bvh_info.nodes);
+// 		mesh_data.bvh_indecies 	= cast([^]u32)&bvh_info.indecies[0];
+// 		mesh_data.bvh_nodes 	= cast([^]geo.BvhNode)&bvh_info.nodes[0];
+
+// 		write_back_flags := iria.WriteFlags{.LogErrors, .OverwriteExisting};
+// 		write_back_ok := iria.asset_mesh_write_to_file(path, mesh_data, write_back_flags);
+// 		if ! write_back_ok {
+// 			log.errorf("Failed to write asset back to path after updating it to new asset version (2) with bvh. {}", path);
+// 		}
+// 	}
+
+// 	gpu_device := get_gpu_device();
+// 	mesh_id = mesh_manager_add_mesh(mesh_manager, gpu_device, mesh_data);
+	
+// 	if mesh_id == -1 {
+// 		log.errorf("Failed to register mesh data from asset. {}", path);
+// 		return -1, false;
+// 	}
+
+// 	return mesh_id, true;
+// }
+
 asset_io_load_material_asset_id :: proc(asset_manager : ^AssetManager, material_manager : ^MaterialManager, asset_uuid : AssetUUID) -> (mat_id : MaterialID, ok : bool){
 	IRI_PROFILE_PROCEDURE()
 

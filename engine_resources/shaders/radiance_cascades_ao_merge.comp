@@ -159,6 +159,7 @@ void main() {
 
         ao = ao / vec4(_n0_oct_size * _n0_oct_size);
 
+
         imageStore(_casacade_n0, texel_coord, vec4(ao.rgba));
         return;
 
@@ -275,14 +276,14 @@ void main() {
         interp += lerp(probe_occ_min_max[2].r, probe_occ_min_max[2].g, min_max_blends.z);
         interp += lerp(probe_occ_min_max[3].r, probe_occ_min_max[3].g, min_max_blends.w);
 
-        // vec4 interp = vec4(0.0f);
+//        vec4 interp = vec4(0.0f);
         // interp += imageLoad(_casacade_n1, probe_coords[0]).rgba * bilin_weights[0];
         // interp += imageLoad(_casacade_n1, probe_coords[1]).rgba * bilin_weights[1];
         // interp += imageLoad(_casacade_n1, probe_coords[2]).rgba * bilin_weights[2];
         // interp += imageLoad(_casacade_n1, probe_coords[3]).rgba * bilin_weights[3];
 
-        //interp = imageLoad(_casacade_n1, probe_coords[0]).rg;
-
+        // interp = imageLoad(_casacade_n1, probe_coords[0]).rg;
+        //interp = 0.0f;
         imageStore(_casacade_n0, texel_coord, vec4(interp));
         return;
     }

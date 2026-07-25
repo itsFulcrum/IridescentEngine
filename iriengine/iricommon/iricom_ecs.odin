@@ -10,17 +10,19 @@ Entity :: struct {
 EntityInvalid :: Entity{id = -1, identifier = -1}
 
 ENTITY_FLAGS_NOSTORE :: EntityFlags{.NonPersistant,._Internal_Exists, ._Internal_PendingDestroy, ._Internal_ForceUpdate} // no store to file
-ENTITY_FLAGS_INTERNAL :: EntityFlags{._Internal_IsEnabled, ._Internal_Exists, ._Internal_PendingDestroy}
+ENTITY_FLAGS_INTERNAL :: EntityFlags{._Internal_IsEnabled, ._Internal_Exists, ._Internal_PendingDestroy, ._Internal_PendingDestroy_OneFrameRoundtrip, ._Internal_PendingDestroy_OnePhysicsRoundtrip}
 EntityFlags :: bit_set[EntityFlag; u32]
 EntityFlag :: enum u32 {
-	_Internal_IsEnabled = 0,
+	_Internal_IsEnabled = 0,    // TODO: maybe we want to store enabled/disabled state to file ?
 	NonPersistant = 1, 			// Entities with this flag are not stored to file.
 	PhysicsInterpolation = 2,   // Use when updating entity positions in physics update
 	
 
 	_Internal_Exists 		 = 16,
 	_Internal_PendingDestroy = 17,
-	_Internal_ForceUpdate    = 18,
+	_Internal_PendingDestroy_OnePhysicsRoundtrip = 18, // the entity has been marked for destroy and has gone through at least one more phisics update.
+	_Internal_PendingDestroy_OneFrameRoundtrip   = 19, // the entity has been marked for destroy and has gone through at least one more frame update.
+	_Internal_ForceUpdate    = 20,
 }
 
 EntityInfo :: struct {

@@ -88,7 +88,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 
 			entity = drawables.entity[i];
 
-			if !ecs_entity_exists(ecs, entity) {
+			if !ecs_entity_exists_officially(ecs, entity) {
 				continue;
 			}
 

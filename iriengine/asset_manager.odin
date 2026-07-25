@@ -83,7 +83,8 @@ asset_manager_get_entries_map_read_only :: proc() -> ^map[iria.AssetUUID]AssetEn
 }
 
 asset_manager_rescan_entire_project :: proc() {
-	
+	IRI_PROFILE_PROCEDURE()
+
 	engine_assert(engine != nil);
 	engine_assert(engine.asset_manager != nil);
 	engine_assert(len(engine.project_content_path) > 0);
@@ -98,6 +99,9 @@ asset_manager_rescan_entire_project :: proc() {
 // @Note expects directory_path to be an absolute path to a sub directory of the project.
 @(private="package")
 asset_manager_scan_project_directory_recursiv :: proc(manager :  ^AssetManager, directory_path : string){
+
+	IRI_PROFILE_PROCEDURE()
+
 
 	if !os.is_directory(directory_path) {
 		return;
@@ -180,6 +184,9 @@ asset_manager_unscan_project_directory_recursiv :: proc(manager :  ^AssetManager
 @(private="package")
 asset_manager_register_asset_file_by_path :: proc(manager :  ^AssetManager, full_file_path : string) -> (is_registered : bool) {
 
+	IRI_PROFILE_PROCEDURE()
+
+
 	iria.is_valid_extention(full_file_path) or_return;
 	
 	// anything outside project path we will not register.
@@ -222,6 +229,8 @@ asset_manager_register_asset_file_by_path :: proc(manager :  ^AssetManager, full
 
 	if asset_type == .Universe {
 		
+		IRI_PROFILE_SCOPE("Register Universe Asset File")
+
 		// if asset is of type universe, we gather extra information that we store seperatly
 
 		uni_tag, uni_name, uni_read_ok := iria.asset_universe_read_tag_and_name(&b_reader, context.allocator);

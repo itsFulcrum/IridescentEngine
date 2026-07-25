@@ -36,7 +36,9 @@ AssetImportFlag :: enum {
 	
 	MeshImportMaterials,
 	MeshImportLights,
-	MeshCombineMeshes,				// combine all meshes into one, loses material information.
+	MeshJoinAllMeshes,				// combine all meshes into one, loses material information.
+	MeshJoinSameMaterial,			// TODO: join all meshes that share the same material. ignored if 'MeshJoinAllMeshes' is set.
+	MeshSeparateFiles,				// Store Each mesh as a separate mesh file.
 	MeshCreateCollection, 	   	   // 	
 	MeshForceVertexLayout,		   // enables forcing a vertex layout. specified by setting one of the 3 following flags.
 	MeshForceVertexLayoutMinimal,  // ignored if 'MeshForceVertexLayout' is not set.
@@ -57,6 +59,9 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 			return false;
 		}
 	}
+
+	// TODO: Poly should support join AllMeshes and join same material on the scene level so it internally makes sure that scene / material data is in sync and stuff.
+	// Then we dont have to deal with this inside this function.
 
 	// load flags
 	load_flags : poly.LoadFlags = importer_get_poly_load_flags_from_asset_import_flags(import_flags);
@@ -172,7 +177,7 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 	}
 
 	// Export Meshes
-	combined_mesh: if .MeshCombineMeshes in import_flags {
+	combined_mesh: if .MeshJoinAllMeshes in import_flags {
 
 		poly_combined_mesh := poly.join_scene_meshes(poly_scene, apply_transforms = true) or_break combined_mesh;
 		defer poly.free_mesh(poly_combined_mesh);
@@ -215,31 +220,91 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 			}
 		}
 
+		if .MeshSeparateFiles in import_flags {
+			for &poly_mesh in poly_scene.meshes {
 
-		for &poly_mesh in poly_scene.meshes {
+				mesh_data : ^MeshData = importer_make_MeshData_from_poly_MeshData(&poly_mesh, import_flags) or_continue;
+				defer free_mesh_data(mesh_data);
 
-			mesh_data : ^MeshData = importer_make_MeshData_from_poly_MeshData(&poly_mesh, import_flags) or_continue;
-			defer free_mesh_data(mesh_data);
+				full_store_filepath, file_exists := get_write_filepath(mesh_store_dir, mesh_data.name, "NewMesh", can_overwrite_existing, log_errors) or_break combined_mesh;
 
-			full_store_filepath, file_exists := get_write_filepath(mesh_store_dir, mesh_data.name, "NewMesh", can_overwrite_existing, log_errors) or_break combined_mesh;
+				mesh_data.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Mesh, log_errors) or_continue;
 
-			mesh_data.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Mesh, log_errors) or_continue;
+				iria.asset_mesh_write_to_file(full_store_filepath, mesh_data, write_flags) or_continue;
 
-			iria.asset_mesh_write_to_file(full_store_filepath, mesh_data, write_flags) or_continue;
+				if create_collection {
+					draw_asset : iria.DrawInstanceAsset;
+					draw_asset.flags     = iricom.DRAW_INSTANCE_FLAGS_DEFAULT;
+					draw_asset.mesh_uuid = mesh_data.asset_uuid;
 
-			if create_collection {
-				draw_asset : iria.DrawInstanceAsset;
-				draw_asset.flags     = iricom.DRAW_INSTANCE_FLAGS_DEFAULT;
-				draw_asset.mesh_uuid = mesh_data.asset_uuid;
+					if poly_mesh.material_index > -1 && material_uuids != nil {
+						draw_asset.mat_uuid = material_uuids[poly_mesh.material_index];
+					}
 
-				if poly_mesh.material_index > -1 && material_uuids != nil {
-					draw_asset.mat_uuid = material_uuids[poly_mesh.material_index];
+					append(&scene_collection_draw_insts, draw_asset);
 				}
 
-				append(&scene_collection_draw_insts, draw_asset);
+				is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
 			}
+		} else {
 
+			model_filename : string = strings.join({load_file_name_only,"_Model"},"", context.temp_allocator);
+
+			full_store_filepath, file_exists := get_write_filepath(mesh_store_dir,model_filename, "NewModel", can_overwrite_existing, log_errors) or_break combined_mesh;
+
+			model : iricom.ModelAsset;
+			model.asset_id = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Model, log_errors) or_break combined_mesh;
+			//model.asset_alias = ""; // No alias yet.
+
+			model.aabb = geo.aabb_create_inverse_infinite();
+			model.transform = transform_create_identity();
+
+			submeshes : [dynamic]^MeshData;
+			submesh_mat_ids : [dynamic]AssetUUID;
+
+			for &poly_mesh in poly_scene.meshes {
+
+				mesh_data : ^MeshData = importer_make_MeshData_from_poly_MeshData(&poly_mesh, import_flags) or_continue;
+				//defer free_mesh_data(mesh_data);
+
+				mesh_aabb := geo.aabb_from_min_max_vec3(mesh_data.aabb_min, mesh_data.aabb_max);
+				model.aabb = geo.aabb_combine(model.aabb, mesh_aabb);
+
+
+				append(&submeshes, mesh_data);
+
+				if poly_mesh.material_index > -1 && material_uuids != nil {
+					mat_id := material_uuids[poly_mesh.material_index];
+					
+					append(&submesh_mat_ids, mat_id);
+				} else {
+					append(&submesh_mat_ids, AssetUUID_INVALID);
+				}
+
+				//full_store_filepath, file_exists := get_write_filepath(mesh_store_dir, mesh_data.name, "NewMesh", can_overwrite_existing, log_errors) or_break combined_mesh;
+
+				//mesh_data.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Mesh, log_errors) or_continue;
+
+				//iria.asset_mesh_write_to_file(full_store_filepath, mesh_data, write_flags) or_continue;
+
+
+				//is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
+			}
+			
+			model.meshes = submeshes[:];
+			model.material_ids = submesh_mat_ids[:];
+
+			// TODO: support putting model into a collection ??
+
+			iria.asset_model_write_to_file(full_store_filepath, &model, write_flags) or_break combined_mesh;
 			is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
+
+			for mesh_data in submeshes {
+				free_mesh_data(mesh_data);
+			}
+			delete(submeshes);
+			delete(submesh_mat_ids);
+
 		}
 	}
 

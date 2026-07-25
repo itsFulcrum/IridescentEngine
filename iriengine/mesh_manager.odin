@@ -29,7 +29,6 @@ MeshGPUData :: struct{
 	num_indecies  	: u32,
 	num_vertecies 	: u32,
 	index_buf  		: ^sdl.GPUBuffer,
-	//shadow_index_buf : ^sdl.GPUBuffer, // not using atm.
 	vertex_buf 		: ^sdl.GPUBuffer,
 	vertex_pos_buf 	: ^sdl.GPUBuffer,
 	vertex_layout   : VertexDataLayout,
@@ -39,7 +38,7 @@ MeshGlobalBufferInfo :: struct {
 	bvh_nodes_offset     : u32,
 	num_bvh_nodes        : u32,
 
-	// @Note: the indecies are reorder for pupose of bvh traversal and not optimally chache friend as what meshoptimizer would give us.
+	// @Note: the indecies are reordered for pupose of bvh traversal and not optimally chache friend as what meshoptimizer would give us.
 	indecies_offset  : u32,
 	num_indecies     : u32,
 
@@ -73,8 +72,8 @@ Drawable :: struct {
 	draw_instance  : DrawInstance,
 	world_aabb : geo.AABB, // world space aabb
 	world_oobb : geo.OBB,  // world space obb
-	world_mat  : matrix[4,4]f32,
-	inv_world_mat  : matrix[4,4]f32,
+	world_mat  : matrix[4,4]f32, // Local to World
+	inv_world_mat  : matrix[4,4]f32, // World to Local
 	global_buf_info : DrawableGlobalBufferInfo,
 	prev_physics_world_transform : Transform, // World Transform of the previous physics state!
 }

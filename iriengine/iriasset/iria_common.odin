@@ -14,7 +14,7 @@ FILE_EXTENTION_NAME : string : "iria"
 AssetUUID :: uuid.Identifier
 AssetUUID_INVALID :: AssetUUID{}
 
-ASSET_TYPE_FLAGS_ALL :: AssetTypeFlags{.None, .Mesh, .Material, .Universe, .Light, .SceneCollection} 
+ASSET_TYPE_FLAGS_ALL :: AssetTypeFlags{.None, .Mesh, .Material, .Universe, .Light, .SceneCollection, .Model} 
 AssetTypeFlags :: distinct bit_set[AssetType]
 AssetType :: enum u32 {
 	None 		= 0,
@@ -23,6 +23,13 @@ AssetType :: enum u32 {
 	Universe 	= 3,
 	Light 		= 4,
 	SceneCollection	= 5,
+	Model	    = 6,
+}
+
+ASSET_FLAGS_NONE :: IriAssetFlags{} 
+IriAssetFlags :: distinct bit_set[IriAssetFlag; u8]
+IriAssetFlag :: enum u8 {
+	HasAlias = 0,
 }
 
 IriAssetCommonHeader :: struct #packed {
@@ -30,9 +37,29 @@ IriAssetCommonHeader :: struct #packed {
 	magic : [4]byte,			//  4 bytes, magic
 	asset_type : AssetType, 	//  4 bytes, asset type enum u32
 	asset_type_version : u32,	//  4 bytes, version of the asset type
-	_ : [4]byte, 				//  4 bytes, reserved
+	flags     : IriAssetFlags, 	//  1 byte,
+	_         : [3]byte, 		//  4 bytes, reserved
 	asset_uuid : AssetUUID, 	// 16 bytes, UUID
 }
+
+// TODO: implment that all assets can optionally store an asset alias string which can than be used to load and lookup assets through the asset_manager
+
+IriAssetString32 :: struct #packed {
+	bytes : [31]u8,
+	len   : u8, 
+}
+
+IriAssetString64 :: struct #packed {
+	bytes : [63]u8,
+	len   : u8, 
+}
+
+IriAssetString128 :: struct #packed {
+	bytes : [127]u8,
+	len   : u8, 
+}
+
+
 
 WriteFlags :: distinct bit_set[WriteFlag]
 WriteFlag :: enum {
@@ -49,13 +76,14 @@ get_most_current_version_for_type :: proc(asset_type : AssetType) -> u32 {
 		case .Universe:	return UNIVERSE_ASSET_CURRENT_VERSION;
 		case .Light:	return LIGHT_ASSET_CURRENT_VERSION;
 		case .SceneCollection:	return SCENE_COLLECTION_ASSET_CURRENT_VERSION;
+		case .Model:	return MODEL_ASSET_CURRENT_VERSION;
 	}
 
 	return 0;
 }
 
 // can specify custom version otherwise use most current for type.
-create_common_header :: proc(type : AssetType, id : AssetUUID, asset_version : u32 = 0) -> IriAssetCommonHeader {
+create_common_header :: proc(type : AssetType, id : AssetUUID, asset_version : u32 = 0, flags : IriAssetFlags = ASSET_FLAGS_NONE) -> IriAssetCommonHeader {
 	
 	assert(type != .None);
 
@@ -68,7 +96,7 @@ create_common_header :: proc(type : AssetType, id : AssetUUID, asset_version : u
 }
 
 
-// Validate that we can write to this filepath.
+// Validate that we can write to this filepath. Also returns wheather a file already exists at that location.
 validate_write_filepath :: proc(filepath : string, log_errors : bool = true) -> (file_exists : bool, ok : bool) {
 	
 	file_ext : string = os.ext(filepath);
@@ -206,4 +234,101 @@ try_delete_file :: proc(filepath : string, log_errors : bool) -> (ok : bool) {
 	}
 
 	return true;
+}
+
+
+string_to_asset_string32 :: proc(str : string) -> (asset_string : IriAssetString32, has_data : bool) {
+
+	if len(str) <= 0{
+		return;
+	}
+
+	length : int = min(len(str), 63); // we need 1 extra byte to store len
+	asset_string.len = cast(u8)length;
+
+	for i in 0..<length{
+		asset_string.bytes[i] = str[i];
+	}
+
+	return asset_string, true;
+}
+
+string_to_asset_string64 :: proc(str : string) -> (asset_string : IriAssetString64, has_data : bool) {
+
+	if len(str) <= 0{
+		return;
+	}
+
+	length : int = min(len(str), 63); // we need 1 extra byte to store len
+	asset_string.len = cast(u8)length;
+
+	for i in 0..<length{
+		asset_string.bytes[i] = str[i];
+	}
+
+	return asset_string, true;
+}
+
+string_to_asset_string128 :: proc(str : string) -> (asset_string : IriAssetString128, has_data : bool) {
+
+	if len(str) <= 0{
+		return;
+	}
+
+	length : int = min(len(str), 127); // we need 1 extra byte to store len
+	asset_string.len = cast(u8)length;
+
+	for i in 0..<length{
+		asset_string.bytes[i] = str[i];
+	}
+
+	return asset_string, true;
+}
+
+string_clone_from_asset_string32 :: proc(asset_string : ^IriAssetString32, allocator := context.allocator) -> (str : string, has_data : bool){
+
+	if asset_string.len == 0 {
+		return;
+	}
+
+	as_str : string = transmute(string)asset_string.bytes[0:asset_string.len];
+	out_str, alloc_err := strings.clone(as_str, allocator)
+
+	if alloc_err != nil {
+		return;
+	}
+
+	return out_str, true;
+}
+
+string_clone_from_asset_string64 :: proc(asset_string : ^IriAssetString64, allocator := context.allocator) -> (str : string, has_data : bool){
+
+	if asset_string.len == 0 {
+		return;
+	}
+
+	as_str : string = transmute(string)asset_string.bytes[0:asset_string.len];
+	out_str, alloc_err := strings.clone(as_str, allocator)
+
+	if alloc_err != nil {
+		return;
+	}
+
+	return out_str, true;
+}
+
+string_clone_from_asset_string128 :: proc(asset_string : ^IriAssetString128, allocator := context.allocator) -> (str : string, has_data : bool){
+
+	if asset_string.len == 0 {
+		return;
+	}
+
+	as_str : string = transmute(string)asset_string.bytes[0:asset_string.len];
+	out_str, alloc_err := strings.clone(as_str, allocator)
+
+	if alloc_err != nil {
+		return;
+	}
+
+	return out_str, true;
 }

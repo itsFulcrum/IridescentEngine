@@ -1495,7 +1495,7 @@ light_manager_calculate_point_light_shadowmap_info :: proc(gpu_light : ^LightDat
 	// Maybe make this threshold value a parameter on the light component
 	far_clip : f32 = light_manager_calculate_light_visible_range(gpu_light.radiance, 10.0);
 
-	proj_mat := linalg.matrix4_perspective_f32( linalg.to_radians(f32(90)), aspect = 1.0, near = 0.05, far = far_clip, flip_z_axis = true);
+	proj_mat := linalg.matrix4_perspective_f32( linalg.to_radians(f32(90)), aspect = 1.0, near = 0.5, far = far_clip, flip_z_axis = true);
 
 	view_proj = proj_mat * view_mat;
 

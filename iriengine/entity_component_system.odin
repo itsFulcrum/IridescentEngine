@@ -295,35 +295,74 @@ ecs_deinit:: proc(ecs : ^ECData) -> EcsError{
 	return EcsError.None;
 }
 
-@(private="package")
+@(private="file")
 ecs_process_pending_destroy :: proc (ecs : ^ECData){
 
-	for &ent in ecs.pending_destroy {
-		ecs_entity_destroy_actual(ecs, &ent);
+	if len(ecs.pending_destroy) == 0 {
+		return;
 	}
 
-	clear(&ecs.pending_destroy);
+	for i : int = len(ecs.pending_destroy) -1; i >= 0; i-=1{
+		ent := ecs.pending_destroy[i];
+		flags := ecs.entity_infos[ent.id].flags;
+
+		engine_assert(._Internal_PendingDestroy in flags);
+
+		// We only actually destroy the entity if has gone through at least one more frame update AND one more physics update
+		// so that anyone who may reference this entity has a chance to know about it.
+		if ._Internal_PendingDestroy_OneFrameRoundtrip in flags && ._Internal_PendingDestroy_OnePhysicsRoundtrip in flags {
+			ecs_entity_destroy_actual(ecs, &ent);
+			unordered_remove(&ecs.pending_destroy,i);
+		}
+
+		if ._Internal_PendingDestroy_OneFrameRoundtrip not_in flags {
+			ecs.entity_infos[ent.id].flags += {._Internal_PendingDestroy_OneFrameRoundtrip};
+		}
+
+	}
+}
+
+
+ecs_process_end_of_physics_update :: proc (ecs : ^ECData){
+
+	if len(ecs.pending_destroy) == 0 {
+		return;
+	}
+
+	for ent in ecs.pending_destroy {
+
+		flags := ecs.entity_infos[ent.id].flags;
+
+		engine_assert(._Internal_PendingDestroy in flags);
+
+		if ._Internal_PendingDestroy_OnePhysicsRoundtrip not_in flags {
+			ecs.entity_infos[ent.id].flags += {._Internal_PendingDestroy_OnePhysicsRoundtrip};
+		}
+	}
 }
 
 ecs_process_end_of_frame :: proc (ecs : ^ECData){
+
+
+	// @Note: This has to happend before we apply the ._Internal_PendingDestroy_OneFrameRoundtrip flag which 
+	// happens below so that, if an entity got marked for destroy THIS frame,we wait at least one more frame until it is actually destroyed.
+	ecs_process_pending_destroy(ecs);
 
 	if !ecs.force_updates_exist {
 		return;
 	}
 
-
 	for i := 0; i < len(ecs.entity_infos); i+=1 {
 
 		flags := ecs.entity_infos.flags[i];
 
-		if ._Internal_Exists not_in  flags {
+		if ._Internal_Exists not_in  flags || ._Internal_PendingDestroy in flags {
 			continue;
 		}
 
 		if ._Internal_ForceUpdate in flags {
 			ecs.entity_infos[i].flags -= EntityFlags{._Internal_ForceUpdate};
 		}
-
 	}
 
 	ecs.force_updates_exist = false;
@@ -408,7 +447,7 @@ ecs_gather_entities_by_component_subset :: proc(ecs : ^ECData, include_set: Comp
 
 		ent_flags := ecs.entity_infos.flags[index];
 
-		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
+		if EntityFlag._Internal_Exists not_in ent_flags || (!include_disabled && ._Internal_IsEnabled not_in ent_flags) || ._Internal_PendingDestroy in ent_flags {
 			continue;
 		}
 
@@ -439,7 +478,7 @@ ecs_gather_entities_with_component :: proc(ecs : ^ECData, include_set: Component
 
 	for index := 0; index < len(ecs.entity_infos); index += 1{
 
-		if EntityFlag._Internal_Exists not_in ecs.entity_infos.flags[index] || !include_disabled && EntityFlag._Internal_IsEnabled not_in ecs.entity_infos.flags[index] {
+		if EntityFlag._Internal_Exists not_in ecs.entity_infos.flags[index] || ( !include_disabled && EntityFlag._Internal_IsEnabled not_in ecs.entity_infos.flags[index]) || EntityFlag._Internal_PendingDestroy in ecs.entity_infos.flags[index] {
 			continue;
 		}
 		comp_set := ecs.entity_infos.component_set[index];
@@ -470,7 +509,7 @@ ecs_gather_entities_by_tag :: proc(ecs : ^ECData, ent_tag : u32 = 0, include_dis
 		ent_flags := ecs.entity_infos.flags[index];
 		
 
-		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
+		if EntityFlag._Internal_Exists not_in ent_flags || (!include_disabled && ._Internal_IsEnabled not_in ent_flags) || ._Internal_PendingDestroy in ent_flags {
 			continue;
 		}
 		
@@ -496,7 +535,7 @@ ecs_gather_entities_by_component_subset_and_tag :: proc(ecs : ^ECData, include_s
 
 		ent_flags := ecs.entity_infos.flags[index];
 		
-		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
+		if EntityFlag._Internal_Exists not_in ent_flags || (!include_disabled && ._Internal_IsEnabled not_in ent_flags) || ._Internal_PendingDestroy in ent_flags {
 			continue;
 		}
 
@@ -535,7 +574,7 @@ ecs_gather_entities_by_name_and_tag :: proc(ecs : ^ECData, ent_name : string, en
 
 		ent_flags := ecs.entity_infos.flags[index];
 		
-		if EntityFlag._Internal_Exists not_in ent_flags || !include_disabled && ._Internal_IsEnabled not_in ent_flags {
+		if EntityFlag._Internal_Exists not_in ent_flags || (!include_disabled && ._Internal_IsEnabled not_in ent_flags) || ._Internal_PendingDestroy in ent_flags {
 			continue;
 		}
 
@@ -626,6 +665,10 @@ ecs_entity_create :: proc(ecs : ^ECData, ent_name : string = "NewEntity", ent_ta
 		entity_info := &ecs.entity_infos[entity.id];
 		engine_assert(EntityFlag._Internal_Exists not_in entity_info.flags);
 		
+		if len(ecs.entity_infos[entity.id].name) > 0 {
+			delete_string(ecs.entity_infos[entity.id].name);
+		}
+
 		ecs.entity_infos[entity.id] = new_entity_info;
 
 		
@@ -670,7 +713,7 @@ ecs_entity_create :: proc(ecs : ^ECData, ent_name : string = "NewEntity", ent_ta
 
 ecs_entity_destroy :: proc(ecs : ^ECData, entity : ^Entity) -> EcsError {
 
-	if !ecs_entity_exists(ecs, entity^) {
+	if !ecs_entity_exists_officially(ecs, entity^) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -692,9 +735,16 @@ ecs_entity_destroy_actual :: proc(ecs : ^ECData, entity : ^Entity) -> EcsError {
 	engine_assert(entity != nil);
 
 	// Check entity has a valid id
-	if !ecs_entity_exists(ecs, entity^) {
+	if !ecs_entity_exists_internally(ecs, entity^) {
 		return EcsError.InvalidEntity;
 	}
+
+
+	flags := ecs.entity_infos[entity.id].flags;
+	is_marked_destroy : bool = ._Internal_PendingDestroy in flags;
+	is_ready_destroy  : bool = ._Internal_PendingDestroy_OneFrameRoundtrip in flags && ._Internal_PendingDestroy_OnePhysicsRoundtrip in flags;
+
+	engine_assert(is_marked_destroy && is_ready_destroy);
 
 	defer {
 	 	ecs.active_entities_count -= 1;
@@ -761,7 +811,7 @@ ecs_add_component ::proc(ecs : ^ECData, entity : Entity,  $T : typeid) -> (^T, E
 
 	engine_assert(ecs != nil);
 
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return nil, EcsError.InvalidEntity;
 	}
 
@@ -813,7 +863,7 @@ ecs_remove_component ::proc(ecs : ^ECData, entity : Entity,  $T : typeid) -> Ecs
 
 	engine_assert(ecs != nil)
 
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_internally(ecs, entity) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -910,7 +960,7 @@ ecs_get_component :: proc(ecs : ^ECData, entity : Entity,  $T : typeid) -> (^T, 
 ecs_get_transform :: proc(ecs : ^ECData, entity : Entity) -> ^TransformComponent {
 	engine_assert(ecs != nil);
 
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return nil;
 	}
 
@@ -932,9 +982,10 @@ ecs_on_enabled_changed :: proc(ecs : ^ECData, entity : Entity){
 	ecs_entity_force_update(ecs, entity);
 }
 
-ecs_entity_exists :: proc(ecs : ^ECData, entity : Entity) -> bool {
 
-	engine_assert(ecs != nil);
+// It may exist internally while in a 'PendingDestroy' state but should not be considered existing to the outside officially!
+@(private="file")
+ecs_entity_exists_internally :: proc "contextless" (ecs : ^ECData, entity : Entity) -> bool {
 
 	if entity.id < 0 || entity.id >= cast(i32)len(ecs.entity_infos) {
 		return false;
@@ -952,9 +1003,32 @@ ecs_entity_exists :: proc(ecs : ^ECData, entity : Entity) -> bool {
 }
 
 
+// It may exist internally while in a 'PendingDestroy' state but should not be considered existing to the outside officially!
+ecs_entity_exists_officially :: proc "contextless" (ecs : ^ECData, entity : Entity) -> bool {
+
+	if entity.id < 0 || entity.id >= cast(i32)len(ecs.entity_infos) {
+		return false;
+	}
+
+	if EntityFlag._Internal_Exists not_in ecs.entity_infos.flags[entity.id] {
+		return false;
+	}
+
+	if EntityFlag._Internal_PendingDestroy in ecs.entity_infos.flags[entity.id] {
+		return false;
+	}
+
+	if ecs.entity_infos.identifier[entity.id] != entity.identifier {
+		return false;
+	}
+
+	return true;
+}
+
+
 // Get / Set EntityInfo fields
 ecs_entity_get_name :: proc(ecs : ^ECData, entity : Entity) -> (string, EcsError){
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return "", EcsError.InvalidEntity;
 	}
 
@@ -967,7 +1041,7 @@ ecs_entity_set_name :: proc(ecs : ^ECData, entity : Entity, new_name : string) -
 		return EcsError.InvalidInputParameter;
 	}
 
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -982,7 +1056,7 @@ ecs_entity_set_name :: proc(ecs : ^ECData, entity : Entity, new_name : string) -
 	
 ecs_entity_set_tag :: proc(ecs : ^ECData, entity : Entity, new_tag : u32) -> EcsError {
 	
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -993,7 +1067,7 @@ ecs_entity_set_tag :: proc(ecs : ^ECData, entity : Entity, new_tag : u32) -> Ecs
 
 ecs_entity_get_tag :: proc(ecs : ^ECData, entity : Entity) -> (u32, EcsError) {
 	
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return 0, EcsError.InvalidEntity;
 	}
 
@@ -1002,7 +1076,7 @@ ecs_entity_get_tag :: proc(ecs : ^ECData, entity : Entity) -> (u32, EcsError) {
 
 ecs_entity_is_enabled :: proc(ecs : ^ECData, entity : Entity) -> bool {
 	
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return false;
 	}
 
@@ -1011,7 +1085,7 @@ ecs_entity_is_enabled :: proc(ecs : ^ECData, entity : Entity) -> bool {
 
 ecs_entity_set_enabled :: proc(ecs : ^ECData, entity : Entity, new_enabled : bool) -> EcsError{
 	
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -1031,7 +1105,7 @@ ecs_entity_set_enabled :: proc(ecs : ^ECData, entity : Entity, new_enabled : boo
 
 // @Note. only returns non _Internal flags
 ecs_entity_get_flags :: proc(ecs : ^ECData, entity : Entity) -> (EntityFlags, EcsError) {
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return EntityFlags{}, EcsError.InvalidEntity;
 	}
 
@@ -1040,7 +1114,7 @@ ecs_entity_get_flags :: proc(ecs : ^ECData, entity : Entity) -> (EntityFlags, Ec
 
 // @Note. only allows setting non _Internal flags
 ecs_entity_set_flags :: proc(ecs : ^ECData, entity : Entity, flags : EntityFlags, subtract_flags : bool = false) -> EcsError{
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -1057,7 +1131,7 @@ ecs_entity_set_flags :: proc(ecs : ^ECData, entity : Entity, flags : EntityFlags
 }
 
 ecs_entity_get_user_data :: proc(ecs : ^ECData, entity : Entity) -> (data : uintptr, err : EcsError) {
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return 0, EcsError.InvalidEntity;
 	}
 
@@ -1065,7 +1139,7 @@ ecs_entity_get_user_data :: proc(ecs : ^ECData, entity : Entity) -> (data : uint
 }
 
 ecs_entity_set_user_data :: proc(ecs : ^ECData, entity : Entity, data : uintptr) -> EcsError {
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -1074,7 +1148,7 @@ ecs_entity_set_user_data :: proc(ecs : ^ECData, entity : Entity, data : uintptr)
 }
 
 ecs_entity_get_component_set :: proc(ecs : ^ECData, entity : Entity) -> (set : ComponentSet, err : EcsError) {
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return ComponentSet{}, EcsError.InvalidEntity;
 	}
 
@@ -1085,7 +1159,7 @@ ecs_component_is_attached :: proc(ecs : ^ECData, entity : Entity,  component_typ
 
 	engine_assert(ecs != nil);
 
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return false;
 	}
 
@@ -1102,7 +1176,7 @@ ecs_get_entity_info_copy :: proc(ecs : ^ECData, entity : Entity) -> (info : Enti
 
 	engine_assert(ecs != nil);
 
-	if !ecs_entity_exists(ecs, entity){
+	if !ecs_entity_exists_officially(ecs, entity){
 		return EntityInfo{}, EcsError.InvalidEntity;
 	}
 
@@ -1113,7 +1187,7 @@ ecs_get_entity_info_copy :: proc(ecs : ^ECData, entity : Entity) -> (info : Enti
 
 // Usefull for pooling and physics updated entities. 
 ecs_entity_force_update :: proc(ecs : ^ECData, entity : Entity) -> EcsError{
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return EcsError.InvalidEntity;
 	}
 
@@ -1136,7 +1210,7 @@ ecs_entity_force_update :: proc(ecs : ^ECData, entity : Entity) -> EcsError{
 @(private="package")
 ecs_drawable_add :: proc(ecs : ^ECData, entity : Entity, drawable : ^Drawable) -> (id : int) {
 
-	if !ecs_entity_exists(ecs, entity) {
+	if !ecs_entity_exists_officially(ecs, entity) {
 		return -1;
 	}
 

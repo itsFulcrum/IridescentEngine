@@ -20,11 +20,9 @@ process_viewport :: proc() {
 		return;
 	}
 
-	left_mouse_pressed := iri.input_was_mouse_button_pressed(iri.MouseButton.LEFT)
+	if iri.input_mouse_button(.LEFT, {.WasPressed}).triggered {
 
-	if left_mouse_pressed {
-
-		mouse_pos := iri.input_get_relative_mouse_position();
+		mouse_pos := iri.input_relative_mouse_position();
 		//log.debugf("MousePresssed. mouse_pos {}", mouse_pos);
 
 		did_hit, hit_info := iri.raycast_universe_from_camera(curr_universe, mouse_pos);

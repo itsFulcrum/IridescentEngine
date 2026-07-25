@@ -32,7 +32,7 @@ entity_destroy :: proc(entity : ^Entity, universe : ^Universe = nil) -> EcsError
 entity_exists :: proc(entity : Entity, universe : ^Universe = nil) -> bool {
 	uni := universe == nil ? get_active_universe() : universe;
 	if uni == nil do return false;
-	return ecs_entity_exists(&uni.ecs, entity);
+	return ecs_entity_exists_officially(&uni.ecs, entity);
 }
 
 entity_is_component_attached :: proc(entity : Entity, component_type : ComponentType, universe : ^Universe = nil) -> bool {

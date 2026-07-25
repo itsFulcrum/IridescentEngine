@@ -1,5 +1,7 @@
 package iria
 
+// TODO: Depricate this. we should move to model asset instead.
+
 import "core:log"
 
 import "core:os"

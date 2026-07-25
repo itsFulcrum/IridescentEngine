@@ -28,6 +28,7 @@ EngineContext :: struct {
 	window : WindowContext,
 	render_context : ^RenderContext,
 
+	input_system 	 : ^InputSystem,
 	asset_manager    : ^AssetManager,
 	mesh_manager     : ^MeshManager,
 	material_manager : ^MaterialManager,
@@ -166,7 +167,9 @@ iri_init :: proc(init_info : EngineInitInfo) -> bool  {
 
 
     // Initialize input system and Callbacks.
-    input_system_init();
+    engine.input_system = new (InputSystem);
+    input_system_init(engine.input_system);
+
     event_callback_id := input_register_sdl_event_callback(sdl_event_callback);
 
 	window_draw_size := window_context_get_size_pixels(&engine.window);
@@ -229,8 +232,6 @@ iri_run :: proc() {
 		end_init_phase()
 	}
 
-	log.debug("Engine Run");
-
 	engine.running = true;
 
     // THE LOOP
@@ -246,16 +247,15 @@ iri_run :: proc() {
     	// also would be nice to seperate recording and broadcasting of events so we can 
     	// broadcast in the Game Update section..
 
-    	process_user_inputs: bool = true;
     	if debug_gui_is_enabled() && debug_gui_want_capture_input() {
-    		process_user_inputs = false;
+    		input_system_disable_user_inputs(engine.input_system);
+    	} else {
+    		input_system_enable_user_inputs(engine.input_system);
     	}
-    	
-    	input_system_set_process_user_input(process_user_inputs);
     	
     	// Input System
     	// poll and broadcast events
-    	input_system_update();
+    	input_system_update(engine.input_system, &engine.window);
 
     	if engine.window_is_minimized {
 
@@ -317,15 +317,18 @@ iri_deinit :: proc() {
 	{
 		IRI_PROFILE_PROCEDURE()
 
-		input_system_shutdown();
-
-		debug_gui_deinit();
 
 		if engine.universe != nil {
 			universe_deinit(engine.universe);
 			free(engine.universe);
 			engine.universe = nil;
 		}
+		
+		debug_gui_deinit();
+			
+		input_system_deinit(engine.input_system);
+		free(engine.input_system);
+		engine.input_system = nil;
 		
 		gpu_device := engine.window.gpu_device;
 
@@ -451,7 +454,7 @@ iri_global_physics_update :: proc(timestep : f64) {
 	}
 	
 	if engine.universe != nil {
-		ecs_process_pending_destroy(&engine.universe.ecs)
+		ecs_process_end_of_physics_update(&engine.universe.ecs)
 	}
 }
 

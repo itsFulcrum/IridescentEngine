@@ -57,6 +57,7 @@ draw_project_browser :: proc(){
 	 			
 	 			enum_flags_checkbox("Universe Assets", iri.AssetType.Universe, &editor.show_asset_type_flags);
 	 			enum_flags_checkbox("MeshData Assets"    , iri.AssetType.Mesh    , &editor.show_asset_type_flags);
+	 			enum_flags_checkbox("Model    Assets"   , iri.AssetType.Model   , &editor.show_asset_type_flags);
 	 			enum_flags_checkbox("Material Assets", iri.AssetType.Material, &editor.show_asset_type_flags);
 	 			enum_flags_checkbox("Lights   Assets"   , iri.AssetType.Light   , &editor.show_asset_type_flags);
 
@@ -192,6 +193,7 @@ draw_project_browser :: proc(){
 					case .Universe 	: im.PushStyleColorImVec4(im.Col.Button, UNIVERSE_ASSET_COL);
 					case .Light     : im.PushStyleColorImVec4(im.Col.Button, LIGHT_ASSET_COL);
 					case .SceneCollection	: im.PushStyleColorImVec4(im.Col.Button, LIGHT_ASSET_COL); // TODO: color
+					case .Model	    : im.PushStyleColorImVec4(im.Col.Button, LIGHT_ASSET_COL); // TODO: color
 				}
 
 				defer im.PopStyleColor();
@@ -381,7 +383,7 @@ proj_browser_popup_modal_import_gltf :: proc(open_modal : bool = false) {
 	if im.BeginPopupModal("Import Mesh gltf", nil, flags) {
 
 		// import options
-		include_set := iri.AssetImportFlags{.LogErrors, .OverwriteExisting, .MeshImportMaterials, .MeshImportLights, .MeshCombineMeshes,
+		include_set := iri.AssetImportFlags{.LogErrors, .OverwriteExisting, .MeshImportMaterials, .MeshImportLights, .MeshJoinAllMeshes, .MeshJoinSameMaterial, .MeshSeparateFiles,
 											.MeshForceVertexLayout, .MeshForceVertexLayoutMinimal, .MeshForceVertexLayoutStandard, .MeshForceVertexLayoutExtended,
 											.MeshCreateCollection}
 		draw_asset_import_flags_settings(&editor.curr_mesh_import_flags, include_set);
@@ -663,9 +665,14 @@ draw_asset_import_flags_settings :: proc(import_flags : ^iri.AssetImportFlags, i
 	flag_checkbox("Overwrite Existing Files", .OverwriteExisting, import_flags, include_set);
 	flag_checkbox("Import Materials"		, .MeshImportMaterials, import_flags, include_set);
 	flag_checkbox("Import Lights"			, .MeshImportLights, import_flags, include_set);
-	flag_checkbox("Combine Meshes"			, .MeshCombineMeshes, import_flags, include_set);
-	flag_checkbox("Force Vertex Layout"		, .MeshForceVertexLayout, import_flags, include_set);
+	flag_checkbox("Join Meshes"			, .MeshJoinAllMeshes, import_flags, include_set);
+	flag_checkbox("Join Same Material"			, .MeshJoinSameMaterial, import_flags, include_set);
+	im.SetItemTooltip("Not yet implemented");
+	flag_checkbox("Separate Files"			, .MeshSeparateFiles, import_flags, include_set);
+	im.SetItemTooltip("Non Separate files are not yet implemented");
+
 	flag_checkbox("Create Collection"		, .MeshCreateCollection, import_flags, include_set);
+	flag_checkbox("Force Vertex Layout"		, .MeshForceVertexLayout, import_flags, include_set);
 
 	if .MeshForceVertexLayout in include_set {
 
@@ -807,6 +814,7 @@ proj_browser_reload_curr_proj_dir_file_infos :: proc(){
 
 					type, uuid, ok := iria.get_asset_info_from_path(file.fullpath);
 
+					if !ok do log.debugf("Faild to get asset info from file: {},  type: {}", file.fullpath, type)
 					info.asset_uuid = uuid;
 					info.asset_type = type;
 				} else {
