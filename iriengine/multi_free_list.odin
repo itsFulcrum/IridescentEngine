@@ -3,20 +3,19 @@ package iri
 import "core:c"
 import "core:sort"
 
-// Multi free list is designed to be used as a free list for buffer type data
+// Multi free list is designed to be used as a free list for buffer like data
 // where we want to keep track of unsued blocks of multiple consequitve elements.
 // Each entry stores the index to the biggining of an unsuded (free) block and
 // an amount of consequtive elements that are considered unsused.
 // effectivly a mini pool type allocator however actual allocation of source buffers is handled by callers.
-
 
 MultiFreelistEntry :: struct {
 	index : u64,
 	amount : u64,
 }
 
-// Seach a freelist for and entry that points to a free block which can accomodate the 'required_amount' of elements of a source buffer.
-// using a simple scheme to try and avoid fragmentation by filling up small blocks first.
+// Search a freelist for and entry that points to a free block which can accomodate the 'required_amount' of elements of a source buffer.
+// Uses a simple scheme to try and avoid fragmentation by filling up small blocks first.
 // Returns the index to an entry in the free_list or -1 if none was found.
 multi_freelist_try_find_entry :: proc(free_list : ^[dynamic]MultiFreelistEntry, required_amount : u64) -> (free_list_entry_index : int) {
 
@@ -30,7 +29,7 @@ multi_freelist_try_find_entry :: proc(free_list : ^[dynamic]MultiFreelistEntry, 
 	for entry, entry_index in free_list {
 
 		if required_amount == entry.amount {
-			free_list_entry_index = entry_index;
+			free_list_entry_index = entry_index; // Entry fits amount perfectly. return this.
 			break;
 		} else if required_amount < entry.amount {
 			
@@ -38,19 +37,19 @@ multi_freelist_try_find_entry :: proc(free_list : ^[dynamic]MultiFreelistEntry, 
 				free_list_entry_index = entry_index;
 				curr_free_length = entry.amount;
 			}
-		}					
+		}
 	}
 
 	return free_list_entry_index;
 }
 
-// Update the freelist by consumeing 'consume_amount' from and entry in the freelist.
+// Update the freelist by consuming 'consume_amount' of elements from and entry in the freelist.
 // Entry index should point to an entry in the provided free list that can acomodate the consume amount
 // typically you would call this procedure with an index returned by 'multi_freelist_try_find_entry()'
 // e.g: 
 // free_entry_index := multi_freelist_try_find_entry(&free_list, required_amount);
 // if free_entry_index >= 0 {
-//		multi_freelist_consume_entry_amount(&free_list,free_entry_index, required_amount);
+//		multi_freelist_consume_entry_amount(&free_list, free_entry_index, required_amount);
 // } else {
 //	.. no block found in the freelist that can accomodate the 'required_amount'
 //  so proceed by growing your source buffer.	
@@ -69,9 +68,8 @@ multi_freelist_consume_entry_amount :: proc(free_list : ^[dynamic]MultiFreelistE
 	}
 }
 
-// Use this procedure to add new free list entries. 
-// This will first try to merge the entry with an existing one if it is directly after or before an existing entry.
-multi_freelist_add_or_merge_entry :: proc(free_list : ^[dynamic]MultiFreelistEntry, new_entry : MultiFreelistEntry){
+// Add new free list entry. Will be merged with exiting ones if possible.
+multi_freelist_add_entry :: proc(free_list : ^[dynamic]MultiFreelistEntry, new_entry : MultiFreelistEntry){
 	
 
 	append(free_list, new_entry);

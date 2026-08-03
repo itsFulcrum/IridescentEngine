@@ -5,12 +5,13 @@ import "core:mem"
 import sdl "vendor:sdl3"
 import "odinary:picy"
 
-import iricom "iricommon"
+//import iricom "iricommon"
+import iria "iriasset"
 
 SkyboxComponent :: struct{
 	using common : ComponentCommon,
 
-	using data : iricom.SkyboxCompData,
+	using data : iria.AssetSkyboxComponentData,
 	
 	// @Note:  
 	// mip 0 contains just unfiltered cubemap, 

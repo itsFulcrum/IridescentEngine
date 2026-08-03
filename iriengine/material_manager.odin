@@ -6,9 +6,22 @@ import "core:strings"
 import sdl "vendor:sdl3"
 
 import iricom "iricommon"
+import iria "iriasset"
+
 // TODO: write some better comments and documentaiton..
 
 MaterialID :: iricom.MaterialID // == u32
+
+MaterialsPerfCounters :: struct {
+
+	num_registered_mats : u32,
+
+	gpu_num_pbr   : u32,
+	gpu_num_unlit : u32,
+
+	gpu_pbr_buf_size   : u32, // In bytes
+	gpu_unlit_buf_size : u32, // In bytes
+}
 
 MaterialManager :: struct {
 
@@ -38,7 +51,6 @@ MaterialManager :: struct {
 	gpu_mat_transfer_buf: 	[MaterialShaderType]^sdl.GPUTransferBuffer, // a seperate Transfer buffer for each material type.
 
 
-	id_map : map[AssetUUID]MaterialID,
 
 	fallback_material : MaterialID,
 	//default_material : MaterialID,
@@ -89,7 +101,7 @@ material_manager_cast_gpu_array_to_byte_multiptr :: proc(manager : ^MaterialMana
 material_manager_init :: proc(manager : ^MaterialManager){
 
 	fallback_mat : Material;
-	fallback_mat.name = strings.clone("Iri Default Fallback", context.allocator);
+	fallback_mat.name = "Iri Default Fallback";
 	fallback_mat.render_technique = render_technique_create_default_opaque();
 	fallback_mat.variant = UnlitMaterialVariant {
 		albedo_color = {1.0, 0.0, 1.0},
@@ -135,7 +147,7 @@ material_manager_deinit :: proc(manager : ^MaterialManager, gpu_device: ^sdl.GPU
 		}
 	}
 
-	delete(manager.id_map)
+	//delete(manager.id_map)
 
 	delete(manager.material_render_technique_hashes);
 }
@@ -151,6 +163,18 @@ material_manager_update :: proc(manager : ^MaterialManager, gpu_device: ^sdl.GPU
 
 		manager.frame_upload_info[mat_type] = material_manager_update_material_buffer(manager, gpu_device, mat_type);
 	}
+
+	// update counters.
+	perf_counters := get_performance_counters();
+	mat_counters := &perf_counters.material_counters;
+
+	mat_counters.num_registered_mats = cast(u32)len(manager.materials)
+
+	mat_counters.gpu_num_pbr   = cast(u32)len(manager.pbr_materials_gpu)
+	mat_counters.gpu_num_unlit = cast(u32)len(manager.unlit_materials_gpu)
+
+	mat_counters.gpu_pbr_buf_size   = cast(u32)manager.gpu_mat_buf_size[.Pbr]
+	mat_counters.gpu_unlit_buf_size = cast(u32)manager.gpu_mat_buf_size[.Unlit]
 }
 
 @(private="file")
@@ -169,60 +193,68 @@ material_manager_update_material_buffer :: proc(manager : ^MaterialManager, gpu_
 		return;
 	}
 
-
 	gpu_array_len:         int 	= material_manager_get_gpu_array_len_for_type(manager, mat_type);
 	gpu_element_byte_size: int 	= material_manager_get_gpu_element_byte_size_for_type(mat_type);
 
-	required_gpu_buf_size : int = gpu_array_len * gpu_element_byte_size;
+	required_gpu_buf_size : int = gpu_array_len * gpu_element_byte_size
 
-	size_got_bigger : bool = required_gpu_buf_size > manager.gpu_mat_buf_size[mat_type];
+	curr_gpu_buf_size : int = manager.gpu_mat_buf_size[mat_type]
 	
-	// @Note: 
-	// If required size grows, We have to allocate a new gpu and transfer buffer and reupload all data.
-	// if it shrinks we can just keep the allocated memory.
-	// - We return from this if block.
-	if size_got_bigger {
+	size_got_bigger 	: bool = required_gpu_buf_size > curr_gpu_buf_size
+	size_shrank_in_half : bool = required_gpu_buf_size < (curr_gpu_buf_size / 2)
+	size_shrank_to_zero : bool = required_gpu_buf_size == 0
 
-		// - GPU BUFFER - 
+	reallocate_gpu_buffer : bool = size_got_bigger || size_shrank_in_half || size_shrank_to_zero;
+
+	if reallocate_gpu_buffer {
+
+		// Release Old Buffers 
 		if manager.gpu_mat_buf[mat_type] != nil {
 			sdl.ReleaseGPUBuffer(gpu_device, manager.gpu_mat_buf[mat_type]);
+			manager.gpu_mat_buf[mat_type] = nil;
+		}
+		if manager.gpu_mat_transfer_buf[mat_type] != nil {
+			sdl.ReleaseGPUTransferBuffer(gpu_device, manager.gpu_mat_transfer_buf[mat_type]);
+			manager.gpu_mat_transfer_buf[mat_type] = nil;
 		}
 
+		// Since we reupload everything anyway we can clear the update queue.
+		clear(&manager.gpu_index_update_queue[mat_type]);
+		
+		// Return if we dont need a buffer right now.
+		if size_shrank_to_zero {
+			manager.gpu_mat_buf_size[mat_type] = 0;
+			upload_info.requires_upload = false;
+			return upload_info;
+		}
+
+		// Create New Buffers.
 		gpu_buf_create_info : sdl.GPUBufferCreateInfo = {
     		usage = {sdl.GPUBufferUsageFlag.GRAPHICS_STORAGE_READ},
     		size  =  cast(u32)required_gpu_buf_size,
 		};
-
-		manager.gpu_mat_buf[mat_type] = sdl.CreateGPUBuffer(gpu_device, gpu_buf_create_info);
-
-		// - TRANSFER BUFFER -
-		if manager.gpu_mat_transfer_buf[mat_type] != nil {
-			sdl.ReleaseGPUTransferBuffer(gpu_device, manager.gpu_mat_transfer_buf[mat_type]);
-		}
 
 		transfer_buf_create_info : sdl.GPUTransferBufferCreateInfo = {
 	        usage = sdl.GPUTransferBufferUsage.UPLOAD,
 	        size  = cast(u32)required_gpu_buf_size,
 	    }
 
+		manager.gpu_mat_buf[mat_type] = sdl.CreateGPUBuffer(gpu_device, gpu_buf_create_info);
 	    manager.gpu_mat_transfer_buf[mat_type] = sdl.CreateGPUTransferBuffer(gpu_device, transfer_buf_create_info);		
 
 		manager.gpu_mat_buf_size[mat_type] = required_gpu_buf_size;
 
-		// Since we upload everything anyway we can clear the update queue.
-		clear(&manager.gpu_index_update_queue[mat_type]);
-
-		buffer_byte_size : int = required_gpu_buf_size;
 
 		// Upload all data to the transfer buffer.
 		transfer_buf_data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, manager.gpu_mat_transfer_buf[mat_type], false);
-    	
+
     	byte_ptr : [^]byte = material_manager_cast_gpu_array_to_byte_multiptr(manager, mat_type);
 
-    	mem.copy_non_overlapping(transfer_buf_data_ptr, &byte_ptr[0], buffer_byte_size);
+    	mem.copy_non_overlapping(transfer_buf_data_ptr, &byte_ptr[0], required_gpu_buf_size);
 
     	sdl.UnmapGPUTransferBuffer(gpu_device, manager.gpu_mat_transfer_buf[mat_type]);
 
+    	// Setup upload info.
     	upload_info.requires_upload = true;
 
     	upload_info.transfer_buf_location = {
@@ -233,29 +265,43 @@ material_manager_update_material_buffer :: proc(manager : ^MaterialManager, gpu_
     	upload_info.transfer_buf_region = {
     		buffer = manager.gpu_mat_buf[mat_type],
     		offset = 0,
-    		size = cast(u32)buffer_byte_size,
+    		size = cast(u32)required_gpu_buf_size,
     	}
 
     	return upload_info;
 	}
-
 
 	if len(manager.gpu_index_update_queue[mat_type]) == 0 {
 		return;
 	}
 
 	// We find the buffer range that we need to reupload.
-	min_index : int = len(manager.gpu_index_update_queue[mat_type]);
+	min_index : int = gpu_array_len; // this doesnt make sence -> ? len(manager.gpu_index_update_queue[mat_type]);
 	max_index : int = -1;
 
 	for gpu_index in manager.gpu_index_update_queue[mat_type] {
+
+		if gpu_index < 0 || gpu_index >= gpu_array_len {
+			// @Note.
+			// Mat probably got removed probably. 
+			// When we remove a material we swap last element to removed index
+			// and then have to update that swap in material. but if we remove many
+			// it can happen that we also remove that one an so the update queue is not correct anymore.
+			// happen for example when switching scenes.
+			continue; 
+		}
+
 		min_index = min(min_index, gpu_index);
 		max_index = max(max_index, gpu_index);	
 	}
-
-	engine_assert(max_index >= min_index);
-
+	
 	clear(&manager.gpu_index_update_queue[mat_type]);
+
+	if max_index <= 0 || min_index >= gpu_array_len {
+		return; 
+	}
+
+	engine_assert(gpu_array_len > 0);
 
 	starting_byte: int = min_index * gpu_element_byte_size;
 	byte_region:   int = (max_index + 1 - min_index) * gpu_element_byte_size; 
@@ -284,32 +330,6 @@ material_manager_update_material_buffer :: proc(manager : ^MaterialManager, gpu_
 	return upload_info;
 }
 
-
-@(private="package")
-material_manager_add_material_asset :: proc(manager : ^MaterialManager, mat_asset : ^MaterialAsset) -> MaterialID {
-
-	// Adding material without AssetUUID is generally fine but should use 'material_manager_add_material' proc instead
-	if mat_asset.asset_uuid == AssetUUID_INVALID {
-		return 0;
-	}
-
-	{		
-		mat_id, exists := manager.id_map[mat_asset.asset_uuid];
-
-		if exists {
-			return mat_id;
-		}
-	}
-
-	mat_id := material_manager_add_material(manager, &mat_asset.mat);
-	
-	if mat_id != 0 {
-		manager.id_map[mat_asset.asset_uuid] = mat_id;
-	}
-
-	return mat_id;
-}
-
 // returns 0 on failure, which is the default fallback materal.
 @(private="package")
 material_manager_add_material :: proc(manager : ^MaterialManager, material : ^Material) -> MaterialID {
@@ -321,12 +341,18 @@ material_manager_add_material :: proc(manager : ^MaterialManager, material : ^Ma
 
 	render_technique_hash := render_technique_calc_hash(material.render_technique);
 
-	// append empty directly to array to avoid stack copy of material
+	mat_arr_index : int = len(manager.materials); 
 	append_nothing(&manager.materials);
-	last : int = len(manager.materials) -1;
-	mem.copy(&manager.materials[last], material, size_of(Material));
+	mem.copy(&manager.materials[mat_arr_index], material, size_of(Material));
+
+	if len(material.name) > 0 {
+		manager.materials[mat_arr_index].name = strings.clone(material.name, context.allocator);
+	} else {
+		manager.materials[mat_arr_index].name = "";
+	}
 
 	append(&manager.material_render_technique_hashes, render_technique_hash);
+
 
 	gpu_array_index : int = -1;
 	mat_enum_type : MaterialShaderType = .None;
@@ -352,30 +378,34 @@ material_manager_add_material :: proc(manager : ^MaterialManager, material : ^Ma
 		}
 	}
 
-	mat_id : MaterialID = 0;
 
-	// See if there is a free spot in the indexes list.
+	free_spot_index : int = -1;
+
 	for i in 0..<len(manager.material_indexes) {
 		
 		if manager.material_indexes[i] == -1 {
-
-			mat_id = cast(MaterialID)i;
+			free_spot_index = i;
 			break;
 		}
 	}
+		
+	if mat_enum_type != .Custom && mat_enum_type != .None {
+		engine_assert(gpu_array_index != -1);
+	}
 	
-	// last element because materials array has no free spots. 
-	// len(manager.materials) will be >= 1 because we just appended to it above
-	mat_arr_index : int = len(manager.materials) -1; 
 
-	if mat_id == 0 {
+	mat_id : MaterialID = 0;
+
+	if free_spot_index == -1 {
 		// no free spot.
 
-		mat_id = cast(MaterialID)len(&manager.material_indexes);		
+		mat_id = cast(MaterialID)len(&manager.material_indexes);
 		append(&manager.material_indexes, mat_arr_index);
 		append(&manager.material_gpu_indexes, gpu_array_index);
 		append(&manager.material_enum_type, mat_enum_type);
 	} else {
+
+		mat_id = cast(MaterialID)free_spot_index;
 		manager.material_indexes[mat_id] 		= mat_arr_index;
 		manager.material_gpu_indexes[mat_id] 	= gpu_array_index;
 		manager.material_enum_type[mat_id] 		= mat_enum_type;
@@ -415,7 +445,7 @@ material_manager_remove_material :: proc(manager : ^MaterialManager, mat_id : ^M
 
 	// First we remove the gpu material that corresponds to this materialID.
 
-	last_gpu_array_index: int = cast(int)material_manager_get_gpu_array_len_for_type(manager, mat_enum_type);
+	last_gpu_array_index: int = cast(int)material_manager_get_gpu_array_len_for_type(manager, mat_enum_type) -1;
 
 	// @Note: for .Custom we dont have a gpu array so we skip this step.
 	if mat_gpu_index != last_gpu_array_index && mat_enum_type != .Custom {
@@ -462,7 +492,6 @@ material_manager_remove_material :: proc(manager : ^MaterialManager, mat_id : ^M
 	// We must update it also in the gpu buffer.
 	append(&manager.gpu_index_update_queue[mat_enum_type], mat_gpu_index);
 
-
 	// Now we also want to remove the material in the 'materials' list.
 	// We will do the same approach as with the gpu entries and first update the index pointing to the last element
 	// before performing an unordered_remove().
@@ -494,6 +523,7 @@ material_manager_remove_material :: proc(manager : ^MaterialManager, mat_id : ^M
 
 	// TODO: Unload custom material buffers
 
+	iricom.material_free_contents(&manager.materials[mat_arr_index]);
 	// unordered_remove now copies last element to the one we want to remove and then deletes the last
 	unordered_remove(&manager.materials, mat_arr_index);
 	unordered_remove(&manager.material_render_technique_hashes, mat_arr_index);
@@ -502,7 +532,6 @@ material_manager_remove_material :: proc(manager : ^MaterialManager, mat_id : ^M
 	manager.material_indexes[_mat_id]     = -1;
 	manager.material_gpu_indexes[_mat_id] = -1;
 	manager.material_enum_type[_mat_id]   = .None;
-
 
 	engine_assert(len(manager.material_indexes) == len(manager.material_gpu_indexes));
 	engine_assert(len(manager.material_indexes) == len(manager.material_enum_type));
@@ -547,7 +576,7 @@ material_manager_push_material_changes :: proc(manager : ^MaterialManager, mat_i
 	}
 }
 
-// @Note: This is a potentially very slow operation and can trigger rebuilding of pipeline objects and shaders recompilations
+// @Note: This is a potentially very slow operation and can trigger rebuilding of pipeline objects and shaders
 @(private="package")
 material_manager_push_material_technique_changes :: proc(manager : ^MaterialManager, mat_id: MaterialID, pipe_manager : ^PipelineManager, gpu_device : ^sdl.GPUDevice) {
 	
@@ -569,67 +598,27 @@ material_manager_is_valid_id :: proc(manager : ^MaterialManager, mat_id: Materia
 		return false;
 	}
 
-	if manager.material_indexes[mat_id] < 0 {
+	if manager.material_indexes[mat_id] < 0 || manager.material_indexes[mat_id] >= len(manager.materials) {
 		return false;
 	}
 
 	return true;
 }
 
-@(private="package")
-material_manager_is_asset_loaded :: proc(manager : ^MaterialManager, asset_uuid : AssetUUID) -> bool {
-	if asset_uuid == AssetUUID_INVALID {
-		return false;
-	}
-
-	return asset_uuid in manager.id_map;
-}
 
 @(private="package")
-material_manager_get_id_from_asset_uuid :: proc(manager : ^MaterialManager, asset_uuid : AssetUUID) -> (mat_id : MaterialID, exists : bool){
-	return manager.id_map[asset_uuid];
-}
-
-// @Speed: this is slow rn
-@(private="package")
-material_manager_get_asset_uuid_from_material_id :: proc(manager : ^MaterialManager, mat_id : MaterialID) -> (asset_uuid : AssetUUID, exists : bool){
-
-	if mat_id == 0 || !material_manager_is_valid_id(manager, mat_id) {
-		return AssetUUID_INVALID, false;
-	}
-
-	for a_uuid, m_id in manager.id_map{
-		if m_id == mat_id {
-			return a_uuid, true;
-		}
-	}
-
-	return AssetUUID_INVALID, false;
-}
-
-
-@(private="package")
-material_manager_get_material_shader_type_unsafe :: proc(manager : ^MaterialManager, mat_id: MaterialID) -> MaterialShaderType{
+material_manager_get_material_shader_type_unsafe :: proc "contextless" (manager : ^MaterialManager, mat_id: MaterialID) -> MaterialShaderType  {
 	return manager.material_enum_type[mat_id];
 }
 
 // Returns a pointer to previously registered material. 
 // The pointer is only valid for as long as no other materials are added or removed
 @(private="package")
-material_manager_get_material_unsafe :: proc(manager : ^MaterialManager, mat_id : MaterialID) -> ^Material {
-
-	mat_arr_index : int = manager.material_indexes[mat_id];
-	engine_assert(mat_arr_index >= 0);
-
-	return &manager.materials[mat_arr_index];
+material_manager_get_material_unsafe :: proc "contextless" (manager : ^MaterialManager, mat_id : MaterialID) -> ^Material  {
+	return &manager.materials[manager.material_indexes[mat_id]];
 }
 
-
 @(private="package")
-material_manager_get_render_technique_hash_unsafe :: proc(manager : ^MaterialManager, mat_id : MaterialID) -> RenderTechniqueHash {
-	
-	mat_arr_index := manager.material_indexes[mat_id];
-	engine_assert(mat_arr_index >= 0);
-
-	return manager.material_render_technique_hashes[mat_arr_index];
+material_manager_get_render_technique_hash_unsafe :: proc "contextless" (manager : ^MaterialManager, mat_id : MaterialID) -> RenderTechniqueHash   {
+	return manager.material_render_technique_hashes[manager.material_indexes[mat_id]];
 }

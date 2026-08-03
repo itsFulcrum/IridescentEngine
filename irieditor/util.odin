@@ -121,3 +121,18 @@ enum_combo :: proc(label : cstring, curr_selected_cstr : cstring, $T : typeid) -
 
 	return selected_type, selection_made;
 }
+
+
+
+button_align_right_sameline :: proc(btn_label : cstring, btn_size : im.Vec2 = im.Vec2{20.0, 0.0}) -> (pressed : bool) {
+	
+	im.SameLine();
+	
+	im.SetCursorPosX( im.GetCursorPosX() + max(0.0, im.GetContentRegionAvail().x - btn_size.x) );
+		
+	if im.Button(btn_label, btn_size) {
+		return true;
+	}
+
+	return false;
+}

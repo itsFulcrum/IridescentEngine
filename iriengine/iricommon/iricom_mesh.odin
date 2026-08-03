@@ -1,5 +1,10 @@
 package iricom
 
+// =========================================================================================================
+// @Note: Any engine package can import 'iricom' but 'iricom' itself can _Not_ import other Engine packages! 
+// =========================================================================================================
+
+
 import geo "odinary:geometry"
 import "core:encoding/uuid"
 
@@ -35,8 +40,6 @@ VertexDataExtended :: struct { // 64 bytes
 
 
 MeshData :: struct {
-	asset_uuid : uuid.Identifier,
-
 	name : string,
 
 	num_vertecies : u32,
@@ -60,7 +63,7 @@ MeshData :: struct {
 	transform : geo.Transform,
 }
 
-free_mesh_data :: proc(mesh_data : ^MeshData) {
+mesh_data_free :: proc(mesh_data : ^MeshData) {
 	
 	if mesh_data == nil {
 		return;
@@ -74,11 +77,6 @@ free_mesh_data :: proc(mesh_data : ^MeshData) {
 		free(mesh_data.indecies);
 		mesh_data.indecies = nil;
 	}
-
-	// if mesh_data.shadow_indecies != nil {
-	// 	free(mesh_data.shadow_indecies);
-	// 	mesh_data.shadow_indecies = nil;
-	// }
 
 	if mesh_data.vertex_data != nil {
 		free(mesh_data.vertex_data);

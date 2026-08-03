@@ -2,6 +2,9 @@ package iri
 
 import "core:log"
 
+import iria "iriasset"
+import sdl "vendor:sdl3"
+
 init :: proc(init_info : EngineInitInfo) -> bool {
 	return iri_init(init_info);
 }
@@ -133,10 +136,10 @@ overwrite_universe_update_callback_procs :: proc(callbacks : UniverseUpdateCallb
 	engine.universe_update_callbacks = callbacks;
 }
 
-
-// Switch to a differant unvierse. Use 'asset_manager_find_universe_asset_by_tag_and_name()' to
-// obtain the asset uuid and provide new update callback procedures.
-multiverse_jump :: proc(asset_uuid : AssetUUID, update_callbacks : UniverseUpdateCallbacks, store_active_universe : bool) {
+// Switch to a differant unvierse. see asset_manager_interface.odin for how to obtain the AssetID
+// Provide the update_callbacks if you want any frame, physics, init, deinit callbacks for to be called with this Universe.
+// Set 'store_active_universe' to true if the currently active Universe should safe its current state to file.
+multiverse_jump :: proc(asset_id : AssetID, update_callbacks : UniverseUpdateCallbacks, store_active_universe : bool) -> bool {
 	
 	IRI_PROFILE_PROCEDURE();
 
@@ -146,18 +149,16 @@ multiverse_jump :: proc(asset_uuid : AssetUUID, update_callbacks : UniverseUpdat
 
 	// maybe we do want to allow hard reset of current unverse?
 	if curr_universe != nil {
-		if curr_universe.asset_uuid == asset_uuid {
-			return;
+		if curr_universe.asset_id == asset_id {
+			return false;
 		}
 	}
 
 	// - 1. validate that we can load the universe at uuid
 	// - 2. load and init new universe
-	new_universe, load_ok := asset_io_load_universe_asset(asset_uuid);
-	if !load_ok {
-		return
-	}
-
+	new_universe_asset:= asset_io_load_universe_asset(asset_manager, asset_id) or_return;
+	defer iria.asset_universe_free(new_universe_asset)
+	
 	// - run current universe deinit
 	if curr_universe != nil {
 		if engine.universe_update_callbacks.deinit != nil {
@@ -183,8 +184,12 @@ multiverse_jump :: proc(asset_uuid : AssetUUID, update_callbacks : UniverseUpdat
 
 	collision_manager_reset(engine.collision_manager);
 	
-	// TODO: maybe inform mesh manager of universe switch so it can 
-	// deallocate unusesd meshses.
+
+
+	wait_ok := sdl.WaitForGPUIdle(engine.window.gpu_device);
+
+	new_universe : ^Universe = new(Universe);
+	universe_init(new_universe, new_universe_asset);
 
 	// - switch universe pointer
 	engine.universe = new_universe;
@@ -206,4 +211,7 @@ multiverse_jump :: proc(asset_uuid : AssetUUID, update_callbacks : UniverseUpdat
 	if engine.universe_update_callbacks.init_late != nil {
 		engine.universe_update_callbacks.init_late(engine.universe);
 	}
+
+
+	return true;
 }

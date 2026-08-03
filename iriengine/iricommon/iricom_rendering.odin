@@ -1,5 +1,10 @@
 package iricom
 
+// =========================================================================================================
+// @Note: Any engine package can import 'iricom' but 'iricom' itself can _Not_ import other Engine packages! 
+// =========================================================================================================
+
+
 import sdl "vendor:sdl3"
 import "core:c"
 

@@ -1,10 +1,14 @@
 package iricom
 
+// =========================================================================================================
+// @Note: Any engine package can import 'iricom' but 'iricom' itself can _Not_ import other Engine packages! 
+// =========================================================================================================
+
 import "core:math/rand"
 
 Entity :: struct {
-	id : i32,
-	identifier : i32,
+	id : i32, 			// Array Index
+	identifier : i32,   // Random positive number to identify this entity.
 }
 
 EntityInvalid :: Entity{id = -1, identifier = -1}
@@ -42,30 +46,4 @@ ComponentType :: enum u32 {
 	Skybox		 ,
 	MeshRenderer ,
 	Collider 	 ,
-}
-
-
-// Flat constant size data blobs of components
-// to make serialisation between file data and comp data
-// easier. These Must Not hold any variable sized data or pointers
-// of any kind. Flat Constant sized data only.
-CameraCompData :: struct {
-	fov_deg  		: f32,
-	near_clip		: f32,
-	far_clip 		: f32,
-	exposure_correction : f32,
-	// physical camera
-	// TODO: maybe implment focal lenght and sensor size ?
-	iso 			: f32,
-	shutter_speed 	: f32,
-	aperture 		: f32,
-}
-
-
-SkyboxCompData :: struct {
-	color_zenith 	: [3]f32,
-	color_horizon 	: [3]f32,
-	color_nadir 	: [3]f32,
-	exposure : f32,	
-	rotation : f32,
 }

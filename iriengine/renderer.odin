@@ -553,6 +553,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             sdl.UploadToGPUBuffer(copy_pass, transfer_buf_location, buf_region, cycle = true); 
         }
 
+        // Renderer Begin OF Frame During Copy Pass
+
         // global bottom level bvh nodes (of all currently loaded meshes) 
         if mesh_manager.global_bl_bvh_nodes_buf.upload_info.requires_upload {
             upinfo := &mesh_manager.global_bl_bvh_nodes_buf.upload_info;
@@ -573,6 +575,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             sdl.UploadToGPUBuffer(copy_pass, upinfo.transfer_buf_location, upinfo.transfer_buf_region, cycle = false);
             upload_info_reset(upinfo);
         }
+
+        // ... Upload other rendering data..
 
         // Matrix buffer
         if universe.matrix_upload_info.requires_upload {

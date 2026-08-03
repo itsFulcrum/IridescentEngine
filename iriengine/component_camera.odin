@@ -3,12 +3,13 @@ package iri
 import "core:math/linalg"
 import "odinary:mathy"
 
-import iricom "iricommon"
+//import iricom "iricommon"
+import iria "iriasset"
 
 CameraComponent :: struct{
 	using common : ComponentCommon,
 
-	using data : iricom.CameraCompData,
+	using data : iria.AssetCameraComponentData,
 }
 
 @(private="package")

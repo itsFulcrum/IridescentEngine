@@ -16,14 +16,6 @@ import "core:sort"
 
 import sdl "vendor:sdl3"
 
-DIRECTORY_COL 		:: im.Vec4{0.28, 0.25, 0.25, 1.00}
-REG_FILE_COL 		:: im.Vec4{0.18, 0.21, 0.25, 1.00}
-UNIVERSE_ASSET_COL 	:: im.Vec4{ 0.3, 0.27, 0.17, 1.00}
-MESH_ASSET_COL 		:: im.Vec4{0.19, 0.25, 0.22, 1.00}
-MATERIAL_ASSET_COL 	:: im.Vec4{0.22, 0.21, 0.18, 1.00}
-LIGHT_ASSET_COL 	:: im.Vec4{0.14, 0.22, 0.25, 1.00}
-GRAYED_TEXT_COL 	:: im.Vec4{0.2, 0.2, 0.2, 1.00}
-
 
 // @Note: requires editor to be initialized!
 draw_project_browser :: proc(){
@@ -56,7 +48,7 @@ draw_project_browser :: proc(){
 	 			im.BeginDisabled(disabled_assets);
 	 			
 	 			enum_flags_checkbox("Universe Assets", iri.AssetType.Universe, &editor.show_asset_type_flags);
-	 			enum_flags_checkbox("MeshData Assets"    , iri.AssetType.Mesh    , &editor.show_asset_type_flags);
+	 			//enum_flags_checkbox("MeshData Assets"    , iri.AssetType.Mesh    , &editor.show_asset_type_flags);
 	 			enum_flags_checkbox("Model    Assets"   , iri.AssetType.Model   , &editor.show_asset_type_flags);
 	 			enum_flags_checkbox("Material Assets", iri.AssetType.Material, &editor.show_asset_type_flags);
 	 			enum_flags_checkbox("Lights   Assets"   , iri.AssetType.Light   , &editor.show_asset_type_flags);
@@ -188,12 +180,12 @@ draw_project_browser :: proc(){
 				
 				switch info.asset_type {
 					case .None 	: im.PushStyleColorImVec4(im.Col.Button, REG_FILE_COL);
-					case .Mesh 		: im.PushStyleColorImVec4(im.Col.Button, MESH_ASSET_COL);
+					case ._Unused_1: //im.PushStyleColorImVec4(im.Col.Button, MESH_ASSET_COL);
 					case .Material 	: im.PushStyleColorImVec4(im.Col.Button, MATERIAL_ASSET_COL);
 					case .Universe 	: im.PushStyleColorImVec4(im.Col.Button, UNIVERSE_ASSET_COL);
 					case .Light     : im.PushStyleColorImVec4(im.Col.Button, LIGHT_ASSET_COL);
-					case .SceneCollection	: im.PushStyleColorImVec4(im.Col.Button, LIGHT_ASSET_COL); // TODO: color
-					case .Model	    : im.PushStyleColorImVec4(im.Col.Button, LIGHT_ASSET_COL); // TODO: color
+					case ._Unused_2: ;
+					case .Model	    : im.PushStyleColorImVec4(im.Col.Button, MODEL_ASSET_COL); // TODO: color
 				}
 
 				defer im.PopStyleColor();
@@ -203,7 +195,13 @@ draw_project_browser :: proc(){
 					#partial switch info.asset_type {
 						case .Universe 	: {
 
-							iri.multiverse_jump(info.asset_uuid, iri.UniverseUpdateCallbacks{}, store_active_universe = true);
+							iri.multiverse_jump(info.asset_id, iri.UniverseUpdateCallbacks{}, store_active_universe = true);
+						}
+						case .Material: {
+							properties_panel_set_active_asset(editor, info.asset_id);
+						}
+						case .Model: {
+							properties_panel_set_active_asset(editor, info.asset_id);
 						}
 					}
 				}
@@ -242,13 +240,20 @@ draw_project_browser :: proc(){
 					im.SetClipboardText(rel_path_cstr);
 				}
 			}
+
+
+			//if im.MenuItem()
 			
-			// if info.file_type == .AssetFile {
+			if info.file_type == .AssetFile {
 
-			// 	if im.MenuItem("Copy AssetUUID") {
+			 	// if im.MenuItem("Copy AssetUUID") {
 
-			// 	}
-			// }
+			 	// }
+
+			 	if im.MenuItem("Edit Asset") {
+			 		properties_panel_set_active_asset(editor, info.asset_id);
+			 	}
+			}
 		}
 
 		if !list_view {
@@ -327,7 +332,7 @@ draw_project_browser :: proc(){
 					if uni_name_ok {
 
 						name_stem := os.short_stem(uni_name);
-						new_uni, new_uni_ok := iri.asset_io_create_new_universe_asset(editor.curr_proj_dir, name_stem)
+						new_uni, new_uni_ok := iri.asset_io_make_universe_asset(editor.curr_proj_dir, name_stem)
 
 						// maybe we should switch to it directly ??
 						if new_uni_ok {
@@ -383,9 +388,8 @@ proj_browser_popup_modal_import_gltf :: proc(open_modal : bool = false) {
 	if im.BeginPopupModal("Import Mesh gltf", nil, flags) {
 
 		// import options
-		include_set := iri.AssetImportFlags{.LogErrors, .OverwriteExisting, .MeshImportMaterials, .MeshImportLights, .MeshJoinAllMeshes, .MeshJoinSameMaterial, .MeshSeparateFiles,
-											.MeshForceVertexLayout, .MeshForceVertexLayoutMinimal, .MeshForceVertexLayoutStandard, .MeshForceVertexLayoutExtended,
-											.MeshCreateCollection}
+		include_set := iri.AssetImportFlags{.LogErrors, .OverwriteExisting, .MeshImportMaterials, .MeshImportLights, .MeshJoinAllMeshes, .MeshSeparateFiles,
+											.MeshForceVertexLayout, .MeshForceVertexLayoutMinimal, .MeshForceVertexLayoutStandard, .MeshForceVertexLayoutExtended}
 		draw_asset_import_flags_settings(&editor.curr_mesh_import_flags, include_set);
 
 		if im.Button("Open File...") {
@@ -663,16 +667,25 @@ draw_asset_import_flags_settings :: proc(import_flags : ^iri.AssetImportFlags, i
 	
 	flag_checkbox("Log Errors" 				, .LogErrors, import_flags, include_set);
 	flag_checkbox("Overwrite Existing Files", .OverwriteExisting, import_flags, include_set);
+
+	im.Spacing();
+
 	flag_checkbox("Import Materials"		, .MeshImportMaterials, import_flags, include_set);
 	flag_checkbox("Import Lights"			, .MeshImportLights, import_flags, include_set);
+	
 	flag_checkbox("Join Meshes"			, .MeshJoinAllMeshes, import_flags, include_set);
-	flag_checkbox("Join Same Material"			, .MeshJoinSameMaterial, import_flags, include_set);
-	im.SetItemTooltip("Not yet implemented");
+	
+	//flag_checkbox("Join Same Material"			, .MeshJoinSameMaterial, import_flags, include_set);
+	//im.SetItemTooltip("Not yet implemented");
+	
 	flag_checkbox("Separate Files"			, .MeshSeparateFiles, import_flags, include_set);
-	im.SetItemTooltip("Non Separate files are not yet implemented");
+	//im.SetItemTooltip("Non Separate files are not yet implemented");
 
-	flag_checkbox("Create Collection"		, .MeshCreateCollection, import_flags, include_set);
+	//flag_checkbox("Create Collection"		, .MeshCreateCollection, import_flags, include_set);
 	flag_checkbox("Force Vertex Layout"		, .MeshForceVertexLayout, import_flags, include_set);
+	im.SetItemTooltip("Specify a specific Vertex Layout, otherwise Auto Choose per Mesh");
+
+
 
 	if .MeshForceVertexLayout in include_set {
 
@@ -688,6 +701,7 @@ draw_asset_import_flags_settings :: proc(import_flags : ^iri.AssetImportFlags, i
 					update_flag(import_flags, .MeshForceVertexLayoutMinimal ,  true);					
 				}
 			}
+			im.SetItemTooltip("qtangent.xyzw + uv0.xy")
 			im.SameLine();
 			if flag_checkbox("Standard", .MeshForceVertexLayoutStandard, import_flags, include_set) {
 				is_enabled : bool = .MeshForceVertexLayoutStandard in import_flags;
@@ -698,6 +712,7 @@ draw_asset_import_flags_settings :: proc(import_flags : ^iri.AssetImportFlags, i
 					update_flag(import_flags, .MeshForceVertexLayoutStandard ,  true);
 				}
 			}
+			im.SetItemTooltip("qtangent.xyzw + uv0.xy + color0.rgba")
 			im.SameLine();
 			if flag_checkbox("Extended", .MeshForceVertexLayoutExtended, import_flags, include_set) {
 				is_enabled : bool = .MeshForceVertexLayoutExtended in import_flags;
@@ -708,6 +723,7 @@ draw_asset_import_flags_settings :: proc(import_flags : ^iri.AssetImportFlags, i
 					update_flag(import_flags, .MeshForceVertexLayoutExtended ,  true);
 				}
 			}
+			im.SetItemTooltip("qtangent.xyzw + uv0.xy + uv1.xy + color0.rgba + color1.rgba")
 
 		}
 	}
@@ -807,16 +823,14 @@ proj_browser_reload_curr_proj_dir_file_infos :: proc(){
 			case .Directory: info.file_type = FileInfoType.Directory;
 			case .Regular: {
 
-				ext := os.ext(file.fullpath);
+				if iria.has_valid_extention(file.fullpath) {
 
-				if ext == iria.FILE_EXTENTION {
 					info.file_type = FileInfoType.AssetFile;
+					asset_id, asset_type, valid_asset := iria.read_asset_header_info_from_path(file.fullpath);
 
-					type, uuid, ok := iria.get_asset_info_from_path(file.fullpath);
-
-					if !ok do log.debugf("Faild to get asset info from file: {},  type: {}", file.fullpath, type)
-					info.asset_uuid = uuid;
-					info.asset_type = type;
+					if !valid_asset do log.debugf("Faild to get asset info from file: {},  type: {}", file.fullpath, asset_type)
+					info.asset_id = asset_id;
+					info.asset_type = asset_type;
 				} else {
 					info.file_type = FileInfoType.RegularFile;
 				}

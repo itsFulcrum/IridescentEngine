@@ -4,7 +4,8 @@ import "core:log"
 import "core:hash"
 import "core:strings"
 
-import iria "iriasset"
+//import iria "iriasset"
+import iricom "iricommon"
 
 import sdl "vendor:sdl3"
 
@@ -404,7 +405,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 1,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(iria.VertexDataMinimal, qtangent),
+            offset = cast(u32)offset_of(iricom.VertexDataMinimal, qtangent),
         };
 
         // Texcoord_0
@@ -412,7 +413,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 2,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(iria.VertexDataMinimal, texcoord_0),
+            offset = cast(u32)offset_of(iricom.VertexDataMinimal, texcoord_0),
         };
 
         append(array, pos);
@@ -437,7 +438,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 1,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(iria.VertexDataStandard, qtangent),
+            offset = cast(u32)offset_of(iricom.VertexDataStandard, qtangent),
         };
 
         // Texcoord_0
@@ -445,7 +446,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 2,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(iria.VertexDataStandard, texcoord_0),
+            offset = cast(u32)offset_of(iricom.VertexDataStandard, texcoord_0),
         };
 
         // Color_0
@@ -453,7 +454,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 3,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(iria.VertexDataStandard, color_0),
+            offset = cast(u32)offset_of(iricom.VertexDataStandard, color_0),
         };
 
         append(array, pos);
@@ -478,7 +479,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 1,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(iria.VertexDataExtended, qtangent),
+            offset = cast(u32)offset_of(iricom.VertexDataExtended, qtangent),
         };
 
         // Texcoord_0
@@ -486,7 +487,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 2,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(iria.VertexDataExtended, texcoord_0),
+            offset = cast(u32)offset_of(iricom.VertexDataExtended, texcoord_0),
         };
 
         // Texcoord_1
@@ -494,7 +495,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 3,
             format = sdl.GPUVertexElementFormat.FLOAT2,
-            offset = cast(u32)offset_of(iria.VertexDataExtended, texcoord_1),
+            offset = cast(u32)offset_of(iricom.VertexDataExtended, texcoord_1),
         };
 
         // Color_0
@@ -502,7 +503,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 4,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(iria.VertexDataExtended, color_0),
+            offset = cast(u32)offset_of(iricom.VertexDataExtended, color_0),
         };
 
         // Color_1
@@ -510,7 +511,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             buffer_slot = 1,
             location = 5,
             format = sdl.GPUVertexElementFormat.FLOAT4,
-            offset = cast(u32)offset_of(iria.VertexDataExtended, color_1),
+            offset = cast(u32)offset_of(iricom.VertexDataExtended, color_1),
         };
 
 
@@ -599,7 +600,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_1 : sdl.GPUVertexBufferDescription = {
                 slot = 1, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of(iria.VertexDataMinimal), // vertex byte size
+                pitch = size_of(iricom.VertexDataMinimal), // vertex byte size
             }
 
             append(&info.descriptors,description_0);
@@ -617,7 +618,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_1 : sdl.GPUVertexBufferDescription = {
                 slot = 1, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of(iria.VertexDataStandard), // vertex byte size
+                pitch = size_of(iricom.VertexDataStandard), // vertex byte size
             }
 
             append(&info.descriptors,description_0);
@@ -635,7 +636,7 @@ pipe_manager_create_vertex_buffer_descriptor_info :: proc(type : VertexBufDescri
             description_1 : sdl.GPUVertexBufferDescription = {
                 slot = 1, // buffer slot
                 input_rate = sdl.GPUVertexInputRate.VERTEX,
-                pitch = size_of(iria.VertexDataExtended), // vertex byte size
+                pitch = size_of(iricom.VertexDataExtended), // vertex byte size
             }
 
             append(&info.descriptors,description_0);
@@ -1061,7 +1062,7 @@ pipe_manager_create_graphics_pipeline :: proc(gpu_device: ^sdl.GPUDevice, vert_s
 }
 
 @(private="package")
-pipe_manager_get_material_pipeline_shader_variants :: proc(manager : ^PipelineManager, material : ^Material, vertex_layout : iria.VertexDataLayout) -> (vert_shader_id : ShaderID, vert_variant : ShaderVariant, frag_shader_id : ShaderID, frag_variant : ShaderVariant) {
+pipe_manager_get_material_pipeline_shader_variants :: proc(manager : ^PipelineManager, material : ^Material, vertex_layout : iricom.VertexDataLayout) -> (vert_shader_id : ShaderID, vert_variant : ShaderVariant, frag_shader_id : ShaderID, frag_variant : ShaderVariant) {
     
     technique := &material.render_technique;
 
@@ -1129,7 +1130,7 @@ pipe_manager_calc_material_pipeline_hash :: proc(vert_shader_id : ShaderID, vert
 }
 
 @(private="package")
-pipe_manager_get_material_pipeline_variant :: proc(manager : ^PipelineManager, material_manager : ^MaterialManager, mat_id : MaterialID, vertex_layout : iria.VertexDataLayout) -> ^sdl.GPUGraphicsPipeline {
+pipe_manager_get_material_pipeline_variant :: proc(manager : ^PipelineManager, material_manager : ^MaterialManager, mat_id : MaterialID, vertex_layout : iricom.VertexDataLayout) -> ^sdl.GPUGraphicsPipeline {
 
     material := material_get_by_id(mat_id)
 

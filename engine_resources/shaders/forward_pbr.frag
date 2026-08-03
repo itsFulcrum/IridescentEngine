@@ -207,16 +207,16 @@ void main() {
 	#endif
 
 
-	vec4 raca_sample = texture(_ao_tex, screen_uv);
+	// vec4 raca_sample = texture(_ao_tex, screen_uv);
 	
-	uint array_layer = 0;
-	uint mip_level = 0;
-	vec4 raca = textureLod(_raca_tex, vec3(screen_uv.xy, float(array_layer)),float(mip_level));
-	frag_color.rgb = vec3(pow(raca.r, 3.0f) * 0.2);
-	//frag_color.rgb = raca.rgb;
-	frag_color.rgb = vec3(raca_sample.rgb);
-	//scene_ao = raca_sample.g;
-	return;
+	// uint array_layer = 0;
+	// uint mip_level = 0;
+	// vec4 raca = textureLod(_raca_tex, vec3(screen_uv.xy, float(array_layer)),float(mip_level));
+	// frag_color.rgb = vec3(pow(raca.r, 3.0f) * 0.2);
+	// //frag_color.rgb = raca.rgb;
+	// frag_color.rgb = vec3(raca_sample.rgb);
+	// //scene_ao = raca_sample.g;
+	// return;
 
 	PbrMaterial mat = _pbr_materials[_mat_ubo.mat_index];
 

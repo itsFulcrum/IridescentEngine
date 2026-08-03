@@ -159,7 +159,7 @@ comp_collider_recompute_collider_primitve :: proc(comp : ^ColliderComponent) {
 }
 
 
-comp_collider_init_from_comp_data :: proc(comp : ^ColliderComponent, comp_data : iria.ColliderCompData){
+comp_collider_init_from_asset_collider_component_data :: proc(comp : ^ColliderComponent, comp_data : iria.AssetColliderComponentData){
 
 	comp.flags = transmute(ColliderFlags)comp_data.flags;
 	comp.offset = comp_data.offset;
@@ -170,10 +170,11 @@ comp_collider_init_from_comp_data :: proc(comp : ^ColliderComponent, comp_data :
 	comp_collider_set_type(comp, type); // This will also recompute the collider primitve.
 } 
 
-comp_collider_create_collider_comp_data :: proc(comp : ^ColliderComponent) -> iria.ColliderCompData {
+comp_collider_create_asset_collider_component_data :: proc(comp : ^ColliderComponent) -> iria.AssetColliderComponentData {
+
 	flags : ColliderFlags = comp.flags - COLLIDER_FLAGS_INTERNAL;
 
-	return iria.ColliderCompData{
+	return iria.AssetColliderComponentData {
 		type  		= cast(u32)comp_collider_get_type(comp),
 		flags 		= transmute(u32)flags,
 		offset 		= comp.offset,

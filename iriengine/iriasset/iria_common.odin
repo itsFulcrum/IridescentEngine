@@ -7,209 +7,211 @@ import "core:mem"
 import "core:encoding/uuid"
 import reader "odinary:readbinary"
 
+
 MAGIC :: [4]byte{'I','R','I','A'}
 FILE_EXTENTION 		: string : ".iria"
-FILE_EXTENTION_NAME : string : "iria"
+FILE_EXTENTION_NAME : string :  "iria"
 
-AssetUUID :: uuid.Identifier
-AssetUUID_INVALID :: AssetUUID{}
+AssetID 		:: uuid.Identifier
+AssetID_NONE 	:: AssetID{}
 
-ASSET_TYPE_FLAGS_ALL :: AssetTypeFlags{.None, .Mesh, .Material, .Universe, .Light, .SceneCollection, .Model} 
+ASSET_TYPE_FLAGS_ALL :: AssetTypeFlags{.Material, .Universe, .Light, .Model} 
 AssetTypeFlags :: distinct bit_set[AssetType]
 AssetType :: enum u32 {
+// @NOTE!!! Do not reorder or remove from the middle.
 	None 		= 0,
-	Mesh 		= 1,
+	_Unused_1	= 1,
 	Material 	= 2,
 	Universe 	= 3,
 	Light 		= 4,
-	SceneCollection	= 5,
+	_Unused_2	= 5,
 	Model	    = 6,
 }
 
-ASSET_FLAGS_NONE :: IriAssetFlags{} 
-IriAssetFlags :: distinct bit_set[IriAssetFlag; u8]
-IriAssetFlag :: enum u8 {
-	HasAlias = 0,
-}
-
-IriAssetCommonHeader :: struct #packed {
-	// 32 bytes total
-	magic : [4]byte,			//  4 bytes, magic
-	asset_type : AssetType, 	//  4 bytes, asset type enum u32
-	asset_type_version : u32,	//  4 bytes, version of the asset type
-	flags     : IriAssetFlags, 	//  1 byte,
-	_         : [3]byte, 		//  4 bytes, reserved
-	asset_uuid : AssetUUID, 	// 16 bytes, UUID
-}
-
-// TODO: implment that all assets can optionally store an asset alias string which can than be used to load and lookup assets through the asset_manager
-
-IriAssetString32 :: struct #packed {
-	bytes : [31]u8,
-	len   : u8, 
-}
-
-IriAssetString64 :: struct #packed {
-	bytes : [63]u8,
-	len   : u8, 
-}
-
-IriAssetString128 :: struct #packed {
-	bytes : [127]u8,
-	len   : u8, 
-}
-
-
-
-WriteFlags :: distinct bit_set[WriteFlag]
-WriteFlag :: enum {
+AssetWriteFlags :: distinct bit_set[AssetWriteFlag]
+AssetWriteFlag :: enum {
 	LogErrors = 0,
 	OverwriteExisting
 }
 
-get_most_current_version_for_type :: proc(asset_type : AssetType) -> u32 {
+// Every Asset File has this Common Header Frist
+AssetFileCommonHeader :: struct #packed { // 32 bytes
+	magic 				: [4]byte,		//  4 bytes, magic
+	asset_type 			: AssetType,	//  4 bytes, asset type enum u32
+	asset_type_version	: u32,			//  4 bytes, version of the asset type
+	_ 					: [4]byte,		//  4 bytes, reserved
+	asset_id 			: AssetID,		// 16 bytes, UUID
+}
+
+// A string with a constant buffer and maximum size of 31 bytes.
+AssetFileString32 :: struct #packed {
+	bytes : [31]u8,
+	len   : u8, 
+}
+
+// A string with a constant buffer and maximum size of 63 bytes.
+AssetFileString64 :: struct #packed {
+	bytes : [63]u8,
+	len   : u8, 
+}
+
+// A string with a constant buffer and maximum size of 127 bytes.
+AssetFileString128 :: struct #packed {
+	bytes : [127]u8,
+	len   : u8, 
+}
+
+// Every Asset File stores an alias (string) of 128 bytes after the Common Header.
+AssetAlias :: AssetFileString128
+
+
+generate_new_asset_id :: proc () -> AssetID {
+	return uuid.generate_v7_basic();
+}
+
+asset_id_from_uuid_string :: proc(uuid_string : string) -> (asset_id : AssetID, ok : bool){
+	id , read_err := uuid.read(uuid_string);
+	if read_err != nil {
+		return AssetID_NONE, false;	
+	}
+
+	return id, true;
+}
+
+asset_id_to_string :: proc(asset_id : AssetID, allocator := context.temp_allocator) -> string {
+	str, _ := uuid.to_string_allocated(asset_id, allocator);
+	return str;
+}
+
+get_current_version_for_type :: proc(asset_type : AssetType) -> u32 {
 	
 	switch asset_type {
-		case .None: 	return 0;
-		case .Mesh: 	return MESH_ASSET_CURRENT_VERSION;
-		case .Material:	return MATERIAL_ASSET_CURRENT_VERSION;
-		case .Universe:	return UNIVERSE_ASSET_CURRENT_VERSION;
-		case .Light:	return LIGHT_ASSET_CURRENT_VERSION;
-		case .SceneCollection:	return SCENE_COLLECTION_ASSET_CURRENT_VERSION;
-		case .Model:	return MODEL_ASSET_CURRENT_VERSION;
+		case .None: 	 return 0;
+		case ._Unused_1: return 0;
+		case .Material:	 return ASSET_MATERIAL_FILE_CURRENT_VERSION;
+		case .Universe:	 return ASSET_UNIVERSE_FILE_CURRENT_VERSION;
+		case .Light:	 return ASSET_LIGHT_FILE_CURRENT_VERSION;
+		case ._Unused_2: return 0;
+		case .Model:	 return ASSET_MODEL_FILE_CURRENT_VERSION;
 	}
 
 	return 0;
 }
 
-// can specify custom version otherwise use most current for type.
-create_common_header :: proc(type : AssetType, id : AssetUUID, asset_version : u32 = 0, flags : IriAssetFlags = ASSET_FLAGS_NONE) -> IriAssetCommonHeader {
+// Optionally specify custom version otherwise use most current for type.
+create_common_header :: proc(type : AssetType, asset_id : AssetID, asset_version : u32 = 0) -> AssetFileCommonHeader {
 	
 	assert(type != .None);
+	assert(type != ._Unused_1);
+	assert(type != ._Unused_2);
 
-	return IriAssetCommonHeader{
+	return AssetFileCommonHeader {
 		magic = MAGIC,
 		asset_type = type,
-		asset_type_version = asset_version > 0 ? asset_version : get_most_current_version_for_type(type),
-		asset_uuid = id,
+		asset_type_version = asset_version > 0 ? asset_version : get_current_version_for_type(type),
+		asset_id = asset_id,
 	}
 }
 
+has_valid_extention :: proc(filepath : string) -> bool {
+	return os.ext(filepath) == FILE_EXTENTION;
+}
 
-// Validate that we can write to this filepath. Also returns wheather a file already exists at that location.
-validate_write_filepath :: proc(filepath : string, log_errors : bool = true) -> (file_exists : bool, ok : bool) {
+is_valid_header :: proc(hdr : ^AssetFileCommonHeader, expected_asset_type : AssetType = AssetType.None) -> bool {
+	if hdr == nil {
+		return false;
+	}
+
+	if expected_asset_type != .None && hdr.asset_type != expected_asset_type {
+		return false;
+	}
+
+	return hdr.magic == MAGIC && hdr.asset_type != .None && hdr.asset_id != AssetID_NONE;
+}
+
+// Validate that we can write to this filepath. returns false when file exists but 'can_overwrite_existing' is set to false
+// Also returns wheather a file already exists at that location.
+@(require_results)
+is_valid_write_filepath :: proc(filepath : string, can_overwrite_existing : bool, log_errors : bool = true) -> (file_exists : bool, ok : bool) {
 	
-	file_ext : string = os.ext(filepath);
+	// file_ext : string = os.ext(filepath);
 
-	if file_ext != FILE_EXTENTION {
-		if log_errors do log.errorf("IriAsset: Filepath does not have the correct file extention '{}' path: {}", FILE_EXTENTION, filepath);
+	if !has_valid_extention(filepath) {
+		if log_errors do log.errorf("IriAsset: Write validation Failed - Filepath does not have the correct file extention '{}' path: {}", FILE_EXTENTION, filepath);
 		return false, false;
 	}
 
+	
 	path_dir, path_filename := os.split_path(filepath);
 
 	if !os.is_directory(path_dir) {
 		return false, false;
 	}
 
-	return os.exists(filepath), true;
+	file_exists = os.exists(filepath);
+
+	if file_exists && !can_overwrite_existing {
+		if log_errors do log.warnf("IriAsset: Write validation Failed - A File already exists at {}", filepath);
+		return file_exists, false;
+	}
+
+
+	return file_exists, true;
 }
 
-// if 'expected_asset_type' is not set to 'None' procedure will return false (!ok) if expected type does not match actual asset type
-get_asset_info_from_path :: proc(filepath : string, expected_asset_type : AssetType = .None) -> (type : AssetType, asset_uuid : AssetUUID, ok : bool) {
-
-	file , open_err := os.open(filepath);
-	if open_err != os.ERROR_NONE {
-		return;
-	}
-	defer os.close(file);
-
-	file_size, err := os.file_size(file);
-	if err != os.ERROR_NONE{
-		return;
-	}
-
-	if file_size < cast(i64)size_of(IriAssetCommonHeader) {
-		return;
-	}
-
-	hdr : IriAssetCommonHeader;
-	read_bytes , read_err := os.read_ptr(file, &hdr, size_of(IriAssetCommonHeader));
-	if read_err != os.ERROR_NONE {
-		return;
-	}
+@(require_results)
+is_valid_read_filepath :: proc(filepath : string, log_errors : bool = true) -> (file_exists : bool) {
 	
-	if expected_asset_type != .None && hdr.asset_type != expected_asset_type {
-		return;
-	}
-
-	ok = hdr.magic == MAGIC && hdr.asset_type != .None && hdr.asset_uuid != AssetUUID{};
-
-	return hdr.asset_type, hdr.asset_uuid, ok;
-}
-
-is_valid_extention :: proc(filepath : string) -> bool {
-	return os.ext(filepath) == FILE_EXTENTION;
-}
-
-is_valid_header :: proc(hdr : ^IriAssetCommonHeader) -> bool {
-	if hdr == nil {
+	if !has_valid_extention(filepath) {
+		if log_errors do log.errorf("IriAsset: Filepath does not have the correct file extention '{}' path: {}", FILE_EXTENTION, filepath);
 		return false;
 	}
 
-	return hdr.magic == MAGIC && hdr.asset_type != .None && hdr.asset_uuid != AssetUUID{};
+	return os.exists(filepath);
 }
 
-is_valid_asset_file :: proc(filepath : string) -> (asset_uuid : AssetUUID, asset_type : AssetType, is_asset_file : bool){
-
-	is_valid_extention(filepath) or_return;
-
+read_asset_header_info_from_path :: proc(filepath : string, expected_asset_type : AssetType = .None, log_errors : bool = true) -> (asset_id : AssetID, type : AssetType, is_valid_asset_file : bool) {
+	
+	is_valid_read_filepath(filepath, log_errors = true) or_return;
+	
 	file , open_err := os.open(filepath);
-	if open_err != os.ERROR_NONE {
+	if open_err != nil {
+		if log_errors do log.errorf("IriAsset: Failed to Open File. Error: {} - Path: {}", open_err, filepath);
 		return;
 	}
-
 	defer os.close(file);
 
-	file_size, err := os.file_size(file);
-	if err != os.ERROR_NONE{
+	file_size, size_err := os.file_size(file);
+	if size_err != nil{
+		if log_errors do log.errorf("IriAsset: Failed to read file size, Corrupted file ? - Path: {}", filepath);
 		return;
 	}
 
-	if file_size < cast(i64)size_of(IriAssetCommonHeader) {
+	if file_size < cast(i64)size_of(AssetFileCommonHeader) {
+		if log_errors do log.errorf("IriAsset: File size is {} bytes which is smaller than the Header, Corrupted file ? - Path: {}", file_size, filepath);
 		return;
 	}
 
-	hdr : IriAssetCommonHeader;
-	read_bytes , read_err := os.read_ptr(file, &hdr, size_of(IriAssetCommonHeader));
-	if read_err != os.ERROR_NONE {
+	hdr : AssetFileCommonHeader;
+	read_bytes , read_err := os.read_ptr(file, &hdr, size_of(AssetFileCommonHeader));
+	if read_err != nil {
+		if log_errors do log.errorf("IriAsset: Reading Header Failed: Error: {} - Path: {}", read_err, filepath)
 		return;
 	}
 	
-	is_asset_file = is_valid_header(&hdr);
-
-	return hdr.asset_uuid, hdr.asset_type, is_asset_file;
-}
-
-
-get_asset_type_and_version :: proc(data : []byte) -> (type : AssetType, version : u32) {
-
-	if len(data) < size_of(IriAssetCommonHeader) {
-		return AssetType.None, 0;
+	ok := is_valid_header(&hdr, expected_asset_type);
+	if !ok {
+		return AssetID_NONE, .None, false;
 	}
 
-	hdr : ^IriAssetCommonHeader = cast(^IriAssetCommonHeader)&data[0];
-
-	return hdr.asset_type, hdr.asset_type_version; 
+	return  hdr.asset_id, hdr.asset_type, ok;
 }
-
-
 
 
 // This is used during writing procedures to check all the os errors and log it.
 // it is useful since we will want to do this so often and we can use or_return after it.
 @(private="package")
-is_no_write_error :: proc(err : os.Error, filepath : string, log_errors : bool) -> (ok : bool) {
+check_write_error :: proc(err : os.Error, filepath : string, log_errors : bool) -> (ok : bool) {
 	
 	if err != os.ERROR_NONE {
 		if log_errors do log.errorf("IriAsset: Failed to write into file: Error Code: {}, filepath: {}", err, filepath);
@@ -219,7 +221,62 @@ is_no_write_error :: proc(err : os.Error, filepath : string, log_errors : bool) 
 	return true;
 }
 
-// We want to delete a file if something failed during writing so we dont end up with a corrupted file.
+
+@(require_results)
+@(private="package")
+write_common_header_and_alias_to_file :: proc(file : ^os.File, filepath : string, asset_type : AssetType, asset_id : AssetID, asset_alias_string : string, log_errors : bool) -> (ok : bool) {
+
+	if file == nil {
+		return false;
+	}
+
+	{
+		hdr : AssetFileCommonHeader = create_common_header(asset_type, asset_id);
+		written_bytes , write_err := os.write_ptr(file, &hdr, size_of(AssetFileCommonHeader));
+		check_write_error(write_err, filepath, log_errors) or_return;	
+	}
+	// Alias String
+	{
+		alias_str128, has_alias := string_to_asset_string128(asset_alias_string); 
+
+		alias_written_bytes, alias_write_err := os.write_ptr(file, &alias_str128, size_of(AssetFileString128));
+		check_write_error(alias_write_err, filepath, log_errors) or_return;
+	}
+
+	return true;
+}
+
+write_asset_alias_to_asset_file :: proc(filepath : string, asset_alias : AssetAlias, log_errors : bool = true) -> (ok : bool){
+
+	file_exists := is_valid_write_filepath(filepath, true, log_errors) or_return;
+
+	if !file_exists {
+		if log_errors do log.errorf("IriAsset: Cannot write alias to non existing file. Path: {}", filepath);
+		return false;
+	}
+
+
+	file , open_err := os.open(filepath, os.File_Flags{.Write});
+	if open_err != nil {
+		if log_errors do log.errorf("IriAsset: Failed to Open File. Error: {} - Path: {}", open_err, filepath);
+		return false;
+	}
+	defer os.close(file);
+
+	offset : int = size_of(AssetFileCommonHeader);
+	os.seek(file, cast(i64)offset, .Start);
+
+	copy := asset_alias;
+	size := size_of(AssetAlias);
+
+	written_bytes, write_err := os.write_ptr(file, &copy, size);
+	check_write_error(write_err, filepath, log_errors) or_return;
+
+	return true;
+}
+
+
+// We may want to delete a file if something failed during writing so we dont end up with a corrupted file.
 @(private="package")
 try_delete_file :: proc(filepath : string, log_errors : bool) -> (ok : bool) {
 
@@ -237,7 +294,10 @@ try_delete_file :: proc(filepath : string, log_errors : bool) -> (ok : bool) {
 }
 
 
-string_to_asset_string32 :: proc(str : string) -> (asset_string : IriAssetString32, has_data : bool) {
+string_to_asset_alias 		  :: string_to_asset_string128
+string_clone_from_asset_alias :: string_clone_from_asset_string128
+
+string_to_asset_string32 :: proc(str : string) -> (asset_string : AssetFileString32, has_data : bool) {
 
 	if len(str) <= 0{
 		return;
@@ -253,7 +313,7 @@ string_to_asset_string32 :: proc(str : string) -> (asset_string : IriAssetString
 	return asset_string, true;
 }
 
-string_to_asset_string64 :: proc(str : string) -> (asset_string : IriAssetString64, has_data : bool) {
+string_to_asset_string64 :: proc(str : string) -> (asset_string : AssetFileString64, has_data : bool) {
 
 	if len(str) <= 0{
 		return;
@@ -269,7 +329,7 @@ string_to_asset_string64 :: proc(str : string) -> (asset_string : IriAssetString
 	return asset_string, true;
 }
 
-string_to_asset_string128 :: proc(str : string) -> (asset_string : IriAssetString128, has_data : bool) {
+string_to_asset_string128 :: proc(str : string) -> (asset_string : AssetFileString128, has_data : bool) {
 
 	if len(str) <= 0{
 		return;
@@ -285,7 +345,7 @@ string_to_asset_string128 :: proc(str : string) -> (asset_string : IriAssetStrin
 	return asset_string, true;
 }
 
-string_clone_from_asset_string32 :: proc(asset_string : ^IriAssetString32, allocator := context.allocator) -> (str : string, has_data : bool){
+string_clone_from_asset_string32 :: proc(asset_string : ^AssetFileString32, allocator := context.allocator) -> (str : string, has_data : bool){
 
 	if asset_string.len == 0 {
 		return;
@@ -301,7 +361,7 @@ string_clone_from_asset_string32 :: proc(asset_string : ^IriAssetString32, alloc
 	return out_str, true;
 }
 
-string_clone_from_asset_string64 :: proc(asset_string : ^IriAssetString64, allocator := context.allocator) -> (str : string, has_data : bool){
+string_clone_from_asset_string64 :: proc(asset_string : ^AssetFileString64, allocator := context.allocator) -> (str : string, has_data : bool){
 
 	if asset_string.len == 0 {
 		return;
@@ -317,7 +377,7 @@ string_clone_from_asset_string64 :: proc(asset_string : ^IriAssetString64, alloc
 	return out_str, true;
 }
 
-string_clone_from_asset_string128 :: proc(asset_string : ^IriAssetString128, allocator := context.allocator) -> (str : string, has_data : bool){
+string_clone_from_asset_string128 :: proc(asset_string : ^AssetFileString128, allocator := context.allocator) -> (str : string, has_data : bool){
 
 	if asset_string.len == 0 {
 		return;
@@ -332,3 +392,4 @@ string_clone_from_asset_string128 :: proc(asset_string : ^IriAssetString128, all
 
 	return out_str, true;
 }
+

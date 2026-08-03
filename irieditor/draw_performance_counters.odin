@@ -43,4 +43,24 @@ draw_performance_counters :: proc(){
 	im.Spacing()
 	im.Text("Forward Pass draw calls    %u", perfs.forward_pass_drawcalls);
 	im.Text("Forward Pass pipe switches %u", perfs.forward_pass_num_pipeline_switches);
+
+	im.Spacing()
+
+	if im.TreeNode("Material Counters##PerfCounters") {
+		defer im.TreePop();
+
+		mat_counters := & perfs.material_counters;
+
+		im.Text("Registered Materials: %u", mat_counters.num_registered_mats);
+		im.BulletText("GPU Pbr   Instances:  %u", mat_counters.gpu_num_pbr);
+		im.BulletText("GPU Unlit Instances:  %u", mat_counters.gpu_num_unlit);
+
+		im.Spacing()
+		im.BulletText("GPU Pbr   Buffer: %u Bytes", mat_counters.gpu_pbr_buf_size);
+		im.BulletText("GPU Unlit Buffer: %u Bytes", mat_counters.gpu_unlit_buf_size);
+
+	}
+
+	im.Spacing()
+
 }

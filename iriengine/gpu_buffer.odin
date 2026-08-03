@@ -65,18 +65,6 @@ gpu_buffer_reallocate_buffers :: proc(gpu_device: ^sdl.GPUDevice, gpu_buf : ^Bas
 }
 
 
-
-// gpu_buffer_memcopy_to_transfer_buffer :: proc(gpu_device: ^sdl.GPUDevice, gpu_buf : ^BasicGPUBuffer, transfer_buf_byte_offset : uint, src_buffer : rawptr, copy_byte_size : uint, cycle : bool = false) {
-
-// 	data_ptr : rawptr = sdl.MapGPUTransferBuffer(gpu_device, gpu_buf.transfer_buf, cycle);
-// 	{
-// 		byte_ptr: [^]byte = cast([^]byte)data_ptr;			
-// 		mem.copy_non_overlapping(&byte_ptr[transfer_buf_byte_offset], src_buffer, cast(int)copy_byte_size);
-// 	}
-// 	sdl.UnmapGPUTransferBuffer(gpu_device, gpu_buf.transfer_buf);
-// }
-
-
 // Copy the region defined through upload info min-max indexes from the src_buffer to the transfer buffer
 // and set the upload_info transfer_buf_loacation and transfer_buf_region accordingly.
 // Transfer buffer must be big enough for the entire region.

@@ -32,7 +32,7 @@ universe_settings_create_default :: proc() -> UniverseSettings {
 Universe :: struct {
 	name : string, // Readonly, use 'universe_rename()' to rename
 	tag : u32,
-	asset_uuid : AssetUUID,
+	asset_id : AssetID,
 
 	ecs : ECData,
 
@@ -90,7 +90,7 @@ Universe :: struct {
 	debug_test_float : f32,
 }
 
-universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = nil) {
+universe_init :: proc(universe : ^Universe, uni_asset : ^iria.AssetUniverse = nil) {
 	
 	IRI_PROFILE_PROCEDURE();
 
@@ -110,14 +110,14 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 			universe.name = strings.clone(uni_asset.name, context.allocator);
 		}
 		
-		universe.asset_uuid = uni_asset.asset_uuid;
+		universe.asset_id = uni_asset.asset_id;
 		universe.tag = uni_asset.tag;
 	}
 
 	// TODO: should also be stored in uni_asset.
 	universe.frustum_cull_camera_entity.id = -1;
 	
-	settings : ^iria.UniverseAssetSettings = uni_asset != nil ? &uni_asset.settings : nil;
+	settings : ^iria.AssetUniverseSettings = uni_asset != nil ? &uni_asset.settings : nil;
 
 	universe.cull_shadow_draws 				= settings == nil ? true : cast(bool)settings.cull_shadow_draws;
 	universe.do_frustum_culling 			= settings == nil ? true : cast(bool)settings.do_frustum_culling;
@@ -189,7 +189,7 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 		ecs_entity_set_flags(&universe.ecs, entity, packed_info.flags);
 
 
-		ent_comp_indexes : iria.CompIndexes = uni_asset.entity_comp_indexes[id];
+		ent_comp_indexes : iria.AssetComponentIndexes = uni_asset.entity_comp_indexes[id];
 
 		for comp_type in packed_info.comp_set {
 			#partial switch comp_type {
@@ -213,7 +213,7 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 					engine_assert(comp != nil);
 					engine_assert(ent_comp_indexes.light_index > -1)
 					
-					comp_light_init_from_light_asset(comp, uni_asset.light_comp_data[ent_comp_indexes.light_index] , true)
+					comp_light_init_from_asset_light_component_data(comp, uni_asset.light_comp_data[ent_comp_indexes.light_index])
 				}
 				case .MeshRenderer: {
 					
@@ -223,11 +223,12 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 
 					meshren_data := uni_asset.meshren_comp_data[ent_comp_indexes.meshren_index];
 
-					num : int = cast(int)meshren_data.num_drawable_assets;
+					num : int = cast(int)meshren_data.num_draw_groups;
 					offset : int = cast(int)meshren_data.array_offset;
 
-					if num > 0 {						
-						comp_meshrenderer_append_drawable_assets(comp, uni_asset.drawable_assets_array[offset:offset+num], build_pipeline_cache = false)
+					if num > 0 {			
+						//comp_meshrenderer_append_drawable_assets(comp, uni_asset.drawable_assets_array[offset:offset+num], build_pipeline_cache = false)
+						comp_meshrenderer_add_asset_draw_groups(comp, uni_asset.drawable_groups[offset:offset+num], build_pipeline_cache = false);
 					}
 				}
 				case .Collider: {
@@ -235,7 +236,7 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 					engine_assert(comp != nil);
 					engine_assert(ent_comp_indexes.collider_index > -1)
 					
-					comp_collider_init_from_comp_data(comp, uni_asset.collider_comp_data[ent_comp_indexes.collider_index]);
+					comp_collider_init_from_asset_collider_component_data(comp, uni_asset.collider_comp_data[ent_comp_indexes.collider_index]);
 				}
 			}
 		}
@@ -245,7 +246,6 @@ universe_init :: proc(universe : ^Universe, uni_asset : ^iria.UniverseAsset = ni
 	pipe_manager := engine.pipeline_manager;
 	pipe_manager_update_material_and_depthonly_pipeline_cache_for_universe(pipe_manager, gpu_device, universe);
 	
-
 	
 	// Entity idenfiyers are runtime created and not stored in file so get get it first manually
 	// if for some reason the entity doesn't have the component attached it'll be handled by the ecs call.
@@ -336,5 +336,4 @@ universe_rename :: proc(universe : ^Universe, new_name : string) {
 		delete(universe.name);
 	}
 	universe.name = strings.clone(new_name, context.allocator);
-	asset_manager_update_universe_name(engine.asset_manager, universe.asset_uuid, universe.name);
 }

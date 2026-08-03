@@ -22,7 +22,7 @@ FileInfoType :: enum u8 {
 FileInfo :: struct {
 	fullpath   : string,
 	file_type  : FileInfoType,
-	asset_uuid : iria.AssetUUID, // only valid if file_type == AssetFile
+	asset_id   : iria.AssetID, // only valid if file_type == AssetFile
 	asset_type : iria.AssetType, // only valid if file_type == AssetFile
 }
 

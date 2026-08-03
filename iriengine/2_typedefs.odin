@@ -14,18 +14,19 @@ VertexDataExtended :: iricom.VertexDataExtended
 
 MeshData :: iricom.MeshData
 
-// procedures
-free_mesh_data :: iricom.free_mesh_data
+
+DRAW_INSTANCE_FLAGS_DEFAULT :: iricom.DRAW_INSTANCE_FLAGS_DEFAULT
+DrawInstanceFlags 	:: iricom.DrawInstanceFlags
+DrawInstanceFlag 	:: iricom.DrawInstanceFlag
+DrawInstance 		:: iricom.DrawInstance
+
+Drawable 			     :: iricom.Drawable
+DrawableGlobalBufferInfo :: iricom.DrawableGlobalBufferInfo
 
 
 
 
-// Material
-
-
-
-
-
+// Basic types.
 vec2 :: [2]f32
 vec3 :: [3]f32
 vec4 :: [4]f32

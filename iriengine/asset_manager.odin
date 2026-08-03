@@ -10,95 +10,121 @@ import "core:encoding/uuid"
 import iria "iriasset"
 import reader "odinary:readbinary"
 
-AssetUUID 			:: iria.AssetUUID
-AssetUUID_INVALID 	:: iria.AssetUUID_INVALID
+AssetID 		:: iria.AssetID
+AssetID_NONE 	:: iria.AssetID_NONE
 
 AssetType 		:: iria.AssetType
 AssetTypeFlags 	:: iria.AssetTypeFlags
 ASSET_TYPE_FLAGS_ALL :: iria.ASSET_TYPE_FLAGS_ALL
 
-MaterialAsset 	:: iria.MaterialAsset
-
-UniverseAssetInfo :: struct {
-	uni_tag  : u32,
-	uni_name : string,
-	asset_uuid : AssetUUID,
-}
 
 AssetEntry :: struct {
-	path : string, // path to asset file, relative to content directory in project folder
+	path  : string, // path to asset file, relative to project folder
+	alias : string,
 	type : iria.AssetType,
+}
+
+AssetHandleModel :: struct {
+	mesh_ids : []MeshID,
+	material_asset_ids : []AssetID,
+}
+
+AssetHandleMaterial :: struct {
+	mat_id   : MaterialID,
+}
+
+@(private="package")
+AssetLoadHandleModel :: struct {
+	runtime_handle : AssetHandleModel,
+	ref_count : u32,
+}
+
+@(private="package")
+AssetLoadHandleMaterial :: struct {
+	runtime_handle : AssetHandleMaterial,
+	ref_count : u32,
 }
 
 AssetManager :: struct {
 
-	// allocator exclusivly for allocating string paths so they are all close in memory
+	// allocator exclusivly for allocating string paths
 	path_arena : mem.Dynamic_Arena,
 	path_allocator : runtime.Allocator,
 
-	// Store paths to assets, path are relative to content directory in project folder
-	entries : map[iria.AssetUUID]AssetEntry,
+	alias_arena : mem.Dynamic_Arena,
+	alias_allocator : runtime.Allocator,
 
-	universe_infos : [dynamic]UniverseAssetInfo,
+
+	asset_entries : map[AssetID]AssetEntry,
+	asset_aliases : map[string]AssetID,
+
+	model_handles    : map[AssetID]AssetLoadHandleModel,
+	material_handles : map[AssetID]AssetLoadHandleMaterial,
 }
 
 @(private="package")
-asset_manager_generate_asset_uuid :: proc () -> iria.AssetUUID {
-	return uuid.generate_v7_basic();
-}
+asset_manager_init :: proc(asset_manager : ^AssetManager) {
 
-@(private="package")
-asset_manager_init :: proc(manager : ^AssetManager) {
-
-	engine_assert(manager != nil);
+	engine_assert(asset_manager != nil);
 
 	{
-		block_size := 8 * mem.Megabyte; 
-		mem.dynamic_arena_init(&manager.path_arena, context.allocator, context.allocator, block_size ,mem.DYNAMIC_ARENA_OUT_OF_BAND_SIZE_DEFAULT, mem.DEFAULT_ALIGNMENT);
-		manager.path_allocator = mem.dynamic_arena_allocator(&manager.path_arena);
+		block_size := 4 * mem.Megabyte; 
+		// Path Allocator
+		mem.dynamic_arena_init(&asset_manager.path_arena, context.allocator, context.allocator, block_size ,mem.DYNAMIC_ARENA_OUT_OF_BAND_SIZE_DEFAULT, mem.DEFAULT_ALIGNMENT);
+		asset_manager.path_allocator = mem.dynamic_arena_allocator(&asset_manager.path_arena);
+		
+		// String Allocator
+		mem.dynamic_arena_init(&asset_manager.alias_arena, context.allocator, context.allocator, block_size ,mem.DYNAMIC_ARENA_OUT_OF_BAND_SIZE_DEFAULT, mem.DEFAULT_ALIGNMENT);
+		asset_manager.alias_allocator = mem.dynamic_arena_allocator(&asset_manager.alias_arena);
 	}
 
-	manager.entries = make_map(map[iria.AssetUUID]AssetEntry, context.allocator);
+	asset_manager.asset_entries = make_map(map[AssetID]AssetEntry, context.allocator);
 }
 
 @(private="package")
-asset_manager_deinit :: proc(manager :  ^AssetManager) {
-	engine_assert(manager != nil);
+asset_manager_deinit :: proc(asset_manager :  ^AssetManager) {
 
-	free_all(manager.path_allocator);
-	mem.dynamic_arena_destroy(&manager.path_arena);
+	engine_assert(asset_manager != nil);
 
-	delete_map(manager.entries);
+	delete_map(asset_manager.asset_entries);
+	delete_map(asset_manager.asset_aliases);
 
-	for &info in manager.universe_infos {
-		delete(info.uni_name);
-	}
-	delete(manager.universe_infos);
+	delete_map(asset_manager.model_handles);
+	delete_map(asset_manager.material_handles);
 
+	free_all(asset_manager.path_allocator);
+	mem.dynamic_arena_destroy(&asset_manager.path_arena);
+	free_all(asset_manager.alias_allocator);
+	mem.dynamic_arena_destroy(&asset_manager.alias_arena);
 }
 
 // Used by the editor to display asset entries.
-asset_manager_get_entries_map_read_only :: proc() -> ^map[iria.AssetUUID]AssetEntry {
-	return &engine.asset_manager.entries;
+asset_manager_get_entries_map_read_only :: proc() -> ^map[iria.AssetID]AssetEntry {
+	return &engine.asset_manager.asset_entries;
 }
 
+// Rescan all assets in the project folder.
 asset_manager_rescan_entire_project :: proc() {
 	IRI_PROFILE_PROCEDURE()
 
 	engine_assert(engine != nil);
-	engine_assert(engine.asset_manager != nil);
+
+	asset_manager := engine.asset_manager;
+
+	engine_assert(asset_manager != nil);
 	engine_assert(len(engine.project_content_path) > 0);
 
-	manager := engine.asset_manager;
-	free_all(manager.path_allocator);
-	clear(&manager.entries);
+	
+	free_all(asset_manager.path_allocator);
+	free_all(asset_manager.alias_allocator);
+	clear(&asset_manager.asset_entries);
 
-	asset_manager_scan_project_directory_recursiv(manager, get_project_path());
+	asset_manager_scan_project_directory_recursiv(asset_manager, get_project_path());
 }
 
 // @Note expects directory_path to be an absolute path to a sub directory of the project.
 @(private="package")
-asset_manager_scan_project_directory_recursiv :: proc(manager :  ^AssetManager, directory_path : string){
+asset_manager_scan_project_directory_recursiv :: proc(asset_manager :  ^AssetManager, directory_path : string){
 
 	IRI_PROFILE_PROCEDURE()
 
@@ -128,18 +154,18 @@ asset_manager_scan_project_directory_recursiv :: proc(manager :  ^AssetManager, 
 
 		if info.type == os.File_Type.Directory{
 
-			asset_manager_scan_project_directory_recursiv(manager, info.fullpath);
+			asset_manager_scan_project_directory_recursiv(asset_manager, info.fullpath);
 
 		} else if info.type == os.File_Type.Regular {
 
-			asset_manager_register_asset_file_by_path(manager, info.fullpath) or_continue;
+			asset_manager_register_asset_file_by_path(asset_manager, info.fullpath) or_continue;
 		}
 	}
 }
 
-// @Note: recursivly walk all files in a directory and remove all asset files form entires map.
+// Recursivly walk all files in a directory and unregister all asset files.
 @(private="package")
-asset_manager_unscan_project_directory_recursiv :: proc(manager :  ^AssetManager, directory_path : string){
+asset_manager_unscan_project_directory_recursiv :: proc(asset_manager :  ^AssetManager, directory_path : string){
 
 	if !os.is_directory(directory_path) {
 		return;
@@ -166,28 +192,27 @@ asset_manager_unscan_project_directory_recursiv :: proc(manager :  ^AssetManager
 
 		if info.type == os.File_Type.Directory{
 
-			asset_manager_unscan_project_directory_recursiv(manager, info.fullpath);
+			asset_manager_unscan_project_directory_recursiv(asset_manager, info.fullpath);
 		} else if info.type == os.File_Type.Regular {
 			
-			asset_uuid, asset_type := iria.is_valid_asset_file(info.fullpath) or_continue;
-			asset_manager_unregister_entry(manager, asset_uuid, asset_type);
+			asset_id, _ := iria.read_asset_header_info_from_path(info.fullpath, expected_asset_type = .None, log_errors = false) or_continue;
+			asset_manager_unregister_asset(asset_manager, asset_id);
 		}
 	}
 }
 
-// @Note: this procedure will overwrite entries if an asset uuid is encountered again.
-// asset uuid should be unique and if it occures twice than the file is a dublicate file.
-// we could choose to not register the second occurence of a uuid but it doens't solve the problem that we dont
-// know how to differantiate them anyway. It is more usefull if we have the ability to overwrite asset uuid entries
+// @Note: this procedure will overwrite entries if an asset id is encountered again.
+// asset id should be unique and if it occures twice than the file is a dublicate file.
+// we could choose to not register the second occurence of a id but it doens't solve the problem that we dont
+// know how to differantiate them anyway. It is more usefull if we have the ability to overwrite asset id entries
 // for example if we move files from one folder to another we need to update the filepaths
-// and thats easier if we just rescan the parent directorie if we dont want to perform a full rescan of the entire project. 
+// and thats easier if we just rescan the parent directorie if we dont want to perform a full rescan of the entire project.
 @(private="package")
-asset_manager_register_asset_file_by_path :: proc(manager :  ^AssetManager, full_file_path : string) -> (is_registered : bool) {
+asset_manager_register_asset_file_by_path :: proc(asset_manager :  ^AssetManager, full_file_path : string) -> (is_registered : bool) {
 
 	IRI_PROFILE_PROCEDURE()
 
-
-	iria.is_valid_extention(full_file_path) or_return;
+	iria.has_valid_extention(full_file_path) or_return;
 	
 	// anything outside project path we will not register.
 	// also this proc returns us a cleaned absolute path!
@@ -210,95 +235,76 @@ asset_manager_register_asset_file_by_path :: proc(manager :  ^AssetManager, full
 	b_reader := reader.create_file_reader(file);
 	defer os.close(b_reader.file);
 
-	hdr : iria.IriAssetCommonHeader = reader.consume_copy_type(&b_reader, iria.IriAssetCommonHeader) or_return;
-	
+	hdr : iria.AssetFileCommonHeader = reader.consume_copy_type(&b_reader, iria.AssetFileCommonHeader) or_return;
 	iria.is_valid_header(&hdr) or_return;
 
-	asset_uuid := hdr.asset_uuid;
-	asset_type := hdr.asset_type; 
+	asset_alias : iria.AssetAlias = reader.consume_copy_type(&b_reader, iria.AssetAlias) or_return;
+	alias_str, has_alias := iria.string_clone_from_asset_alias(&asset_alias, asset_manager.alias_allocator);
+
+	asset_id 	:= hdr.asset_id;
+	asset_type 	:= hdr.asset_type;
 
 	// @Note, we are intentionally overwriting entries if they already exist.
 	// see comment above this procedure!
 
 	new_entry := AssetEntry {
-		path = strings.clone(rel_path, manager.path_allocator),
-		type = asset_type,
+		path  = strings.clone(rel_path, asset_manager.path_allocator),
+		alias = has_alias ? alias_str : "",
+		type  = asset_type,
 	}
 
-	manager.entries[asset_uuid] = new_entry;
 
-	if asset_type == .Universe {
-		
-		IRI_PROFILE_SCOPE("Register Universe Asset File")
+	asset_manager.asset_entries[asset_id] = new_entry;
 
-		// if asset is of type universe, we gather extra information that we store seperatly
+	if has_alias {
 
-		uni_tag, uni_name, uni_read_ok := iria.asset_universe_read_tag_and_name(&b_reader, context.allocator);
-		engine_assert(uni_read_ok); // we already validated this file above
-
-		new_uni_info := UniverseAssetInfo{
-			uni_name   = uni_name,
-			uni_tag    = uni_tag,
-			asset_uuid = asset_uuid,
+		if _, alias_exists_already := asset_manager.asset_aliases[alias_str]; alias_exists_already {
+			log.warnf("AssetManager: An Asset file of type {} has the same alias as another. Aliases will be overwritten with new asset file - alias: {} - Path: ", asset_type, alias_str, rel_path);
 		}
-
-		already_registered_index : int = -1;
-		for &uni_info, index in manager.universe_infos {
-
-			if uni_info.asset_uuid == asset_uuid {
-				already_registered_index = index;
-				break;
-			}
-		}
-
-		if already_registered_index == -1 {
-			append(&manager.universe_infos, new_uni_info);
-		} else {
-			info := &manager.universe_infos[already_registered_index];
-			delete(info.uni_name);
-			manager.universe_infos[already_registered_index] = new_uni_info;
-		}
+		asset_manager.asset_aliases[alias_str] = asset_id;
 	}
 
 	return true;
 }
 
+
 @(private="package")
-asset_manager_unregister_entry :: proc(manager :  ^AssetManager, asset_uuid : iria.AssetUUID, asset_type : AssetType) {
+asset_manager_unregister_asset :: proc(asset_manager :  ^AssetManager, asset_id : AssetID) {
 	
-	entry, exists := manager.entries[asset_uuid];
+	if entry , exists := asset_manager.asset_entries[asset_id]; exists {
 
-	if exists {
+ 		if len(entry.alias) > 0 {
+ 			delete_key(&asset_manager.asset_aliases, entry.alias);
+ 		}
 
-		if entry.type == .Universe {
-			for &uni_info, index in manager.universe_infos{
-				if uni_info.asset_uuid == asset_uuid {
-					delete(uni_info.uni_name)
-					unordered_remove(&manager.universe_infos, index);
-					break;
-				}
-			}
-		}
-
-		delete_key(&manager.entries, asset_uuid);
+		delete_key(&asset_manager.asset_entries, asset_id);
 	}
-}
 
-
-@(private="package")
-asset_manager_asset_exists :: proc(manager :  ^AssetManager, id : iria.AssetUUID) -> bool {
-	return id in manager.entries;
-}
-
-@(private="package")
-asset_manager_get_entry :: proc(manager :  ^AssetManager, asset_uuid : iria.AssetUUID) -> (entry : AssetEntry, exists : bool) {
-	return manager.entries[asset_uuid]; // @Note this map odin syntax actually returns both entry and exists.
+	// Search. we could maybe also load the file and try read the alias from it but meh.
+	// for key, value_asset_id in asset_manager.asset_aliases {
+		
+	// 	if value_asset_id == asset_id {
+	// 		delete_key(&asset_manager.asset_aliases, key);
+	// 		break;
+	// 	} 
+	// }
 }
 
 @(private="package")
-asset_manager_get_absolute_filepath :: proc (manager :  ^AssetManager, asset_uuid : iria.AssetUUID, expected_type : iria.AssetType = .None, allocator := context.temp_allocator) -> (path : string, entry_exists : bool){
+asset_manager_asset_exists :: proc(asset_manager :  ^AssetManager, asset_id : AssetID) -> bool {
+	return asset_id in asset_manager.asset_entries;
+}
+
+// Read Only!
+asset_manager_get_entry :: proc(asset_manager :  ^AssetManager, asset_id : iria.AssetID) -> (entry : AssetEntry, exists : bool) {
+	return asset_manager.asset_entries[asset_id];
+}
+
+// Get the absolute filepath to a registered asset.
+@(private="package")
+asset_manager_get_absolute_filepath :: proc (asset_manager :  ^AssetManager, asset_id : iria.AssetID, expected_type : iria.AssetType = .None, allocator := context.temp_allocator) -> (path : string, entry_exists : bool){
 	
-	entry , exists := manager.entries[asset_uuid];
+	entry , exists := asset_manager.asset_entries[asset_id];
 	if !exists {
 		return;
 	}
@@ -315,82 +321,102 @@ asset_manager_get_absolute_filepath :: proc (manager :  ^AssetManager, asset_uui
 }
 
 
-@(private="package")
-asset_manager_update_universe_name :: proc(manager :  ^AssetManager, asset_uuid : iria.AssetUUID, new_name : string){
-
-	for &uni_info in manager.universe_infos {
-		if uni_info.asset_uuid == asset_uuid {
-			delete(uni_info.uni_name);
-			uni_info.uni_name = strings.clone(new_name, context.allocator);
-			break;
-		}
-	}
-}
-
-// @Note:
 // Checks the filepath to see if there is an asset file, if yes and the type matches the expected type we 
-// return the assed id stored in that file because we likely want to overwrite it with a new version of the asset.
-// if the path does not exist yet we generate a new uuid.
+// return the asset id stored in that file because we likely want to overwrite it with a new version of the asset.
+// if the path does not exist yet we generate a new id.
 // full_store_filepath must be a full absolute filepath to an .iria asset file.
 // If this procedure returns false we should not continue writing any files to this path because something probably went wrong.
 @(private="package")
-asset_manager_get_or_generate_asset_uuid :: proc(full_store_filepath : string, expected_asset_type : iria.AssetType, log_errors : bool) -> (id : iria.AssetUUID, ok : bool) {
+asset_manager_get_or_generate_asset_id :: proc(full_store_filepath : string, expected_asset_type : iria.AssetType, log_errors : bool) -> (asset_id : AssetID, ok : bool) {
 
 	if os.exists(full_store_filepath) {
 
-		asset_type, asset_uuid, asset_file_ok := iria.get_asset_info_from_path(full_store_filepath, expected_asset_type);
-
-		if !asset_file_ok {
-			if log_errors do log.warnf("Faild to export asset file to {}. Overwriting existing asset files that are invalid or of different asset type is not allowed. existing file asset type: {}, expected asset type {}", full_store_filepath, asset_type, expected_asset_type);
-			return id, false;
-		}
+		_asset_id, _ := iria.read_asset_header_info_from_path(full_store_filepath, expected_asset_type, log_errors) or_return;
 
 		// More validation ??
-		// existing_entry, entry_exists := asset_manager_get_entry(asset_manager,asset_uuid);
+		// existing_entry, entry_exists := asset_manager_get_entry(asset_manager,asset_id);
 		// engine_assert(entry_exists);
 		// engine_assert(existing_entry.type == asset_type);
 
-		return asset_uuid, true;
+		return _asset_id, true;
 	}
 
-	return asset_manager_generate_asset_uuid(), true;
+	return iria.generate_new_asset_id(), true;
 }
 
 
-asset_manager_get_asset_uuid_from_path :: proc(rel_asset_path : string) -> (asset_uuid : AssetUUID, exists : bool){
-	manager := engine.asset_manager;
+@(private="package")
+asset_manager_set_asset_alias :: proc(asset_manager : ^AssetManager, asset_id : iria.AssetID, alias : string) {
+
+	if entry, exists := asset_manager.asset_entries[asset_id]; exists {
+		
+		// Crude way to truncate the string to fit 127 characters.
+		alias_128 , _ := iria.string_to_asset_alias(alias);
+		alias_trunc_str, str_has_data := iria.string_clone_from_asset_alias(&alias_128, context.temp_allocator);
+
+ 		alias_clone := str_has_data ? strings.clone(alias_trunc_str, asset_manager.alias_allocator) : ""
 	
+		// Delete old alias.
+ 		if len(entry.alias) > 0 {
+ 			delete_key(&asset_manager.asset_aliases, entry.alias);
+ 		}
+		
+		// write new alias if its not 0.
+		if str_has_data {
+			asset_manager.asset_aliases[alias_clone] = asset_id;
+		}
+
+ 		// Update entry
+ 		entry.alias = alias_clone;
+		asset_manager.asset_entries[asset_id] = entry; 
+
+		abs_path, abs_path_ok := asset_manager_get_absolute_filepath(asset_manager, asset_id)
+		if abs_path_ok {
+			write_ok := iria.write_asset_alias_to_asset_file(abs_path, alias_128 ,log_errors = true)
+			if !write_ok {
+				log.errorf("AssetManager: Failed to write asset alias to path: {}", abs_path)
+			}
+		}
+	}
+}
+
+// Get the asset id from a unique alias associated with this file. Optionally provide the expected file type to make this procedure fail if alias exists but the asset file type does not match.
+@(private="package")
+asset_manager_get_asset_id_from_alias :: proc(asset_manager : ^AssetManager, asset_alias : string, expected_type : iria.AssetType = iria.AssetType.None) -> (asset_id : AssetID, exists : bool) {
+
+	id, alias_exists := asset_manager.asset_aliases[asset_alias]
+
+	if !alias_exists {
+		return AssetID_NONE, false;
+	}
+
+	if expected_type != iria.AssetType.None {
+
+		entry, entry_exists := asset_manager.asset_entries[id];
+
+		engine_assert(entry_exists); // Its registered with the aliases. Fix elsewhere if this fails.
+
+		if entry.type != expected_type {
+			return AssetID_NONE, false;
+		}
+	}
+
+	return id, true;
+}
+
+// Get the asset id from a path relative to the project folder. Returns false if path is not a valid asset file.
+@(private="package")
+asset_manager_get_asset_id_from_path :: proc(asset_manager : ^AssetManager, rel_asset_path : string) -> (asset_id : AssetID, exists : bool){
+
 	abs_path := project_get_absolute_path(rel_asset_path, context.temp_allocator) or_return;
 
 	project_contains_path(abs_path) or_return;
 
-	uuid , type := iria.is_valid_asset_file(abs_path) or_return;
+	_asset_id, _ := iria.read_asset_header_info_from_path(abs_path) or_return;
 
-	if !asset_manager_asset_exists(manager, uuid){
-		return AssetUUID_INVALID, false
+	if !asset_manager_asset_exists(asset_manager, _asset_id){
+		return AssetID_NONE, false
 	}
 
-	return uuid, true;
-}
-
-// TODO: this should not live here.
-// make a path absolute and run clean on it.
-clean_path_absolute :: proc(path : string) -> (clean_path : string, ok : bool) {
-	
-	clean_path = path;
-
-	if !os.is_absolute_path(path) {
-		osErr : os.Error;
-		clean_path, osErr = os.get_absolute_path(path, context.temp_allocator);
-		if osErr != os.ERROR_NONE {
-			return "",false;
-		}
-	}
-	alloc_err : runtime.Allocator_Error;
-	clean_path , alloc_err = os.clean_path(clean_path, context.temp_allocator);
-	if alloc_err != nil {
-		return "",false;
-	}
-
-	return clean_path, true;
+	return _asset_id, true;
 }

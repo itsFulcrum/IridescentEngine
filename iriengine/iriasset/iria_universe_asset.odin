@@ -9,47 +9,64 @@ import geo "odinary:geometry"
 import reader "odinary:readbinary"
 import iricom "../iricommon"
 
-EntityInfoPacked :: struct {
-	flags 		: iricom.EntityFlags,
-	comp_set 	: iricom.ComponentSet,
-	tag 		: u32,
+
+// Version 3 universe file
+/*
+	Common Header - AssetFileCommonHeader, 32 bytes
+	Asset Alias   - AssetFileString128, 128 bytes
+
+	AssetUniverseHeader_v3
+	Universe Name - AssetFileString64, 64 bytes.
+
+	@Variaous Buffers
+	Always starts with a BufferInfo (AssetUniverseBufferInfo_v3)
+	followed by the buffer itself.
+	based on 'AssetUniverseBufferInfo_v3.type' the buffer contents should be read differently.
+
+	Special Cases for buffer types: 
+	
+		BufferType - EntityNames
+		Each entity name first stores a u32 indicating the number of bytes of the string name (can be utf8).
+		followed by this many number of bytes that make up the string.
+		Number of total strings is equal to number of entities.
+
+		BufferType - DrawableGroup
+		Each Drawable Group first stores a small Header structure (AssetDrawGroup) which contains the AssetID of the Model asset
+		Number of primitives to indicate how many sub meshes a model has.
+		then following this Header there come 3 arrays all with num_primitives elements.
+		flags   	   : []iricom.DrawInstanceFlags, // flags per primitve.
+		transforms     : []geo.Transform, // transform overwrites per primitve
+		material_asset : []AssetID, // Material asset overwrites per primitve
+
+		BufferType - EndOfFile
+		After this there is no more data in the file..
+*/
+
+AssetDrawGroupHeader :: struct #packed {
+	asset_id : AssetID, // Mesh or Model asset.
+	asset_drawable_type : iricom.DrawGroupAssetType,
+	num_primitives : u32, // For Mesh Assets this is just always 1.
+	_ : u32,
+	_ : u32,
+} 
+
+AssetDrawGroup :: struct {
+	asset_id 			: AssetID, // Mesh or Model asset.
+	asset_drawable_type : iricom.DrawGroupAssetType,
+	num_primitives 		: u32, // For Mesh Assets this is just always 1.
+	flags   	   		: []iricom.DrawInstanceFlags,
+	transforms     		: []geo.Transform,
+	material_asset_ids 	: []AssetID,
 }
 
-CompIndexes :: struct {
-	camera_index   : i32,
-	skybox_index   : i32,
-	light_index    : i32,
-	meshren_index  : i32,
-	collider_index : i32,
-	_ : [3]i32, // reserved.
-}
-
-MeshRendererCompData :: struct {
-	num_drawable_assets : u32, // number of DrawableAssets that belong to this component.
-	array_offset : u32, // offset into drawable_assets array of universe asset.
-}
-
-ColliderCompData :: struct #packed {
-	type  : u32, // Collider type enum
-	flags : u32, // ColliderFlags enum bitset of collider component
-	offset : [3]f32,
-	extent : [3]f32,
-	orientation : quaternion128,
-}
-
-DrawableAsset :: struct {
-	draw_instance_asset : DrawInstanceAsset,
-	transform : geo.Transform,
-}
-
-UniverseAssetSettings :: struct #packed {	
+AssetUniverseSettings :: struct #packed {	
 	shadow_cascade_near_far_scale 	: f32,
 	shadow_cascade_side_scale 		: f32,
 	shadow_cascade_split_1 			: f32,
 	shadow_cascade_split_2 			: f32,
 	shadow_cascade_split_3 			: f32,
 
-	// TODO: these bools should have an explicit size!! b8
+
 	cull_shadow_draws 			: b8,
     do_frustum_culling 			: b8,
     _ : b8,
@@ -57,12 +74,14 @@ UniverseAssetSettings :: struct #packed {
     _ : [16]u32, // reserved.
 }
 
-UniverseAsset :: struct {
-	asset_uuid : AssetUUID,
+
+AssetUniverse :: struct {
+	asset_id : AssetID,
 	name       : string,
 	tag 	   : u32,
+	asset_alias : string, // Version 3..
 
-	settings : UniverseAssetSettings,
+	settings : AssetUniverseSettings,
 
 	active_camera_entity : int, // index into entity slices below, or -1 if not set.
 	active_skybox_entity : int, // index into entity slices below, or -1 if not set.
@@ -71,79 +90,101 @@ UniverseAsset :: struct {
 	num_entities : u32,
 	// These MUST all have length of num_entities!
 	entity_names : []string, 			// @Note: individual strings are not freed by 'free_universe_asset()', expected to be allocated with arena or manually freed by caller.
-	entity_infos : []EntityInfoPacked,
+	entity_infos : []AssetEntityInfo,
 	entity_trans : []geo.Transform,
-	entity_comp_indexes : []CompIndexes,
+	entity_comp_indexes : []AssetComponentIndexes,
 
 
-	camera_comp_data  : []iricom.CameraCompData,
-	skybox_comp_data  : []iricom.SkyboxCompData,
-	light_comp_data   : []LightAsset,
-	meshren_comp_data : []MeshRendererCompData,
-	collider_comp_data : []ColliderCompData,
+	camera_comp_data   : []AssetCameraComponentData,
+	skybox_comp_data   : []AssetSkyboxComponentData,
+	light_comp_data    : []AssetLightComponentData,
+	meshren_comp_data  : []AssetMeshRendererComponentData,
+	collider_comp_data : []AssetColliderComponentData,
 
 	// This array is ORDERED by mesh renderer component. 
-	// such that MeshRendererCompData gives an offset where to start reading drawable asset form
-	// this array, and a number of how many drawable assets to read consecutavly.
-	drawable_assets_array : []DrawableAsset,
+	// such that MeshRendererCompData gives an offset where to start reading Draw Groups form
+	// this array, and a number of how many Draw Groups to read consecutavly.
+
+	drawable_groups : []AssetDrawGroup,
 }
 
 
 
-UNIVERSE_ASSET_CURRENT_VERSION : u32 : 2
-
-// =============== File IO ============================
-// Universe Asset file first write the Common Header which is followed by the 'UniverseAssetFirstHeader_v2' header. This 
-// contains the universe tag and number of bytes of the universe name string. The Name string comes imideatly after the 'UniverseAssetFirstHeader_v2' header.
-// After the name comes the Second 'UniverseAssetSecondHeader_v2' header that can hold some extra information.
-// After that header ther is always a 12 byte 'UniAssetBufferInfo' structure containing info on the following buffer contents.
+ASSET_UNIVERSE_FILE_CURRENT_VERSION : u32 : 3
 
 
-
-UniverseAssetFirstHeader_v2 :: struct #packed { // 8 byte structure
-	tag 				: u32, // universe tag value.
-	name_str_num_bytes 	: u32, // length of universe name string in bytes.
-}
-
-UniverseAssetSecondHeader_v2 :: struct #packed { // 56 byte structure
+AssetUniverseHeader_v3 :: struct #packed {
 	active_camera_entity : i64, // index into constant entity buffers, or -1 if not set.
 	active_skybox_entity : i64, // index into constant entity buffers, or -1 if not set.
 	num_entities 		 : u32, // technically not nessesary.
+	tag : u32, // Universe Tag value. // can maybe depricate ??
 	_ : [8]u32, // reserved
 }
 
-// @NOTE: IMPORTANT; when adding new field append them to the end DONT REORDER - breaks reading sind type is stored as uint in the files!
-UniAssetBufferType :: enum u32 {
-	UniverseSettings = 0,
+AssetUniverseBufferType_v3 :: enum u32 {
+	EndOfFile 	         = 0,
+
+	UniverseSettings 	 = 1,
+	_Reserved_1 		 = 2,
+	_Reserved_2 		 = 3,
+	_Reserved_3 		 = 4,
+	_Reserved_4 		 = 5,
+	
+	DrawableGroup 		 = 6, 	// array of 'DrawableAsset' structures
 
 	// it is required that each of the entitiy buffers has the same number of array elements.
-	EntityInfos, 			// array of 'EntityInfoPacked' structures
-	EntityTransforms,		// array of 'Transform' structures
-	EntityComponentIndexes, // array of 'CompIndexes' structures
-	EntityNames, 			// array of entity name strings, each string has a 4 bytes u32 in front indicating the byte size of the following string.
+	EntityInfos 		   = 7, 			// array of 'EntityInfoPacked' structures
+	EntityTransforms 	   = 8,		// array of 'Transform' structures
+	EntityComponentIndexes = 9, // array of 'CompIndexes' structures
+	EntityNames 		   = 10, 			// array of entity name strings, each string has a 4 bytes u32 in front indicating the byte size of the following string.
 
+	_Entity_Reserved_1 = 11,
+	_Entity_Reserved_2 = 12,
+	_Entity_Reserved_3 = 13,
+	_Entity_Reserved_4 = 14,
+	
 	CameraCompData, 	// array of 'CameraCompData' structures
 	LightCompData, 		// array of 'SkyboxCompData' structures
 	SkyboxCompData, 	// array of 'LightAsset' structures
 	MeshrenCompData, 	// array of 'MeshRendererCompData' structures
-	DrawablesArray, 	// array of 'DrawableAsset' structures
 	ColliderCompData,   // array of 'ColliderCompData' structures
+	_CompReserved_1,
+	_CompReserved_2,
+	_CompReserved_3,
+	_CompReserved_4,
+	_CompReserved_5,
+	_CompReserved_6,
+	_CompReserved_7,
+	_CompReserved_8,
+	_CompReserved_9,
+	_CompReserved_10,
+	_CompReserved_11,
+	_CompReserved_12,
+	_CompReserved_13,
+	_CompReserved_14,
+	_CompReserved_15,
+	_CompReserved_16,
 
 }
 
-UniAssetBufferInfo :: struct #packed { // 12 bytes structure.
-	type : UniAssetBufferType,
+AssetUniverseBufferInfo_v3 :: struct #packed { // 12 bytes structure.
+	type : AssetUniverseBufferType_v3,
 	numbr : u32, // number of entries/components/strings in the following buffer.
 	bytes : u32, // byte size of following buffer contents.
 }
 
-free_universe_asset :: proc(uni : ^UniverseAsset){
+
+asset_universe_free :: proc(uni : ^AssetUniverse){
 	if uni == nil {
 		return;
 	}
 
 	if len(uni.name) > 0{
 		delete_string(uni.name);
+	}
+
+	if len(uni.asset_alias) > 0 {
+		delete_string(uni.asset_alias);
 	}
 
 	if uni.entity_names != nil {
@@ -183,15 +224,33 @@ free_universe_asset :: proc(uni : ^UniverseAsset){
 		delete_slice(uni.meshren_comp_data);
 	}
 
-	if uni.drawable_assets_array != nil {
-		delete_slice(uni.drawable_assets_array);
+	if uni.drawable_groups != nil {
+
+		for &group in uni.drawable_groups {
+
+			if group.flags != nil {
+				delete_slice(group.flags);
+			}
+
+			if group.transforms != nil {
+				delete_slice(group.transforms);
+			}
+
+			if group.material_asset_ids != nil {
+				delete_slice(group.material_asset_ids);
+			}
+		}
+
+
+
+		delete_slice(uni.drawable_groups);
 	}
 
 	free(uni);
 }
 
 
-asset_universe_read_from_path :: proc(filepath : string) -> (universe_asset : ^UniverseAsset, ok : bool) {
+asset_universe_read_from_path :: proc(filepath : string) -> (universe_asset : ^AssetUniverse, ok : bool) {
 
 	file, open_err := os.open(filepath);
 	if open_err != os.ERROR_NONE {
@@ -203,82 +262,81 @@ asset_universe_read_from_path :: proc(filepath : string) -> (universe_asset : ^U
 	return asset_universe_read(&b_reader);
 }
 
-asset_universe_read_from_memory :: proc(data : []byte) -> (universe_asset : ^UniverseAsset, ok : bool) {
+asset_universe_read_from_memory :: proc(data : []byte) -> (universe_asset : ^AssetUniverse, ok : bool) {
 	b_reader := reader.create_memory_reader(data);
 	return asset_universe_read(&b_reader);
 }
 
 @(private="file")
-asset_universe_read :: proc(b_reader : ^$T) -> (uni_asset : ^UniverseAsset, ok : bool) where T == reader.FileBinaryReader || T == reader.MemBinaryReader {
+asset_universe_read :: proc(b_reader : ^$T) -> (uni_asset : ^AssetUniverse, ok : bool) where T == reader.FileBinaryReader || T == reader.MemBinaryReader {
 	
-	common_hdr := reader.consume_copy_type(b_reader, IriAssetCommonHeader) or_return;
+	common_hdr := reader.consume_copy_type(b_reader, AssetFileCommonHeader) or_return;
 
 	if common_hdr.asset_type != AssetType.Universe {
 		return nil, false;
 	}
 
 	switch common_hdr.asset_type_version {
-		//case 1: return asset_universe_read_v1(b_reader, common_hdr);
-		case 2: return asset_universe_read_v2(b_reader, common_hdr);
+		case 3: return asset_universe_read_v3(b_reader, common_hdr);
 	}
 
 	// invalid or depricated version
 	return nil, false;
 }
 
-
-asset_universe_read_tag_and_name :: proc(b_reader : ^$T, allocator := context.allocator) -> (uni_tag : u32, uni_name : string, ok : bool) where T == reader.FileBinaryReader || T == reader.MemBinaryReader {
-	
-	reader.seek(b_reader, size_of(IriAssetCommonHeader));
-
-	first_hdr : UniverseAssetFirstHeader_v2 = reader.consume_copy_type(b_reader, UniverseAssetFirstHeader_v2) or_return;
-
-	// Read name string
-	name : string;
-	if first_hdr.name_str_num_bytes > 0 {
-		name = reader.consume_make_string(b_reader, cast(int)first_hdr.name_str_num_bytes, allocator) or_return;
-	} else {
-		name = strings.clone("UnnamedUniverse", allocator);
-	}
-
-	return first_hdr.tag, name, true;
+asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^AssetUniverse, write_flags : AssetWriteFlags) -> (ok : bool){
+	return asset_universe_write_v3_to_file(filepath, uni_asset, write_flags);
 }
 
 @(private="file")
-asset_universe_read_v2 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -> (uni_asset : ^UniverseAsset, ok : bool) {
+asset_universe_read_v3 :: proc(b_reader : ^$T, common_hdr : AssetFileCommonHeader) -> (uni_asset : ^AssetUniverse, ok : bool) {
 
-	uni_asset = new(UniverseAsset);
+	uni_asset = new(AssetUniverse);
 
 	defer if !ok {
 		log.errorf("Failed to read universe asset")
-		free_universe_asset(uni_asset);
-		uni_asset = nil;
-	
+		asset_universe_free(uni_asset);
+		uni_asset = nil;	
 	}
 
-	uni_asset.asset_uuid = common_hdr.asset_uuid;
+	uni_asset.asset_id = common_hdr.asset_id;
 
-	// first header 
 
-	first_hdr : UniverseAssetFirstHeader_v2 = reader.consume_copy_type(b_reader, UniverseAssetFirstHeader_v2) or_return;
-	uni_asset.tag = first_hdr.tag;
-
-	// Read name string
-	if first_hdr.name_str_num_bytes > 0 {
-		uni_asset.name = reader.consume_make_string(b_reader, cast(int)first_hdr.name_str_num_bytes, context.allocator) or_return;
-	} else {
-		uni_asset.name = strings.clone("UnnamedUniverse", context.allocator);
+	// Read Alias string
+	uni_alias128 : AssetFileString128 = reader.consume_copy_type(b_reader, AssetFileString128) or_return;
+	uni_alias_str, uni_has_alias := string_clone_from_asset_string128(&uni_alias128, context.allocator);
+	if uni_has_alias {
+		uni_asset.asset_alias = uni_alias_str;
 	}
 
-	uni_hdr : ^UniverseAssetSecondHeader_v2 = reader.consume_make_type(b_reader, UniverseAssetSecondHeader_v2, context.temp_allocator) or_return;
+
+
+	// Universe Header
+	uni_hdr : AssetUniverseHeader_v3 = reader.consume_copy_type(b_reader, AssetUniverseHeader_v3) or_return;
 	{
+
 		uni_asset.active_camera_entity = cast(int)uni_hdr.active_camera_entity;
 		uni_asset.active_skybox_entity = cast(int)uni_hdr.active_skybox_entity;
 		uni_asset.num_entities 	= uni_hdr.num_entities;
+
+		uni_asset.tag = uni_hdr.tag;
 	}
 
-	for reader.remaining_bytes(b_reader) > 0 {
-		buf_info := reader.consume_copy_type(b_reader, UniAssetBufferInfo) or_return;
+	// Universe Name string
+	{
+		uni_name_string64 : AssetFileString64 = reader.consume_copy_type(b_reader, AssetFileString64) or_return;
+
+		uni_name_str, uni_has_name := string_clone_from_asset_string64(&uni_name_string64, context.allocator);
+		if uni_has_name {
+			uni_asset.name = uni_name_str;
+		} else {
+			uni_asset.name = strings.clone("UnnamedUniverse", context.allocator);
+		}
+
+	}
+
+	buffer_loop: for reader.remaining_bytes(b_reader) > 0 {
+		buf_info := reader.consume_copy_type(b_reader, AssetUniverseBufferInfo_v3) or_return;
 		
 		if buf_info.bytes <= 0 || buf_info.numbr <= 0 {
 			continue;
@@ -287,11 +345,14 @@ asset_universe_read_v2 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader
 		byte_size : int = cast(int)buf_info.bytes;
 		numbr : int = cast(int)buf_info.numbr;
 
-		switch buf_info.type {
+		#partial switch buf_info.type {
+			case .EndOfFile: break buffer_loop;
+
 			case .UniverseSettings:	reader.consume_mem_copy(b_reader, &uni_asset.settings, byte_size) or_return;
-			case .EntityInfos: 		uni_asset.entity_infos = reader.consume_make_slice(b_reader, []EntityInfoPacked, numbr, context.allocator) or_return;
+		
+			case .EntityInfos: 		uni_asset.entity_infos = reader.consume_make_slice(b_reader, []AssetEntityInfo, numbr, context.allocator) or_return;
 			case .EntityTransforms: uni_asset.entity_trans = reader.consume_make_slice(b_reader, []geo.Transform, numbr, context.allocator) or_return;
-			case .EntityComponentIndexes: uni_asset.entity_comp_indexes = reader.consume_make_slice(b_reader, []CompIndexes, numbr, context.allocator) or_return;
+			case .EntityComponentIndexes: uni_asset.entity_comp_indexes = reader.consume_make_slice(b_reader, []AssetComponentIndexes, numbr, context.allocator) or_return;
 			case .EntityNames: 	{
 				num_ents : int = numbr;
 				uni_asset.entity_names = make_slice([]string, num_ents, context.allocator);
@@ -303,14 +364,33 @@ asset_universe_read_v2 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader
 						uni_asset.entity_names[i] = reader.consume_make_string(b_reader, cast(int)name_byte_size, context.temp_allocator) or_return;
 					}
 				}
+			}		
+			case .CameraCompData:  uni_asset.camera_comp_data 		= reader.consume_make_slice(b_reader, []AssetCameraComponentData       , numbr, context.allocator) or_return;
+			case .LightCompData:   uni_asset.light_comp_data  		= reader.consume_make_slice(b_reader, []AssetLightComponentData        , numbr, context.allocator) or_return;
+			case .SkyboxCompData:  uni_asset.skybox_comp_data 		= reader.consume_make_slice(b_reader, []AssetSkyboxComponentData       , numbr, context.allocator) or_return;
+			case .ColliderCompData: uni_asset.collider_comp_data 	= reader.consume_make_slice(b_reader, []AssetColliderComponentData 	   , numbr, context.allocator) or_return;
+			case .MeshrenCompData: uni_asset.meshren_comp_data 		= reader.consume_make_slice(b_reader, []AssetMeshRendererComponentData , numbr, context.allocator) or_return;
+			case .DrawableGroup: {
+
+				uni_asset.drawable_groups = make_slice([]AssetDrawGroup, numbr, context.allocator);
+
+				for g in 0..<numbr {
+					group_hdr : AssetDrawGroupHeader = reader.consume_copy_type(b_reader, AssetDrawGroupHeader) or_return;
+
+					group := &uni_asset.drawable_groups[g];
+
+					group.asset_id = group_hdr.asset_id;
+					group.asset_drawable_type = group_hdr.asset_drawable_type;
+					group.num_primitives = group_hdr.num_primitives;
+
+					num_primitives : int = cast(int)group_hdr.num_primitives;
+
+					group.flags 		 = reader.consume_make_slice(b_reader, []iricom.DrawInstanceFlags , num_primitives, context.allocator) or_return;
+					group.transforms 	 = reader.consume_make_slice(b_reader, []geo.Transform , num_primitives, context.allocator) or_return;
+					group.material_asset_ids = reader.consume_make_slice(b_reader, []AssetID , num_primitives, context.allocator) or_return;
+				}				
 			}
-			case .CameraCompData:  uni_asset.camera_comp_data 		= reader.consume_make_slice(b_reader, []iricom.CameraCompData, numbr, context.allocator) or_return;
-			case .LightCompData:   uni_asset.light_comp_data  		= reader.consume_make_slice(b_reader, []LightAsset           , numbr, context.allocator) or_return;
-			case .SkyboxCompData:  uni_asset.skybox_comp_data 		= reader.consume_make_slice(b_reader, []iricom.SkyboxCompData, numbr, context.allocator) or_return;
-			case .ColliderCompData: uni_asset.collider_comp_data 	= reader.consume_make_slice(b_reader, []ColliderCompData 	 , numbr, context.allocator) or_return;
-			case .MeshrenCompData: uni_asset.meshren_comp_data 		= reader.consume_make_slice(b_reader, []MeshRendererCompData , numbr, context.allocator) or_return;
-			case .DrawablesArray:  uni_asset.drawable_assets_array 	= reader.consume_make_slice(b_reader, []DrawableAsset        , numbr, context.allocator) or_return;
-		}
+		} 
 	}
 
 	num_ents : int = len(uni_asset.entity_infos);
@@ -321,22 +401,21 @@ asset_universe_read_v2 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader
 	return uni_asset, true;
 }
 
-asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAsset, write_flags : WriteFlags) -> (ok : bool) {
+@(private="file")
+asset_universe_write_v3_to_file :: proc(filepath : string, uni_asset : ^AssetUniverse, write_flags : AssetWriteFlags) -> (ok : bool) {
 
 	log_errors : bool = .LogErrors in write_flags;
+	can_overwrite_existing : bool = .OverwriteExisting in write_flags;
 
 	if uni_asset == nil {
 		return false;
 	}
 	
-	assert(uni_asset.asset_uuid != AssetUUID_INVALID)
+	assert(uni_asset.asset_id != AssetID_NONE)
 
-	file_exists_already := validate_write_filepath(filepath, log_errors) or_return;
 
-	if file_exists_already && .OverwriteExisting not_in write_flags {
-		if log_errors do log.errorf("IriAsset: Failed to write asset file, 'OverwriteExisting' flag is not set and file already exists. Path: {}", filepath);
-		return false;
-	}
+	file_exists_already := is_valid_write_filepath(filepath, can_overwrite_existing, log_errors) or_return;
+
 
 	file, open_err := os.open(filepath, flags = os.File_Flags{.Write, .Create, .Trunc});
 
@@ -346,60 +425,54 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 	}
 
 	// Cleanup 
-	defer os.close(file);
 	defer if !ok {
 		// if something goes wrong during writing the file, we will atempt to delete the file imidiatly.
 		try_delete_file(filepath, log_errors);		
 	}
+	defer os.close(file);
 
-	// Common Header
+
+	write_common_header_and_alias_to_file(file, filepath, AssetType.Universe, uni_asset.asset_id, uni_asset.asset_alias, log_errors) or_return;
+
+
+	// Header v3
 	{
-		hdr : IriAssetCommonHeader = create_common_header(AssetType.Universe, uni_asset.asset_uuid);
-		written_bytes , write_err := os.write_ptr(file, &hdr, size_of(IriAssetCommonHeader));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
-	}
+		uni_hdr : AssetUniverseHeader_v3;
 
-	// First Asset Header 
-	{
-		first_hdr := UniverseAssetFirstHeader_v2{
-			tag = uni_asset.tag,
-			name_str_num_bytes = cast(u32)len(uni_asset.name),
-
-		}
-
-		written_bytes , write_err := os.write_ptr(file, &first_hdr, size_of(UniverseAssetFirstHeader_v2));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
-	}
-
-	// Name string directly after small header.
-	if len(uni_asset.name) > 0 {
-		written_bytes, write_err := os.write_string(file, uni_asset.name);
-		is_no_write_error(write_err, filepath, log_errors) or_return;	
-	}
-
-	// Second Asset Header
-	uni_hdr : UniverseAssetSecondHeader_v2;
-	{
 		uni_hdr.num_entities 		 = uni_asset.num_entities;
 		uni_hdr.active_camera_entity = cast(i64)uni_asset.active_camera_entity;
 		uni_hdr.active_skybox_entity = cast(i64)uni_asset.active_skybox_entity;
 
-		written_bytes , write_err := os.write_ptr(file, &uni_hdr, size_of(UniverseAssetSecondHeader_v2));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
+		uni_hdr.tag = uni_asset.tag;
+
+
+		written_bytes, write_err := os.write_ptr(file, &uni_hdr, size_of(AssetUniverseHeader_v3));
+		check_write_error(write_err, filepath, log_errors) or_return;
 	}
+
+	// Universe String Name 
+	{
+		uni_name_64, has_name := string_to_asset_string64(uni_asset.name); 
+		written_bytes, write_err := os.write_ptr(file, &uni_name_64, size_of(AssetFileString64));
+		check_write_error(write_err, filepath, log_errors) or_return;
+	}
+
+
+	// Start Writing Buffers
+
 
 	// Universe Settings
 	{
-		buf_info := UniAssetBufferInfo{
-			type  = UniAssetBufferType.UniverseSettings,
+		buf_info := AssetUniverseBufferInfo_v3{
+			type  = AssetUniverseBufferType_v3.UniverseSettings,
 			numbr = 1,
 			bytes = cast(u32)size_of(uni_asset.settings),
 		}
-		buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-		is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+		buf_info_written_bytes, buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
+		check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
-		written_bytes , write_err := os.write_ptr(file, &uni_asset.settings, size_of(uni_asset.settings));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
+		written_bytes, write_err := os.write_ptr(file, &uni_asset.settings, size_of(uni_asset.settings));
+		check_write_error(write_err, filepath, log_errors) or_return;
 	}
 
 	num_ents : int = cast(int)uni_asset.num_entities;
@@ -409,22 +482,22 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 	assert(num_ents == len(uni_asset.entity_names))
 	assert(num_ents == len(uni_asset.entity_comp_indexes))
 
-	// Packed infos
+	// Asset Entity Info
 	{
-		byte_size : int = num_ents * size_of(EntityInfoPacked);
+		byte_size : int = num_ents * size_of(AssetEntityInfo);
 		
 		if byte_size > 0 {
 			
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.EntityInfos,
+			buf_info := AssetUniverseBufferInfo_v3 {
+				type  = AssetUniverseBufferType_v3.EntityInfos,
 				numbr = cast(u32)num_ents,
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 			written_bytes, write_err := os.write_ptr(file,&uni_asset.entity_infos[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;	
+			check_write_error(write_err, filepath, log_errors) or_return;	
 			assert(byte_size == written_bytes);
 		}
 	}
@@ -435,40 +508,41 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 		
 		if byte_size > 0 {
 			
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.EntityTransforms,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .EntityTransforms,
 				numbr = cast(u32)num_ents,
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 		
 			written_bytes, write_err := os.write_ptr(file,&uni_asset.entity_trans[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
+			check_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}
 	}
 
 	// Component  indexes
 	{
-		byte_size : int = num_ents * size_of(CompIndexes);
+		byte_size : int = num_ents * size_of(AssetComponentIndexes);
 		
 		if byte_size > 0 {
 			
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.EntityComponentIndexes,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .EntityComponentIndexes,
 				numbr = cast(u32)num_ents,
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 		
 			written_bytes, write_err := os.write_ptr(file, &uni_asset.entity_comp_indexes[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
+			check_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}
 	}
+
 
 	// Entity Names 
 	{
@@ -483,24 +557,24 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 
 		if byte_size > 0 {
 			
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.EntityNames,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .EntityNames,
 				numbr = cast(u32)num_ents,
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 			for i in 0..<num_ents {
 				name_str := uni_asset.entity_names[i];
 				name_len : u32 = cast(u32)len(name_str);
 
 				len_written_bytes, len_write_err := os.write_ptr(file, &name_len, size_of(u32));
-				is_no_write_error(len_write_err, filepath, log_errors) or_return;
+				check_write_error(len_write_err, filepath, log_errors) or_return;
 
 				if name_len > 0 {
 					str_written_bytes, str_write_err := os.write_string(file, name_str);
-					is_no_write_error(str_write_err, filepath, log_errors) or_return;	
+					check_write_error(str_write_err, filepath, log_errors) or_return;	
 				}
 			}
 		}
@@ -509,81 +583,81 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 
 	// Component Data Camera
 	{
-		byte_size : int = len(uni_asset.camera_comp_data) * size_of(iricom.CameraCompData);
+		byte_size : int = len(uni_asset.camera_comp_data) * size_of(AssetCameraComponentData);
 		
 		if byte_size > 0 {
 
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.CameraCompData,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .CameraCompData,
 				numbr = cast(u32)len(uni_asset.camera_comp_data),
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 		
 			written_bytes, write_err := os.write_ptr(file, &uni_asset.camera_comp_data[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
+			check_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}
 	}
 
 	// Component Data Skybox
 	{
-		byte_size : int = len(uni_asset.skybox_comp_data) * size_of(iricom.SkyboxCompData);
+		byte_size : int = len(uni_asset.skybox_comp_data) * size_of(AssetSkyboxComponentData);
 		
 		if byte_size > 0 {
 
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.SkyboxCompData,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .SkyboxCompData,
 				numbr = cast(u32)len(uni_asset.skybox_comp_data),
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 			written_bytes, write_err := os.write_ptr(file, &uni_asset.skybox_comp_data[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
+			check_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}
 	}
 
 	// Component Data Lights
 	{
-		byte_size : int = len(uni_asset.light_comp_data) * size_of(LightAsset);
+		byte_size : int = len(uni_asset.light_comp_data) * size_of(AssetLightComponentData);
 		
 		if byte_size > 0 {
 
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.LightCompData,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .LightCompData,
 				numbr = cast(u32)len(uni_asset.light_comp_data),
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 			written_bytes, write_err := os.write_ptr(file, &uni_asset.light_comp_data[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
+			check_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}
 	}
 
 	// Component Data Colliders
 	{
-		byte_size : int = len(uni_asset.collider_comp_data) * size_of(ColliderCompData);
+		byte_size : int = len(uni_asset.collider_comp_data) * size_of(AssetColliderComponentData);
 		
 		if byte_size > 0 {
 
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.ColliderCompData,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .ColliderCompData,
 				numbr = cast(u32)len(uni_asset.collider_comp_data),
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 			written_bytes, write_err := os.write_ptr(file, &uni_asset.collider_comp_data[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
+			check_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}
 	}
@@ -591,43 +665,114 @@ asset_universe_write_to_file :: proc(filepath : string, uni_asset : ^UniverseAss
 
 	// Component Data MeshRenderer
 	{
-		byte_size : int = len(uni_asset.meshren_comp_data) * size_of(MeshRendererCompData);
+		byte_size : int = len(uni_asset.meshren_comp_data) * size_of(AssetMeshRendererComponentData);
 		
 		if byte_size > 0 {
 
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.MeshrenCompData,
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = .MeshrenCompData,
 				numbr = cast(u32)len(uni_asset.meshren_comp_data),
 				bytes = cast(u32)byte_size,
 			}
 			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
 
 			written_bytes, write_err := os.write_ptr(file, &uni_asset.meshren_comp_data[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
+			check_write_error(write_err, filepath, log_errors) or_return;
 			assert(byte_size == written_bytes);
 		}
 	}
 
-	// Drawables array.
+
+	// Drawable Group
 	{
-		byte_size : int = len(uni_asset.drawable_assets_array) * size_of(DrawableAsset);
-		
+		byte_size : int = 0; // len(uni_asset.drawable_assets_array) * size_of(DrawableAsset);
+
+		num_groups : int = len(uni_asset.drawable_groups);
+
+		// Precompute byte size for this buffer.
+		for &group in uni_asset.drawable_groups {
+			
+			num_primitives : int = cast(int)group.num_primitives;
+			assert(num_primitives == len(group.flags));
+			assert(num_primitives == len(group.transforms));
+			assert(num_primitives == len(group.material_asset_ids));
+
+			byte_size += size_of(AssetDrawGroupHeader);
+
+			// flags array.
+			byte_size += num_primitives * size_of(iricom.DrawInstanceFlags);
+				
+			// transforms array.
+			byte_size += num_primitives * size_of(geo.Transform);
+			
+			// Material IDs array.
+			byte_size += num_primitives * size_of(AssetID);
+
+		}
+
 		if byte_size > 0 {
 
-			buf_info := UniAssetBufferInfo{
-				type  = UniAssetBufferType.DrawablesArray,
-				numbr = cast(u32)len(uni_asset.drawable_assets_array),
+
+			buf_info := AssetUniverseBufferInfo_v3{
+				type  = AssetUniverseBufferType_v3.DrawableGroup,
+				numbr = cast(u32)num_groups,
 				bytes = cast(u32)byte_size,
 			}
-			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
-			is_no_write_error(buf_info_write_err, filepath, log_errors) or_return;
 
-			written_bytes, write_err := os.write_ptr(file, &uni_asset.drawable_assets_array[0], byte_size);
-			is_no_write_error(write_err, filepath, log_errors) or_return;
-			assert(byte_size == written_bytes);
+
+			buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
+			check_write_error(buf_info_write_err, filepath, log_errors) or_return;
+
+			group_loop: for g in 0..<num_groups{
+				group := &uni_asset.drawable_groups[g];
+
+				num_primitives : int = cast(int)group.num_primitives;
+
+				group_header := AssetDrawGroupHeader{
+					asset_id = group.asset_id,
+					asset_drawable_type = group.asset_drawable_type,
+					num_primitives = group.num_primitives,
+				}
+
+				grp_hdr_written_bytes , grp_hdr_write_err := os.write_ptr(file, &group_header, size_of(group_header));
+				check_write_error(grp_hdr_write_err, filepath, log_errors) or_return;
+
+				if num_primitives <= 0 {
+					continue group_loop;
+				}
+				
+				// flags array.
+				flags_array_size : int = num_primitives * size_of(iricom.DrawInstanceFlags);
+				flags_written_bytes, flags_write_err := os.write_ptr(file, &group.flags[0], flags_array_size);
+				check_write_error(flags_write_err, filepath, log_errors) or_return;
+				
+				// transforms array.
+				trans_array_size : int = num_primitives * size_of(geo.Transform);
+				trans_written_bytes, trans_write_err := os.write_ptr(file, &group.transforms[0], trans_array_size);
+				check_write_error(trans_write_err, filepath, log_errors) or_return;
+
+
+				// Material IDs array.
+				mat_array_size : int = num_primitives * size_of(AssetID);
+				mat_written_bytes, mat_write_err := os.write_ptr(file, &group.material_asset_ids[0], mat_array_size);
+				check_write_error(mat_write_err, filepath, log_errors) or_return;
+				
+			}
+
 		}
+	}
+
+
+	// End Of File
+	{
+		buf_info := AssetUniverseBufferInfo_v3 {
+			type  = AssetUniverseBufferType_v3.EndOfFile,
+		}
+
+		buf_info_written_bytes , buf_info_write_err := os.write_ptr(file, &buf_info, size_of(buf_info));
+		check_write_error(buf_info_write_err, filepath, log_errors) or_return;
 	}
 
 	return true;

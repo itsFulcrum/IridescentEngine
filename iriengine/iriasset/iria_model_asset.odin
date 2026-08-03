@@ -2,6 +2,7 @@ package iria
 	
 import "core:log"
 
+import "core:c"
 import "core:os"
 import "core:mem"
 import "core:fmt"
@@ -16,13 +17,13 @@ import reader "odinary:readbinary"
 
 @Note: First we store a bunch of header information.
 
--- CommonHeader  - Type: IriAssetCommonHeader | Size: size_of(IriAssetCommonHeader) (32 bytes)
--- AssetAliasStr - Type: IriAssetString128 	  | Size: size_of(IriAssetString128) (128 bytes) - can be just zero memory (no alias).
--- ModelHeader   - Type: ModelAssetHeader_v1  | Size: size_of(ModelAssetHeader_v1) (100 bytes)
--- ModelNameStr  - Type: IriAssetString64     | Size: size_of(IriAssetString64) (64 bytes) - can be just zero memory (no name).
+-- CommonHeader  - Type: AssetFileCommonHeader 	| Size: size_of(AssetFileCommonHeader) (32 bytes)
+-- AssetAliasStr - Type: AssetFileString128  	| Size: size_of(AssetFileString128) (128 bytes) - can be just zero memory (no alias).
+-- ModelHeader   - Type: ModelAssetHeader_v1  	| Size: size_of(ModelAssetHeader_v1) (100 bytes)
+-- ModelNameStr  - Type: AssetFileString64     	| Size: size_of(AssetFileString64) (64 bytes) - can be just zero memory (no name).
 
 
-Contigous Array Of material AssetUUIDs. Each submesh refers to one but it can be an InvalidUUID so no material assigned.
+Contigous Array Of material AssetIDs. Each submesh refers to one but it can be an AssetID_NONE so no material assigned.
 -- Material IDs  - Type: [ModelHeader.num_meshes]AssetUUID | Size: size_of(AssetUUID) * ModelHeader.num_meshes
 
 Contigous Array of u64. Each submesh stores its absolute file offset here. Can use this for streaming.
@@ -34,24 +35,73 @@ Contigous Array of u64. Each submesh stores its absolute file offset here. Can u
 
 Foreach Mesh {
 
--- MeshHeader          - Type: MeshAssetHeader       | Size: size_of(MeshAssetHeader);
--- MeshName            - Type: IriAssetString64  | Size: size_of(IriAssetString64);
--- Indecies Buffer     - Type: [^]u32  			 | Size: MeshHeader.num_indecies  * size_of(u32)
+-- MeshHeader          - Type: MeshAssetHeader   | Size: size_of(MeshAssetHeader);
+-- MeshName            - Type: AssetFileString64 | Size: size_of(AssetFileString64);
+-- Indecies Buffer     - Type: [^]u32 _OR_ u16	 | Size: MeshHeader.num_indecies  * size_of(u32 _OR_ u16)
 -- Positions Buffer    - Type: [^]byte 			 | Size: MeshHeader.num_vertecies * size_of([4]f32) | @ xyzw per position, 4 floats.
 
-// @Note: Vertex Data can be packed in 3 different formats based on MeshHeader.vertex_data_layout. The byte size for each Vertex can therefore vary.
+@Note: Vertex Data can be packed in 3 different formats based on MeshHeader.vertex_data_layout. The byte size for each Vertex can therefore vary.
 -- Vertex Data buffer  - Type: [^]byte 			 | Size: MeshHeader.num_vertecies * iricom.get_vertex_layout_byte_size(MeshHeader.vertex_data_layout);
--- Bvh Indecies Buffer - Type: [^]u32 			 | Size: MeshHeader.num_indecies  * size_of(u32)
--- Bvh nodes Buffer    - Type: [^]geo.BvhNode    | Size: MeshHeader.num_bvh_nodes * size_of(geo.BvhNode)
+
+-- Bvh Indecies Buffer - Type: [^]u32 _OR_ u16 		| Size: MeshHeader.num_indecies  * size_of(u32 _OR_u16)
+-- Bvh nodes Buffer    - Type: [^]geo.BvhNode    	| Size: MeshHeader.num_bvh_nodes * size_of(geo.BvhNode)
 }
 
 */
 
+AssetModel :: struct {
+
+	asset_id : AssetID,
+	asset_alias : string, // can be nothing.
+	name : string,
+
+	// Foreach Meshdata there is a corresponding AssetUUID but its allowed to be Invalid meaning no material.
+	meshes       		: []^iricom.MeshData,
+	material_asset_ids 	: []AssetID,
+
+	aabb      : geo.AABB,
+	transform : geo.Transform,
+}
 
 
-MODEL_ASSET_CURRENT_VERSION : u32 : 1
+asset_model_free_contents :: proc(model : ^AssetModel){
 
-ModelAssetHeader_v1 :: struct #packed {
+	if model == nil do return;
+
+	if len(model.asset_alias) > 0 {
+		delete_string(model.asset_alias)
+		model.asset_alias = "";
+	}
+
+	if len(model.name) > 0 {
+		delete_string(model.name)
+		model.name = "";
+	}
+
+	for mesh in model.meshes {
+		iricom.mesh_data_free(mesh);
+	}
+
+
+	delete_slice(model.meshes);
+	delete_slice(model.material_asset_ids);
+	model.meshes = nil;
+	model.material_asset_ids = nil;
+}
+
+asset_model_free :: proc(model : ^AssetModel){
+
+	if model == nil do return;
+
+	asset_model_free_contents(model);
+	free(model)
+}
+
+
+
+ASSET_MODEL_FILE_CURRENT_VERSION : u32 : 1
+
+AssetModelHeader_v1 :: struct #packed {
 
 	num_meshes     : u32, 
 	offsets_byte_size : u64, // = num_submeshes * sizeof(u64). Usefull if we dont care about offsets and just want to jump to where the first mesh is.
@@ -68,9 +118,9 @@ ModelAssetHeader_v1 :: struct #packed {
 }
 
 
-MeshAssetHeader :: struct #packed {
+AssetMeshHeader :: struct #packed {
 
-	vertex_data_layout : VertexDataLayout,
+	vertex_data_layout : iricom.VertexDataLayout,
 
 	num_indecies  : u32,
 	num_vertecies : u32,
@@ -83,10 +133,14 @@ MeshAssetHeader :: struct #packed {
 	transform_scale          : [3]f32,
 	transform_orientation    : quaternion128,
 
-	_ : [6]u32, // reserved
+	indecies_stored_as_u16 : b8, // counts for both vertex indecies and bvh indecies..
+	_ : b8,
+	_ : b8,
+	_ : b8,
+	_ : [5]u32, // reserved
 }
 
-asset_model_read_from_path :: proc(filepath : string) -> (model : ^iricom.ModelAsset, ok : bool) {
+asset_model_read_from_path :: proc(filepath : string) -> (model : ^AssetModel, ok : bool) {
 
 	file, open_err := os.open(filepath);
 	if open_err != os.ERROR_NONE {
@@ -98,16 +152,16 @@ asset_model_read_from_path :: proc(filepath : string) -> (model : ^iricom.ModelA
 	return asset_model_read(&f_reader);
 }
 
-asset_model_read_from_memory :: proc(data : []byte) -> (model : ^iricom.ModelAsset, ok : bool) {
+asset_model_read_from_memory :: proc(data : []byte) -> (model : ^AssetModel, ok : bool) {
 	m_reader := reader.create_memory_reader(data);
 	return asset_model_read(&m_reader);
 }
 
 
 @(private="file")
-asset_model_read :: proc(b_reader : ^$T) -> (model : ^iricom.ModelAsset, ok : bool) where T == reader.FileBinaryReader || T == reader.MemBinaryReader {
+asset_model_read :: proc(b_reader : ^$T) -> (model : ^AssetModel, ok : bool) where T == reader.FileBinaryReader || T == reader.MemBinaryReader {
 	
-	common_hdr := reader.consume_copy_type(b_reader, IriAssetCommonHeader) or_return;
+	common_hdr := reader.consume_copy_type(b_reader, AssetFileCommonHeader) or_return;
 
 	if common_hdr.asset_type != AssetType.Model {
 		return nil, false;
@@ -122,26 +176,26 @@ asset_model_read :: proc(b_reader : ^$T) -> (model : ^iricom.ModelAsset, ok : bo
 }
 
 @(private="file")
-asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -> (model : ^iricom.ModelAsset, ok : bool) {
+asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : AssetFileCommonHeader) -> (model : ^AssetModel, ok : bool) {
 
-	model = new(iricom.ModelAsset);
+	model = new(AssetModel);
 
 	defer if !ok {
-		iricom.free_model_asset(model);
+		asset_model_free(model);
 		model = nil;
 	}
 	
-	model.asset_id = common_hdr.asset_uuid;
+	model.asset_id = common_hdr.asset_id;
 
 	// Read Alias string
-	model_alias128 : IriAssetString128 = reader.consume_copy_type(b_reader, IriAssetString128) or_return;
+	model_alias128 : AssetFileString128 = reader.consume_copy_type(b_reader, AssetFileString128) or_return;
 	model_alias_str, model_has_alias := string_clone_from_asset_string128(&model_alias128, context.allocator);
 	if model_has_alias {
 		model.asset_alias = model_alias_str;
 	}
 
 	// Model Header
-	model_hdr : ^ModelAssetHeader_v1 = reader.consume_make_type(b_reader, ModelAssetHeader_v1, context.temp_allocator) or_return;
+	model_hdr : ^AssetModelHeader_v1 = reader.consume_make_type(b_reader, AssetModelHeader_v1, context.temp_allocator) or_return;
 	{
 		model.aabb = geo.aabb_from_min_max_vec3(model_hdr.aabb_min, model_hdr.aabb_max);
 		model.transform.position 	= model_hdr.transform_position;
@@ -151,7 +205,7 @@ asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -
 
 	// Model Name
 	{
-		model_name64 : IriAssetString64 = reader.consume_copy_type(b_reader, IriAssetString64) or_return;
+		model_name64 : AssetFileString64 = reader.consume_copy_type(b_reader, AssetFileString64) or_return;
 		model_name_str, model_has_name := string_clone_from_asset_string64(&model_name64, context.allocator);
 		if model_has_name {
 			model.name = model_name_str;
@@ -163,24 +217,24 @@ asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -
 
 	// Materials
 	num_meshes : int = cast(int)model_hdr.num_meshes;
-	model.material_ids = reader.consume_make_slice(b_reader, []AssetUUID, num_meshes, context.allocator) or_return;
+	model.material_asset_ids = reader.consume_make_slice(b_reader, []AssetID, num_meshes, context.allocator) or_return;
 
 	// We dont care about offset here.
 	offsets_byte_size : int = cast(int)model_hdr.offsets_byte_size;
 	reader.advance(b_reader, offsets_byte_size);
 
 
-	meshes : [dynamic]^MeshData
+	meshes : [dynamic]^iricom.MeshData
 
 	for i in 0..<num_meshes {
 		
-		mesh_data : ^MeshData = new(MeshData);
+		mesh_data : ^iricom.MeshData = new(iricom.MeshData);
 		defer {
 			append(&meshes, mesh_data);
 		} 
 
-		// -- MeshHeader          - Type: MeshAssetHeader       | Size: size_of(MeshAssetHeader);
-		mesh_hdr : MeshAssetHeader = reader.consume_copy_type(b_reader, MeshAssetHeader) or_return;
+		// -- MeshHeader          - Type: AssetMeshHeader       | Size: size_of(AssetMeshHeader);
+		mesh_hdr : AssetMeshHeader = reader.consume_copy_type(b_reader, AssetMeshHeader) or_return;
 		{
 			mesh_data.num_vertecies 		= mesh_hdr.num_vertecies;
 			mesh_data.vertex_data_layout 	= mesh_hdr.vertex_data_layout;
@@ -193,9 +247,9 @@ asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -
 			mesh_data.transform.orientation = mesh_hdr.transform_orientation;
 		}
 
-		// -- MeshName            - Type: IriAssetString64   | Size: size_of(IriAssetString64);
+		// -- MeshName            - Type: AssetFileString64   | Size: size_of(AssetFileString64);
 		{
-			mesh_name_64 : IriAssetString64 = reader.consume_copy_type(b_reader, IriAssetString64) or_return;
+			mesh_name_64 : AssetFileString64 = reader.consume_copy_type(b_reader, AssetFileString64) or_return;
 			mesh_name_str, mesh_has_name := string_clone_from_asset_string64(&mesh_name_64, context.allocator);
 			if mesh_has_name {
 				mesh_data.name = mesh_name_str;
@@ -207,12 +261,28 @@ asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -
 			}
 		}
 
-		// -- Indecies Buffer     - Type: [^]u32  			 | Size: MeshHeader.num_indecies  * size_of(u32)
+		// -- Indecies Buffer     - Type: [^]u32 OR u16		 | Size: MeshHeader.num_indecies  * size_of(u32 OR u16)
 		{
-			indecies_buf_size : int = cast(int)mesh_data.num_indecies * size_of(u32);
+			num_indecies : int = cast(int)mesh_data.num_indecies;
+			mesh_data.indecies = make_multi_pointer([^]u32, num_indecies, context.allocator);
 
-			mesh_data.indecies = make_multi_pointer([^]u32, cast(int)mesh_data.num_indecies, context.allocator);
-			reader.consume_mem_copy(b_reader, &mesh_data.indecies[0], indecies_buf_size) or_return;
+			is_u16 : bool = cast(bool)mesh_hdr.indecies_stored_as_u16;
+
+			indecie_elem_size : int = is_u16 ? size_of(u16) : size_of(u32);
+			indecies_buf_size : int = cast(int)mesh_data.num_indecies * indecie_elem_size;
+
+			if is_u16 {
+				temp_u16_buf : []u16 = make_slice([]u16, num_indecies, context.allocator);
+				defer delete_slice(temp_u16_buf);
+				
+				reader.consume_mem_copy(b_reader, &temp_u16_buf[0], indecies_buf_size) or_return;
+
+				for i in 0..<num_indecies{
+					mesh_data.indecies[i] = cast(u32)temp_u16_buf[i];
+				}
+			} else {
+				reader.consume_mem_copy(b_reader, &mesh_data.indecies[0], indecies_buf_size) or_return;
+			}
 		}
 
 		// -- Positions Buffer    - Type: [^]byte 			 | Size: MeshHeader.num_vertecies * size_of([4]f32) | @ xyzw per position, 4 floats.
@@ -234,10 +304,26 @@ asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -
 
 		// -- Bvh Indecies Buffer - Type: [^]u32 			 | Size: MeshHeader.num_indecies  * size_of(u32)
 		{
-			bvh_indecies_byte_size : int = cast(int)mesh_data.num_indecies * size_of(u32);
+			is_u16 : bool = cast(bool)mesh_hdr.indecies_stored_as_u16;
 			
-			mesh_data.bvh_indecies =  make_multi_pointer([^]u32, cast(int)mesh_data.num_indecies, context.allocator);
-			reader.consume_mem_copy(b_reader, &mesh_data.bvh_indecies[0], bvh_indecies_byte_size) or_return;
+			num_indecies : int = cast(int)mesh_data.num_indecies;
+			mesh_data.bvh_indecies =  make_multi_pointer([^]u32, num_indecies, context.allocator);
+
+			indecie_elem_size : int = is_u16 ? size_of(u16) : size_of(u32);
+
+			bvh_indecies_buf_byte_size : int = num_indecies * indecie_elem_size;
+			
+			if is_u16 {
+				temp_u16_buf : []u16 = make_slice([]u16, num_indecies, context.allocator);
+				defer delete_slice(temp_u16_buf);
+				
+				reader.consume_mem_copy(b_reader, &temp_u16_buf[0], bvh_indecies_buf_byte_size) or_return;
+				for i in 0..<num_indecies{
+					mesh_data.bvh_indecies[i] = cast(u32)temp_u16_buf[i];
+				}
+			} else {
+				reader.consume_mem_copy(b_reader, &mesh_data.bvh_indecies[0], bvh_indecies_buf_byte_size) or_return;
+			}
 		}
 		
 		// -- Bvh nodes Buffer    - Type: [^]geo.BvhNode     | Size: MeshHeader.num_bvh_nodes * size_of(geo.BvhNode)		
@@ -252,7 +338,7 @@ asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -
 
 
 	assert(len(meshes) == num_meshes);
-	assert(len(meshes) == len(model.material_ids));
+	assert(len(meshes) == len(model.material_asset_ids));
 
 	model.meshes = meshes[:];
 
@@ -260,7 +346,7 @@ asset_model_read_v1 :: proc(b_reader : ^$T, common_hdr : IriAssetCommonHeader) -
 	return model, true,
 }
 
-asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset, write_flags : WriteFlags) -> (ok : bool) {
+asset_model_write_to_file :: proc(filepath : string, model : ^AssetModel, write_flags : AssetWriteFlags) -> (ok : bool) {
 
 	log_errors : bool = .LogErrors in write_flags;
 
@@ -268,11 +354,11 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 		return false;
 	}
 
-	assert(model.asset_id != AssetUUID_INVALID);		
+	assert(model.asset_id != AssetID_NONE);		
 	assert(len(model.meshes) > 0);
-	assert(len(model.meshes) == len(model.material_ids));
+	assert(len(model.meshes) == len(model.material_asset_ids));
 
-	file_exists_already := validate_write_filepath(filepath, log_errors) or_return;
+	file_exists_already := is_valid_write_filepath(filepath, log_errors) or_return;
 
 	if file_exists_already && .OverwriteExisting not_in write_flags {
 		if log_errors do log.errorf("IriAsset: Failed to write asset file, 'OverwriteExisting' flag is not set and file already exists. Path: {}", filepath);
@@ -295,21 +381,16 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 
 	// Common Header
 	{
-		asset_flags : IriAssetFlags = ASSET_FLAGS_NONE;
+		
+		hdr : AssetFileCommonHeader = create_common_header(AssetType.Model, model.asset_id);
 
-		if len(model.asset_alias) > 0 {
-			asset_flags += IriAssetFlags{.HasAlias};
-		}
-
-		hdr : IriAssetCommonHeader = create_common_header(AssetType.Model, model.asset_id, MODEL_ASSET_CURRENT_VERSION, asset_flags);
-
-		written_bytes , write_err := os.write_ptr(file, &hdr, size_of(IriAssetCommonHeader));
-		is_no_write_error(write_err, filepath, log_errors) or_return;		
+		written_bytes , write_err := os.write_ptr(file, &hdr, size_of(AssetFileCommonHeader));
+		check_write_error(write_err, filepath, log_errors) or_return;		
 
 		alias, has_alias := string_to_asset_string128(model.asset_alias); 
 
-		alias_written_bytes, alias_write_err := os.write_ptr(file, &alias, size_of(IriAssetString128));
-		is_no_write_error(alias_write_err, filepath, log_errors) or_return;
+		alias_written_bytes, alias_write_err := os.write_ptr(file, &alias, size_of(AssetFileString128));
+		check_write_error(alias_write_err, filepath, log_errors) or_return;
 	}
 
 
@@ -368,7 +449,7 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 
 	// Model Header
 	{
-		model_hdr : ModelAssetHeader_v1;	
+		model_hdr : AssetModelHeader_v1;	
 		
 		model_hdr.num_meshes     = cast(u32)num_valid_submeshes;
 		model_hdr.offsets_byte_size = cast(u64)model_hdr.num_meshes * size_of(u64);
@@ -379,22 +460,22 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 		model_hdr.transform_scale 		 = model.transform.scale;
 		model_hdr.transform_orientation  = model.transform.orientation;
 		
-		written_bytes , write_err := os.write_ptr(file, &model_hdr, size_of(ModelAssetHeader_v1));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
+		written_bytes , write_err := os.write_ptr(file, &model_hdr, size_of(AssetModelHeader_v1));
+		check_write_error(write_err, filepath, log_errors) or_return;
 	}
 
 	model_name, model_has_name := string_to_asset_string64(model.name);
 	{
-		written_bytes , write_err := os.write_ptr(file, &model_name, size_of(IriAssetString64));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
+		written_bytes , write_err := os.write_ptr(file, &model_name, size_of(AssetFileString64));
+		check_write_error(write_err, filepath, log_errors) or_return;
 	}
 
 
 	// =====
 
-	current_file_byte_offset : u64 = size_of(IriAssetCommonHeader) + size_of(IriAssetString128) + size_of(ModelAssetHeader_v1) + size_of(IriAssetString64);
+	current_file_byte_offset : u64 = size_of(AssetFileCommonHeader) + size_of(AssetFileString128) + size_of(AssetModelHeader_v1) + size_of(AssetFileString64);
 
-	expected_material_ids_byte_size : u64 = cast(u64)(size_of(AssetUUID) * num_valid_submeshes);
+	expected_material_ids_byte_size : u64 = cast(u64)(size_of(AssetID) * num_valid_submeshes);
 	actual_material_ids_byte_size : u64 = 0;
 
 	// Write Material IDs
@@ -403,8 +484,8 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 		if !submesh_is_valid[i]{
 			continue;
 		}
-		written_bytes , write_err := os.write_ptr(file, &model.material_ids[i], size_of(AssetUUID));
-		is_no_write_error(write_err, filepath, log_errors) or_return;
+		written_bytes , write_err := os.write_ptr(file, &model.material_asset_ids[i], size_of(AssetID));
+		check_write_error(write_err, filepath, log_errors) or_return;
 
 		actual_material_ids_byte_size += cast(u64)written_bytes;
 	}
@@ -424,7 +505,7 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 	submesh_file_offsets : []u64 = make_slice([]u64, num_valid_submeshes, context.temp_allocator);
 	{
 		written_bytes , write_err := os.write_ptr(file, &submesh_file_offsets[0], submeshes_file_offsets_byte_size);
-		is_no_write_error(write_err, filepath, log_errors) or_return;
+		check_write_error(write_err, filepath, log_errors) or_return;
 	}
 
 
@@ -446,12 +527,17 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 
 		mesh_data := model.meshes[i];
 
+		write_indecies_as_u16 : bool = false;
+
+		if mesh_data.num_vertecies < cast(u32)c.UINT16_MAX {
+			write_indecies_as_u16 = true;
+		}
 
 		// -- SubMesh Info --
 		{
-			info_buf_size : int = size_of(MeshAssetHeader);
+			info_buf_size : int = size_of(AssetMeshHeader);
 
-			submesh_info := MeshAssetHeader {
+			submesh_info := AssetMeshHeader {
 				vertex_data_layout = mesh_data.vertex_data_layout,
 				
 				num_indecies  = mesh_data.num_indecies,
@@ -464,35 +550,57 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 				transform_position    = mesh_data.transform.position,
 				transform_scale       = mesh_data.transform.scale,
 				transform_orientation = mesh_data.transform.orientation,
+
+				indecies_stored_as_u16 = cast(b8)write_indecies_as_u16,
 			}
 
 			buf_written_bytes , buf_write_err := os.write_ptr(file, &submesh_info, info_buf_size);
-			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_write_err, filepath, log_errors) or_return;
 
 			submesh_byte_size += cast(u64)info_buf_size;
 		}
 
 		// -- Mesh Name --
 		{
-			name_buf_size : int = size_of(IriAssetString64);
+			name_buf_size : int = size_of(AssetFileString64);
 			mesh_name_64, has_name := string_to_asset_string64(mesh_data.name);
 
 			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_name_64, name_buf_size);
-			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_write_err, filepath, log_errors) or_return;
 			submesh_byte_size += cast(u64)name_buf_size;
 		}
 
 		// -- Indecies -- 
-		// @Note: we currently only support u32 indecies but we may want to compress it to u16 for file storage if possible
 		{
 
-			indecie_elem_size   : int = size_of(u32);
-			indecies_buf_size   : int = cast(int)mesh_data.num_indecies * indecie_elem_size; 
+			num_indecies : int = cast(int)mesh_data.num_indecies;
+
+			indecie_elem_size  : int = write_indecies_as_u16 ? size_of(u16) : size_of(u32);
+			indecies_buf_size   : int = num_indecies * indecie_elem_size;
+
+			if write_indecies_as_u16 {
+
+				temp_u16_buf : []u16 = make_slice([]u16, num_indecies, context.allocator);
+				defer delete_slice(temp_u16_buf);
+
+				for i in 0..<num_indecies{
+					assert(mesh_data.indecies[i] < cast(u32)c.UINT16_MAX);
+
+					temp_u16_buf[i] = cast(u16)mesh_data.indecies[i];
+				}
+
+				buf_written_bytes , buf_write_err := os.write_ptr(file, &temp_u16_buf[0], indecies_buf_size);
+				check_write_error(buf_write_err, filepath, log_errors) or_return;
+
+
+			} else {
+				
+				buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.indecies[0], indecies_buf_size);
+				check_write_error(buf_write_err, filepath, log_errors) or_return;
+				
+			}
 			
-			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.indecies[0], indecies_buf_size);
-			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
-			
-			submesh_byte_size += cast(u64)indecies_buf_size;		
+			submesh_byte_size += cast(u64)indecies_buf_size;
 		}
 
 		// -- Positions -- 
@@ -501,7 +609,7 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 			position_buf_size   : int = cast(int)mesh_data.num_vertecies * position_elem_size;
 			
 			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.positions[0], position_buf_size);
-			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_write_err, filepath, log_errors) or_return;
 
 			submesh_byte_size += cast(u64)position_buf_size;
 		}
@@ -512,19 +620,37 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 			vert_data_buf_size  : int = cast(int)mesh_data.num_vertecies * vert_data_elem_size; 
 
 			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.vertex_data[0], vert_data_buf_size);
-			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_write_err, filepath, log_errors) or_return;
 
 			submesh_byte_size += cast(u64)vert_data_buf_size;
 		}
 
 		// -- Bvh Indecies data --
-		{
-			bvh_indecie_elem_size   : int = size_of(u32);
-			bvh_indecies_buf_size   : int = cast(int)mesh_data.num_indecies * bvh_indecie_elem_size; 
-			
+		{	
 
-			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.bvh_indecies[0], bvh_indecies_buf_size);
-			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+			num_indecies : int = cast(int)mesh_data.num_indecies;
+
+			bvh_indecie_elem_size   : int = write_indecies_as_u16 ? size_of(u16) : size_of(u32);
+			bvh_indecies_buf_size   : int = num_indecies * bvh_indecie_elem_size;
+			
+			if write_indecies_as_u16 {
+				temp_u16_buf : []u16 = make_slice([]u16, num_indecies, context.allocator);
+				defer delete_slice(temp_u16_buf);
+
+				for i in 0..<num_indecies{
+					assert(mesh_data.bvh_indecies[i] < cast(u32)c.UINT16_MAX);
+
+					temp_u16_buf[i] = cast(u16)mesh_data.bvh_indecies[i];
+				}
+
+				buf_written_bytes , buf_write_err := os.write_ptr(file, &temp_u16_buf[0], bvh_indecies_buf_size);
+				check_write_error(buf_write_err, filepath, log_errors) or_return;
+
+			} else {
+
+				buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.bvh_indecies[0], bvh_indecies_buf_size);
+				check_write_error(buf_write_err, filepath, log_errors) or_return;
+			}
 
 			submesh_byte_size += cast(u64)bvh_indecies_buf_size;
 		}
@@ -535,7 +661,7 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 			bvh_node_buf_size   : int = cast(int)mesh_data.bvh_num_nodes * bvh_node_elem_size; 
 			
 			buf_written_bytes , buf_write_err := os.write_ptr(file, &mesh_data.bvh_nodes[0], bvh_node_buf_size);
-			is_no_write_error(buf_write_err, filepath, log_errors) or_return;
+			check_write_error(buf_write_err, filepath, log_errors) or_return;
 
 			submesh_byte_size += cast(u64)bvh_node_buf_size;		
 		}
@@ -548,8 +674,6 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 	} // End Submeshes loop.
 
 
-	// TODO: does write_at() truncate everything after it ??.
-
 	// Write Submesh File Offsets
 	{
 		// Write Submesh Offsets.
@@ -559,7 +683,7 @@ asset_model_write_to_file :: proc(filepath : string, model : ^iricom.ModelAsset,
 		mem.copy(&file_offsets_bytes[0], &submesh_file_offsets[0], submeshes_file_offsets_byte_size);
 
 		written_bytes , write_err := os.write_at(file, file_offsets_bytes, cast(i64)submeshes_file_offsets_begin_byte);
-		is_no_write_error(write_err, filepath, log_errors) or_return;
+		check_write_error(write_err, filepath, log_errors) or_return;
 	}
 
 	return true;

@@ -27,4 +27,7 @@ PerformanceCounters :: struct {
     shadowmap_pass_drawcalls : u32,
     shadowmap_pass_num_rendered_shadowmaps : u32,
     shadowmap_pass_num_pipeline_switches : u32,
+
+
+    material_counters : MaterialsPerfCounters,
 }

@@ -7,8 +7,6 @@ import iria "iriasset"
 
 import "odinary:platformly"
 
-
-
 get_project_path :: proc() -> string {
 	return engine.project_path;
 }
@@ -192,7 +190,7 @@ project_contents_contains_path :: proc(path : string) -> (cleaned_absolute_path 
 	return abs_path, true;
 }
 
-// Rename a named file. Works on directories but expects old_path and new_path are of same named file type. aka: Cannot rename a directory to a file!
+// Rename a named file. Works on directories but expects old_path and new_path to be of same named file type. aka: Cannot rename a directory to a file!
 project_rename_named_file :: proc(old_path : string, new_path : string){
 
 	_old_path, contains_old := project_contents_contains_path(old_path);
@@ -222,7 +220,7 @@ project_rename_named_file :: proc(old_path : string, new_path : string){
 
 	is_file_scope: if old_is_file {
 
-		asset_uuid, asset_type, is_asset_file := iria.is_valid_asset_file(_old_path);
+		_, _, is_asset_file := iria.read_asset_header_info_from_path(_old_path);
 
 		rename_err := os.rename(_old_path, _new_path);
 		if rename_err != os.ERROR_NONE {
@@ -272,7 +270,7 @@ project_delete_named_file :: proc(path : string) {
 
 	is_file_scope: if is_file {
 
-		asset_uuid, asset_type, is_asset_file := iria.is_valid_asset_file(abs_path);
+		asset_id, _, is_valid_asset_file := iria.read_asset_header_info_from_path(abs_path);
 
 		rem_err := os.remove(abs_path);
 		if rem_err != os.ERROR_NONE {
@@ -281,11 +279,10 @@ project_delete_named_file :: proc(path : string) {
 			return;
 		}
 
-		if is_asset_file {
+		if is_valid_asset_file {
 			
 			asset_manager := engine.asset_manager;
-			asset_manager_unregister_entry(asset_manager, asset_uuid, asset_type);
-
+			asset_manager_unregister_asset(asset_manager, asset_id);
 		}
 		return;
 	}
@@ -330,7 +327,6 @@ project_get_relative_path :: proc(abs_path : string, allocator := context.alloca
 	}
 
 	return rel_path, true;
-
 }
 
 // Given a relative path (from the project directory) get the absolute path. 
@@ -347,4 +343,26 @@ project_get_absolute_path :: proc(rel_path : string, allocator := context.alloca
 	}
 
 	return abs_path, true;
+}
+
+
+// make sure a path is absolute and run clean on it. Uses context.temp_allocator
+clean_path_absolute :: proc(path : string) -> (clean_path : string, ok : bool) {
+	
+	abs_path := path;
+
+	if !os.is_absolute_path(path) {
+		
+		abs_path, osErr := os.get_absolute_path(path, context.temp_allocator);
+		if osErr != os.ERROR_NONE {
+			return "",false;
+		}
+	}
+	
+	cleaned_path, alloc_err := os.clean_path(abs_path, context.temp_allocator);
+	if alloc_err != nil {
+		return "",false;
+	}
+
+	return cleaned_path, true;
 }

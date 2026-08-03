@@ -1,5 +1,10 @@
 package iricom
 
+// =========================================================================================================
+// @Note: Any engine package can import 'iricom' but 'iricom' itself can _Not_ import other Engine packages! 
+// =========================================================================================================
+
+
 import "core:hash"
 import "core:strings"
 
@@ -222,5 +227,6 @@ material_free_contents :: proc(mat : ^Material){
 	}
 	if len(mat.name) > 0 {
 		delete(mat.name);
+		mat.name = "";
 	}
 }

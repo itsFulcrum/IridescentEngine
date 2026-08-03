@@ -352,7 +352,7 @@ setup_imgui_style :: proc(){
 	style.Colors[imgui.Col.TableRowBgAlt]          		= imgui.Vec4{0.15, 0.14, 0.17, 1.00};
 	style.Colors[imgui.Col.TextLink]               		= imgui.Vec4{0.26, 0.59, 0.98, 1.00};
 	style.Colors[imgui.Col.TextSelectedBg]         		= imgui.Vec4{0.26, 0.50, 0.78, 0.35};
-	style.Colors[imgui.Col.DragDropTarget]         		= imgui.Vec4{0.86, 0.02, 0.77, 1.00};
+	style.Colors[imgui.Col.DragDropTarget]         		= imgui.Vec4{0.71, 0.61, 0.21, 1.00};
 	style.Colors[imgui.Col.NavCursor]              		= imgui.Vec4{0.77, 0.30, 0.09, 1.00};
 	style.Colors[imgui.Col.NavWindowingHighlight]  		= imgui.Vec4{1.00, 1.00, 1.00, 0.70};
 	style.Colors[imgui.Col.NavWindowingDimBg]      		= imgui.Vec4{0.80, 0.80, 0.80, 0.20};

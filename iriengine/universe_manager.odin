@@ -93,6 +93,7 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
 			}
 
 			entity_flags = ecs.entity_infos.flags[entity.id];
+			
 
 			// We do this here for EVERY Drawable before we start culling out any.
 			if ._Internal_ForceUpdate in entity_flags {
@@ -515,7 +516,9 @@ universe_update_matrix_buffer :: proc(gpu_device : ^sdl.GPUDevice, universe : ^U
 			ent_flags := ecs.entity_infos.flags[entity.id];
 			draw_flags := drawables.draw_instance[drawable_index].flags;
 
-			if .IsStatic in draw_flags && ._Internal_ForceUpdate not_in ent_flags {
+			can_skip : bool = ._Internal_ForceUpdate not_in ent_flags && ._Internal_ReuploadMatrixGPU not_in draw_flags;
+
+			if .IsStatic in draw_flags && can_skip {
 				continue;
 			}
 			

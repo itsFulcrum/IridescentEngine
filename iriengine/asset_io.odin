@@ -17,199 +17,232 @@ import iria   "iriasset"
 
 
 // @Note:
-// - load ops load from asset_uuid expecting asset_uuid to point to a valid filepath in the project.
-// - store ops expect the asset to already exist on disk and will overwrite the file. They dont take filepath as input but expect uuid of asset to point to a file.
-// - write ops write to a filepath and may generate a new uuids for an asset if path doesn't exist yet.
+// - load  ops: load from asset_id expecting the asset file it belongs to to exist inside the project.
+// - store ops: take a runtime type and an Optional store_filepath. They convert into a Serialisable Asset Type. If the Runtime Type came with an existing AssetID it will overwrite the existing Asset File with the new Data.
+// 	 			If The runtime type does not Have en existing AssetID, it is expected that the store filepath is provided with the function call otherwise it fail, A new AssetID will be Generated.
+// - make ops: create a new asset and store it into the provided directory
 
-asset_io_load_scene_collection_asset :: proc(asset_manager : ^AssetManager, asset_uuid : AssetUUID) -> (collection : ^iria.SceneCollectionAsset, ok : bool) {
+
+asset_io_load_model_asset :: proc(asset_manager : ^AssetManager, mesh_manager : ^MeshManager, asset_id : AssetID) -> (runtime_handle : AssetHandleModel, ok : bool) {
 	
 	IRI_PROFILE_PROCEDURE()
 
-	path := asset_manager_get_absolute_filepath(asset_manager, asset_uuid, expected_type = .SceneCollection) or_return;
+	if model_handle, exists := asset_manager.model_handles[asset_id]; exists {
 
-	collection = iria.asset_scene_collection_read_from_path(path) or_return;
+		model_handle.ref_count += 1;
+		asset_manager.model_handles[asset_id] = model_handle;
 
-	return collection, true;
-}
-
-asset_io_load_mesh_asset_id :: proc(asset_manager : ^AssetManager, mesh_manager : ^MeshManager, asset_uuid : AssetUUID) -> (mesh_id : MeshID, ok : bool) {
-	
-	IRI_PROFILE_PROCEDURE()
-
-	// check if its loaded already
-	if m_id, exists := mesh_manager_get_id_from_asset_uuid(mesh_manager, asset_uuid); exists == true {
-		return m_id, true;
+		return model_handle.runtime_handle, true;
 	}
 
-	mesh_id = -1;
 
-	path := asset_manager_get_absolute_filepath(asset_manager, asset_uuid, expected_type = .Mesh) or_return;
+	path := asset_manager_get_absolute_filepath(asset_manager, asset_id, expected_type = .Model) or_return;
 
-	mesh_data := iria.asset_mesh_read_from_path(path) or_return;
-	defer free_mesh_data(mesh_data);
+	asset_model := iria.asset_model_read_from_path(path) or_return;
+	defer iria.asset_model_free(asset_model);
 
-	if mesh_data.bvh_num_nodes == 0 {
-		
-		// Generate bvh and write back to file.
+	num_primitives : int = len(asset_model.meshes);
 
-		num_split_planes : u32 = BVH_NUM_SPLIT_PLANES;
-		max_tree_depth   : u32 = BVH_MAX_TREE_DEPTH;
-		bvh_info := geo.bvh_build_bottom_level(mesh_data.positions, size_of([3]f32), mesh_data.indecies, cast(uint)mesh_data.num_indecies, num_split_planes, max_tree_depth);
+	engine_assert(num_primitives == len(asset_model.material_asset_ids));
 
-		mesh_data.bvh_num_nodes = cast(u32)len(bvh_info.nodes);
-		mesh_data.bvh_indecies 	= cast([^]u32)&bvh_info.indecies[0];
-		mesh_data.bvh_nodes 	= cast([^]geo.BvhNode)&bvh_info.nodes[0];
+	model_runtime_handle := AssetHandleModel{
+		mesh_ids 		    = make_slice([]MeshID, num_primitives, context.allocator),
+		material_asset_ids  = make_slice([]AssetID, num_primitives, context.allocator),
+	}
 
-		write_back_flags := iria.WriteFlags{.LogErrors, .OverwriteExisting};
-		write_back_ok := iria.asset_mesh_write_to_file(path, mesh_data, write_back_flags);
-		if ! write_back_ok {
-			log.errorf("Failed to write asset back to path after updating it to new asset version (2) with bvh. {}", path);
+	mem.copy(&model_runtime_handle.material_asset_ids[0], &asset_model.material_asset_ids[0], num_primitives * size_of(AssetID));
+
+	
+	gpu_device := get_gpu_device();
+	
+	for &mesh_data, mesh_index in asset_model.meshes {
+
+		mesh_id := mesh_manager_add_mesh(mesh_manager, gpu_device, mesh_data)
+
+		model_runtime_handle.mesh_ids[mesh_index] = mesh_id;
+
+		if mesh_id == MeshID_INVALID {
+			log.warnf("Failed to add mesh data to mesh manager");
 		}
 	}
 
-	gpu_device := get_gpu_device();
-	mesh_id = mesh_manager_add_mesh(mesh_manager, gpu_device, mesh_data);
-	
-	if mesh_id == -1 {
-		log.errorf("Failed to register mesh data from asset. {}", path);
-		return -1, false;
+	asset_load_handle := AssetLoadHandleModel {
+		runtime_handle = model_runtime_handle,
+		ref_count = 1,
 	}
 
-	return mesh_id, true;
+	asset_manager.model_handles[asset_id] = asset_load_handle;
+
+	if load_handle, exists := asset_manager.model_handles[asset_id]; exists{
+		return load_handle.runtime_handle, true;
+	}
+
+	return;
 }
 
+asset_io_return_model_asset :: proc(asset_manager : ^AssetManager, mesh_manager : ^MeshManager, asset_id : AssetID) {
 
-// asset_io_load_model_asset_id :: proc(asset_manager : ^AssetManager, mesh_manager : ^MeshManager, asset_uuid : AssetUUID) -> (mesh_id : MeshID, ok : bool) {
-	
-// 	IRI_PROFILE_PROCEDURE()
+	if load_handle, exists := asset_manager.model_handles[asset_id]; exists {
 
-// 	// check if its loaded already
-// 	if m_id, exists := mesh_manager_get_id_from_asset_uuid(mesh_manager, asset_uuid); exists == true {
-// 		return m_id, true;
-// 	}
+		load_handle.ref_count -= 1;
 
-// 	mesh_id = -1;
+		if load_handle.ref_count <= 0 {
 
-// 	path := asset_manager_get_absolute_filepath(asset_manager, asset_uuid, expected_type = .Mesh) or_return;
+			gpu_device := get_gpu_device();
 
-// 	mesh_data := iria.asset_mesh_read_from_path(path) or_return;
-// 	defer free_mesh_data(mesh_data);
+			runtime_handle := &load_handle.runtime_handle;
 
-// 	if mesh_data.bvh_num_nodes == 0 {
-		
-// 		// Generate bvh and write back to file.
+			for i in 0..<len(runtime_handle.mesh_ids) {
+				mesh_manager_remove_mesh(mesh_manager, gpu_device, &runtime_handle.mesh_ids[i]);
+			}
+			
+			delete_slice(runtime_handle.mesh_ids);	
+			delete_slice(runtime_handle.material_asset_ids);	
 
-// 		num_split_planes : u32 = BVH_NUM_SPLIT_PLANES;
-// 		max_tree_depth   : u32 = BVH_MAX_TREE_DEPTH;
-// 		bvh_info := geo.bvh_build_bottom_level(mesh_data.positions, size_of([3]f32), mesh_data.indecies, cast(uint)mesh_data.num_indecies, num_split_planes, max_tree_depth);
+			delete_key(&asset_manager.model_handles, asset_id);
+		} else {
 
-// 		mesh_data.bvh_num_nodes = cast(u32)len(bvh_info.nodes);
-// 		mesh_data.bvh_indecies 	= cast([^]u32)&bvh_info.indecies[0];
-// 		mesh_data.bvh_nodes 	= cast([^]geo.BvhNode)&bvh_info.nodes[0];
+			asset_manager.model_handles[asset_id] = load_handle;
+		}
+	}
+}
 
-// 		write_back_flags := iria.WriteFlags{.LogErrors, .OverwriteExisting};
-// 		write_back_ok := iria.asset_mesh_write_to_file(path, mesh_data, write_back_flags);
-// 		if ! write_back_ok {
-// 			log.errorf("Failed to write asset back to path after updating it to new asset version (2) with bvh. {}", path);
-// 		}
-// 	}
-
-// 	gpu_device := get_gpu_device();
-// 	mesh_id = mesh_manager_add_mesh(mesh_manager, gpu_device, mesh_data);
-	
-// 	if mesh_id == -1 {
-// 		log.errorf("Failed to register mesh data from asset. {}", path);
-// 		return -1, false;
-// 	}
-
-// 	return mesh_id, true;
-// }
-
-asset_io_load_material_asset_id :: proc(asset_manager : ^AssetManager, material_manager : ^MaterialManager, asset_uuid : AssetUUID) -> (mat_id : MaterialID, ok : bool){
+asset_io_load_material_asset :: proc(asset_manager : ^AssetManager, material_manager : ^MaterialManager, asset_id : AssetID) -> (runtime_handle : AssetHandleMaterial, ok : bool) {
 	IRI_PROFILE_PROCEDURE()
 
-	if m_id, exists := material_manager_get_id_from_asset_uuid(material_manager, asset_uuid); exists == true {
-		return m_id, true;
+	if mat_handle, exists := asset_manager.material_handles[asset_id]; exists {
+
+		mat_handle.ref_count += 1;
+		asset_manager.material_handles[asset_id] = mat_handle;
+
+		return mat_handle.runtime_handle, true;
 	}
 
 
-	mat_id = material_manager.fallback_material;
+	mat_id : MaterialID = material_manager.fallback_material;
 
-	path := asset_manager_get_absolute_filepath(asset_manager, asset_uuid, expected_type = .Material) or_return;
+	path := asset_manager_get_absolute_filepath(asset_manager, asset_id, expected_type = .Material) or_return;
 
 
 	//mat_asset := iria.asset_material_read_from_path(path);
 	mat_asset, asset_ok := iria.asset_material_read_from_path(path);
 	if !asset_ok {
-		return mat_id, false;
+		return runtime_handle, false;
 	}
 	// @Note: we dont free contents of mat asset which is just the name string of the material, 
 	// because we can just keep the name string allocation. but asset itself needs to be freed.
-	free(mat_asset); 
+	defer iria.asset_material_free(mat_asset); 
 
-	mat_id = material_manager_add_material_asset(material_manager, mat_asset);
+	mat_id = material_manager_add_material(material_manager, &mat_asset.mat);
 	
 	if mat_id == 0 {
-		return mat_id, false,
+		return runtime_handle, false,
 	}
 
-	return mat_id, true;
+
+	load_handle := AssetLoadHandleMaterial {
+		runtime_handle = AssetHandleMaterial{
+			mat_id = mat_id,
+		},
+		ref_count = 1,
+	}
+
+	asset_manager.material_handles[asset_id] = load_handle;
+
+	return load_handle.runtime_handle, true;
 }
 
-asset_io_load_light_asset :: proc(asset_manager : ^AssetManager, asset_uuid : iria.AssetUUID) -> (asset : iria.LightAsset, ok : bool) {
+asset_io_return_material_asset :: proc(asset_manager : ^AssetManager, mat_manager : ^MaterialManager, asset_id : AssetID){
+
+	if load_handle, exists := asset_manager.material_handles[asset_id]; exists {
+
+		load_handle.ref_count -= 1;
+
+		if load_handle.ref_count <= 0 {
+
+			gpu_device := get_gpu_device();
+
+
+			material_manager_remove_material(mat_manager, &load_handle.runtime_handle.mat_id);
+
+			delete_key(&asset_manager.material_handles, asset_id);
+		} else {
+
+			asset_manager.material_handles[asset_id] = load_handle;
+		}
+	}
+}
+
+asset_io_load_light_asset :: proc(asset_manager : ^AssetManager, asset_id : AssetID) -> (asset : iria.AssetLight, ok : bool) {
 	IRI_PROFILE_PROCEDURE()
-	abs_path := asset_manager_get_absolute_filepath(asset_manager, asset_uuid, .Light) or_return;
+	abs_path := asset_manager_get_absolute_filepath(asset_manager, asset_id, .Light) or_return;
 
 	return iria.asset_light_read_from_path(abs_path);
 }
 
-asset_io_load_universe_asset :: proc(asset_uuid : iria.AssetUUID) -> (universe : ^Universe, ok : bool) {
+asset_io_load_universe_asset :: proc(asset_manager : ^AssetManager, asset_id : AssetID) -> (universe_asset : ^iria.AssetUniverse, ok : bool) {
+	
 	IRI_PROFILE_PROCEDURE()
 
-	asset_manager := engine.asset_manager;
+	path : string = asset_manager_get_absolute_filepath(asset_manager, asset_id, .Universe) or_return;
 
-	path : string = asset_manager_get_absolute_filepath(asset_manager, asset_uuid, .Universe) or_return;
-
-	uni_asset := iria.asset_universe_read_from_path(path) or_return;
-	defer iria.free_universe_asset(uni_asset);
-
-
-	uni : ^Universe = new(Universe);
-	universe_init(uni, uni_asset);
-	
-	return uni, true;
+	return iria.asset_universe_read_from_path(path);
 }
 
-@(private="package")
-asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe : ^Universe, write_flags : AssetWriteFlags) -> bool {
+asset_io_store_universe :: proc(universe : ^Universe, full_store_filepath : string = "") -> (ok : bool){
+	
 	IRI_PROFILE_PROCEDURE()
 
 	engine_assert(universe != nil);
 
-	log_errors : bool = .LogErrors in write_flags;
-	can_overwrite_existing : bool = .OverwriteExisting in write_flags;
+	asset_manager := engine.asset_manager;
 
-	file_exists := iria.validate_write_filepath(full_store_filepath, log_errors) or_return;
-	
-	if file_exists && !can_overwrite_existing {
-		if log_errors do log.warnf("Faild to export asset file {}. 'OverwriteExisting' flag is not set and file already exists", full_store_filepath);
-		return false;
+	write_flags := iria.AssetWriteFlags{.LogErrors, .OverwriteExisting}
+
+	uni_asset : ^iria.AssetUniverse = new(iria.AssetUniverse);
+	defer iria.asset_universe_free(uni_asset);
+
+
+	store_filepath, asset_exists_already := asset_manager_get_absolute_filepath(asset_manager, universe.asset_id, .Universe, context.temp_allocator);
+	if !asset_exists_already {
+		//log.errorf("Failed to save universe '{}' to file. UUID is not registered with asset manager", universe.name);
+
+		_ = iria.is_valid_write_filepath(full_store_filepath, can_overwrite_existing = false, log_errors = true) or_return;
+
+		write_flags -= iria.AssetWriteFlags{.OverwriteExisting}; // if creating a new asset we are not allowed to overwrite others.
+
+		store_filepath = full_store_filepath;
+		
+		uni_asset.asset_id = iria.generate_new_asset_id();
+		
+	} else {
+
+		// Existing Asset, Keep AssetID and Alias.
+		
+		uni_asset.asset_id = universe.asset_id;
+		
+		asset_entry, asset_exists := asset_manager_get_entry(asset_manager, universe.asset_id)
+		engine_assert(asset_exists);
+
+		if len(asset_entry.alias) > 0 {
+			uni_asset.asset_alias = strings.clone(asset_entry.alias, context.allocator);
+		}
+
+		// Here we can and want to overwrite existing. but for sanity check we still check if path is still valid.
+		_ = iria.is_valid_write_filepath(store_filepath, can_overwrite_existing = true, log_errors = true) or_return;
 	}
 
-	// create the UniverseAsset structure from the universe.
 
-	uni_asset : ^iria.UniverseAsset = new(iria.UniverseAsset);
-	defer iria.free_universe_asset(uni_asset);
 
-	uni_asset.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Universe, log_errors) or_return;
 
 	uni_asset.tag = universe.tag;
+
 
 	if len(universe.name) > 0 {
 		uni_asset.name = strings.clone(universe.name, context.allocator);
 	}
 
-	uni_asset.settings = iria.UniverseAssetSettings {
+	uni_asset.settings = iria.AssetUniverseSettings {
 		shadow_cascade_near_far_scale 	= universe.shadow_cascade_near_far_scale,
 		shadow_cascade_side_scale 		= universe.shadow_cascade_side_scale,
 		shadow_cascade_split_1 			= universe.shadow_cascade_split_1,
@@ -219,11 +252,11 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 	    do_frustum_culling 				= cast(b8)universe.do_frustum_culling,
 	}
 
-	entity_info_to_entity_info_packed :: proc(ent_info : EntityInfo) -> iria.EntityInfoPacked {
+	entity_info_to_asset_entity_info :: proc(ent_info : EntityInfo) -> iria.AssetEntityInfo {
 
 		info_flags := ent_info.flags - iricom.ENTITY_FLAGS_NOSTORE;
 
-		return iria.EntityInfoPacked {
+		return iria.AssetEntityInfo {
 			flags 		= info_flags,
 			comp_set 	= ent_info.component_set,
 			tag 		= ent_info.tag,
@@ -236,10 +269,10 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 	uni_asset.active_camera_entity = -1;
 	uni_asset.active_skybox_entity = -1;
 
-	ent_infos : [dynamic]iria.EntityInfoPacked;
+	ent_infos : [dynamic]iria.AssetEntityInfo;
 	ent_trans : [dynamic]Transform;
 	ent_names : [dynamic]string;
-	ent_comp_indexes : [dynamic]iria.CompIndexes;
+	ent_comp_indexes : [dynamic]iria.AssetComponentIndexes;
 
 	// Temporary map to map EntityIDs to new indexes into sparse arrays above.
 	// @Note: not sure we actually need this map though, we can probably do everything in place
@@ -256,14 +289,14 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 		
 		ent_id : EntID = cast(EntID)entity_id;
 
-		info_packed := entity_info_to_entity_info_packed(info);
+		info_packed := entity_info_to_asset_entity_info(info);
 
 		new_index : int = len(ent_infos);
 		ent_index_map[ent_id] = new_index;
 
 		// because components are stored sparcely without any unused spots, we should be able to reuse the indexes.
 		// since we also just linearly load the components data as they are in the ecs's arrays.
-		comp_indexes := iria.CompIndexes{
+		comp_indexes := iria.AssetComponentIndexes{
 			camera_index   = ecs.component_indexes[.Camera][ent_id],
 			skybox_index   = ecs.component_indexes[.Skybox][ent_id],
 			light_index    = ecs.component_indexes[.Light][ent_id],
@@ -305,7 +338,7 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 
 	// Camera
 	if num_camera_components > 0 {
-		uni_asset.camera_comp_data = make_slice([]iricom.CameraCompData, num_camera_components, context.allocator);
+		uni_asset.camera_comp_data = make_slice([]iria.AssetCameraComponentData, num_camera_components, context.allocator);
 
 		for &comp, index in ecs.camera_components {
 			uni_asset.camera_comp_data[index] = comp.data;
@@ -313,116 +346,116 @@ asset_io_write_universe_to_file :: proc(full_store_filepath : string, universe :
 	}
 	// Skybox
 	if num_skybox_components > 0 {
-		uni_asset.skybox_comp_data = make_slice([]iricom.SkyboxCompData, num_skybox_components, context.allocator);
+		uni_asset.skybox_comp_data = make_slice([]iria.AssetSkyboxComponentData, num_skybox_components, context.allocator);
 
 		for &comp, index in ecs.skybox_components {
 			uni_asset.skybox_comp_data[index] = comp.data;
 		}
 	}
+
 	// Lights
 	if num_light_components > 0 {
-		uni_asset.light_comp_data = make_slice([]iria.LightAsset, num_light_components, context.allocator);
+		uni_asset.light_comp_data = make_slice([]iria.AssetLightComponentData, num_light_components, context.allocator);
 
 		for &comp, index in ecs.light_components {
-			uni_asset.light_comp_data[index] = comp_light_create_light_asset(&comp);
+			uni_asset.light_comp_data[index] = comp_light_create_asset_light_component_data(&comp);
 		}
 	}
 
 	if num_collider_components > 0 {
-		uni_asset.collider_comp_data = make_slice([]iria.ColliderCompData, num_collider_components, context.allocator);
+		uni_asset.collider_comp_data = make_slice([]iria.AssetColliderComponentData, num_collider_components, context.allocator);
 
 		for &comp, index in ecs.collider_components {
-			uni_asset.collider_comp_data[index] = comp_collider_create_collider_comp_data(&comp);
+			uni_asset.collider_comp_data[index] = comp_collider_create_asset_collider_component_data(&comp);
 		}
 	}
 
-	// Mesh renderers & drawables
-	// @Note: The way this works is that we store drawables that meshrenderers are referencing
+	// Mesh renderers & drawables / Draw Group
+
+	// @Note: The way this works is that we store all Draw Groups that meshrenderers are referencing
 	// consecutively in the file. We then only need to store per meshrenderer an offset into this
-	// array and a number of how many starting at that offset belong to this meshrenderer.
-	// this also has the benifit that on each store of the universe file, we sort the drawables
-	// array by meshrenderers which generally should be good for cache locatilty when rendering.
+	// array and a number of how many draw groups belong to this meshrenderer.
+	// This also has the benifit that on each store of the universe file, we sort the Draw Groups and Draw Primitves inside them
+	// by meshrenderers which generally should be good for cache locatilty when rendering.
 
 	if num_meshren_components > 0 {
 		
 		num_drawables : int = len(ecs.drawables);
 		
-		uni_asset.meshren_comp_data = make_slice([]iria.MeshRendererCompData, num_meshren_components, context.allocator);
-
-		drawable_assets_array : [dynamic]iria.DrawableAsset;
+		uni_asset.meshren_comp_data = make_slice([]iria.AssetMeshRendererComponentData, num_meshren_components, context.allocator);
 		
+		drawable_group_array : [dynamic]iria.AssetDrawGroup;		
+
 		material_manager := engine.material_manager;
-		mesh_manager := engine.mesh_manager;
+		mesh_manager 	 := engine.mesh_manager;
 
 		for &comp, comp_index in ecs.mesh_renderer_components {
 
-			// number of drawables this meshrendere refers to.
-			num_drawable_indexes : u32 = cast(u32)len(comp.drawable_indexes);
 
-			comp_data := iria.MeshRendererCompData{
-				num_drawable_assets = num_drawable_indexes,
-				array_offset = cast(u32)len(drawable_assets_array),
+			comp_num_draw_groups : u32 = cast(u32)len(comp.draw_groups)
+
+			comp_data := iria.AssetMeshRendererComponentData{
+				num_draw_groups = comp_num_draw_groups,
+				array_offset = comp_num_draw_groups > 0 ? cast(u32)len(drawable_group_array) : 0,
 			}
+
 			uni_asset.meshren_comp_data[comp_index] = comp_data;
 
-			if num_drawable_indexes > 0 {
-				for drawable_index in comp.drawable_indexes {
-					draw_instance := &ecs.drawables.draw_instance[drawable_index];
+			if comp_num_draw_groups > 0 {
 				
-					drawable_asset := iria.DrawableAsset{
-						draw_instance_asset = iria.DrawInstanceAsset{
-							flags   	= draw_instance.flags,
-							// @Speed: these are slow right now. O(n) lookups
-							mesh_uuid = mesh_manager_get_asset_uuid_from_mesh_id(mesh_manager, draw_instance.mesh_id) or_else AssetUUID_INVALID,
-							mat_uuid  = material_manager_get_asset_uuid_from_material_id(material_manager, draw_instance.mat_id) or_else AssetUUID_INVALID,
-						},
-						transform = draw_instance.transform,
+				for &group, group_index in comp.draw_groups {
+
+					group_num_drawables : int = len(group.drawable_index_refs);
+					
+					asset_drawable_group := iria.AssetDrawGroup{
+						asset_id = group.asset_id,
+						asset_drawable_type = group.asset_drawable_type,
+						num_primitives = cast(u32)group_num_drawables,
 					}
 
-					drawable_asset.draw_instance_asset.flags -= iricom.DRAW_INSTANCE_FLAGS_INTERNAL;
-	
-					append(&drawable_assets_array, drawable_asset);
+					asset_drawable_group.flags   	    = make_slice([]iricom.DrawInstanceFlags,group_num_drawables,context.allocator)
+					asset_drawable_group.transforms     = make_slice([]geo.Transform, group_num_drawables, context.allocator)
+					asset_drawable_group.material_asset_ids = make_slice([]iria.AssetID, group_num_drawables, context.allocator)
+
+					for k in 0..<group_num_drawables {
+
+						draw_index_ref := &group.drawable_index_refs[k];
+						drawable_index := draw_index_ref.drawable_index;
+						draw_instance := &ecs.drawables.draw_instance[drawable_index];
+
+						asset_drawable_group.flags[k] 			= draw_instance.flags
+						asset_drawable_group.transforms[k] 		= draw_instance.transform;
+						asset_drawable_group.material_asset_ids[k] 	= draw_index_ref.material_asset_id;
+					}
+
+
+					append(&drawable_group_array,  asset_drawable_group);
 				}
+
+
+
+				engine_assert(int(comp_data.array_offset + comp_data.num_draw_groups) == len(drawable_group_array));
 			}
-
-			engine_assert(int(comp_data.array_offset + comp_data.num_drawable_assets) == len(drawable_assets_array));
 		}
 
-		engine_assert(len(drawable_assets_array) == len(ecs.drawables));
-
-
-		if len(drawable_assets_array) > 0 {
-			uni_asset.drawable_assets_array = drawable_assets_array[:];
+		if len(drawable_group_array) > 0 {
+			uni_asset.drawable_groups = drawable_group_array[:];
 		}
 
 	}
 
-	iria.asset_universe_write_to_file(full_store_filepath, uni_asset, write_flags) or_return;
+	iria.asset_universe_write_to_file(store_filepath, uni_asset, write_flags) or_return;
 
-	asset_manager_register_asset_file_by_path(engine.asset_manager, full_store_filepath);
 
-	return true;
-}
-
-asset_io_store_universe :: proc(universe : ^Universe) -> (ok : bool){
-	IRI_PROFILE_PROCEDURE()
-
-	engine_assert(universe != nil);
-
-	manager := engine.asset_manager;
-
-	abs_path, entry_exists := asset_manager_get_absolute_filepath(manager, universe.asset_uuid, .Universe, context.temp_allocator);
-	if !entry_exists {
-		log.errorf("Failed to save universe '{}' to file. UUID is not registered with asset manager", universe.name);
-		return false;
+	if !asset_exists_already {
+		asset_manager_register_asset_file_by_path(asset_manager, store_filepath);
 	}
 
-	asset_io_write_universe_to_file(abs_path, universe, AssetWriteFlags{.LogErrors, .OverwriteExisting}) or_return;
 
 	return true;
 }
 
-asset_io_create_new_universe_asset :: proc(directory_path : string, name : string = "NewUniverse") -> (universe : ^Universe, ok : bool) {
+asset_io_make_universe_asset :: proc(directory_path : string, name : string = "NewUniverse") -> (universe : ^Universe, ok : bool) {
 	
 	log_errors : bool = true;
 
@@ -435,7 +468,6 @@ asset_io_create_new_universe_asset :: proc(directory_path : string, name : strin
 	if !os.is_directory(directory_path){
 		return;
 	}
-	// TODO: Could to validation if a universe of same name already exists.
 
 	store_filename, osErr := os.join_filename(name, iria.FILE_EXTENTION_NAME, context.temp_allocator);
 	engine_assert(osErr == os.ERROR_NONE);
@@ -445,76 +477,31 @@ asset_io_create_new_universe_asset :: proc(directory_path : string, name : strin
 	
 	full_store_filepath = clean_path_absolute(full_store_filepath) or_return;
 
-	file_exists := iria.validate_write_filepath(full_store_filepath, log_errors) or_return;
-	if file_exists {
-		log.errorf("Cannot Create a new universe in directory because a file with same name already exists. {}", full_store_filepath);
-		return nil, false;
-	}
-
-	universe = new(Universe, context.allocator);
-	universe_init(universe);
+	file_exists := iria.is_valid_write_filepath(full_store_filepath, can_overwrite_existing = false, log_errors = log_errors) or_return;
+	
+	// Initialize new Universe
+	new_universe : ^Universe = new(Universe, context.allocator);
+	universe_init(new_universe);
 
 	defer if !ok {
-		universe_deinit(universe);
-		free(universe);
-		universe = nil;
+		universe_deinit(new_universe);
+		free(new_universe);
+		new_universe = nil;
 	}
 
-	cam_ent := ecs_entity_create(&universe.ecs, "Camera");
-	cam_comp, err1 := ecs_add_component(&universe.ecs, cam_ent, CameraComponent);
+	cam_ent := ecs_entity_create(&new_universe.ecs, "Camera");
+	cam_comp, err1 := ecs_add_component(&new_universe.ecs, cam_ent, CameraComponent);
 	comp_camera_set_as_active(cam_comp);
 
-	sky_ent := ecs_entity_create(&universe.ecs, "Skysphere");
-	sky_comp, err2 := ecs_add_component(&universe.ecs, sky_ent, SkyboxComponent);
+	sky_ent := ecs_entity_create(&new_universe.ecs, "Skysphere");
+	sky_comp, err2 := ecs_add_component(&new_universe.ecs, sky_ent, SkyboxComponent);
 	comp_skybox_set_as_active(sky_comp);
 
-	universe.name = strings.clone(name, context.allocator);
+	new_universe.name = strings.clone(name, context.allocator);
 
-	asset_io_write_universe_to_file(full_store_filepath, universe, AssetWriteFlags{.LogErrors}) or_return;
+	new_universe.asset_id = AssetID_NONE // Explicitly no asset yet.
 
-	return universe, true;
-}
+	asset_io_store_universe(new_universe, full_store_filepath) or_return;
 
-
-// return the first found universe asset that matches tag and name. return false if non is found.
-// use a tag of 0 to only search by name. 
-// use empty string ("") to only search by tag. 
-asset_manager_find_universe_asset_by_tag_and_name :: proc(tag : u32, name : string) -> (asset_uuid : iria.AssetUUID, found : bool){
-
-	IRI_PROFILE_PROCEDURE()
-
-	manager := engine.asset_manager;
-	
-	use_tag  : bool = tag > 0;
-	use_name : bool = name != "";
-
-	if !use_tag && use_name {
-		// search only by name
-		
-		for &uni_info in manager.universe_infos {
-			if uni_info.uni_name == name {
-				return uni_info.asset_uuid, true;
-			}
-		}
-
-	}  else if use_tag && !use_name {
-		// search only by tag
-
-		for &uni_info in manager.universe_infos {
-			if uni_info.uni_tag == tag {
-				return uni_info.asset_uuid, true;
-			}
-		}
-
-	} else if use_tag && use_name {
-		// search with tag and name
-
-		for &uni_info in manager.universe_infos {
-			if uni_info.uni_tag == tag && uni_info.uni_name == name {
-				return uni_info.asset_uuid, true;
-			}
-		}
-	}
-
-	return AssetUUID_INVALID, false;
+	return new_universe, true;
 }

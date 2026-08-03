@@ -1,5 +1,10 @@
 package iricom
 
+// =========================================================================================================
+// @Note: Any engine package can import 'iricom' but 'iricom' itself can _Not_ import other Engine packages! 
+// =========================================================================================================
+
+
 LightType :: enum u8 { 
 	DIRECTIONAL = 0,
 	POINT = 1,

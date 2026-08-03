@@ -12,18 +12,14 @@ import sdl "vendor:sdl3"
 
 import "odinary:mathy"
 import geo "odinary:geometry"
-import "odinary:geometry/meshopt"
 
 
 // @Note: MeshID's are runtime stable IDs, not between executable sessions.
 // They are also stable between loaded universes. 
 // So two loaded universes can refer to the same MeshID.
 MeshID :: iricom.MeshID   // == i32
+MeshID_INVALID :: -1;
 
-DRAW_INSTANCE_FLAGS_DEFAULT :: iricom.DRAW_INSTANCE_FLAGS_DEFAULT
-DrawInstanceFlags 	:: iricom.DrawInstanceFlags
-DrawInstanceFlag 	:: iricom.DrawInstanceFlag
-DrawInstance 		:: iricom.DrawInstance
 
 MeshGPUData :: struct{
 	num_indecies  	: u32,
@@ -58,35 +54,15 @@ Mesh :: struct {
 	transform : Transform, 
 }
 
-// @Note: Struct replicated on GPU
-// Similar to MeshGlobalBufferInfo but less info and we use this one to upload to gpu.
-DrawableGlobalBufferInfo :: struct #align(16) {
-	bl_bvh_root_offset      : u32, // offset into global bl bvh buffer
-	global_indecies_offset  : u32, // offset into global index buffer
-	global_vertecies_offset : u32, // offset into global vertex buffer
-	_ : u32, // Padding. Maybe material ID ? but then we need material type too. or we say only pbr materials are supported for gpu raytracing.
-}
-
-Drawable :: struct {
-	entity : Entity,
-	draw_instance  : DrawInstance,
-	world_aabb : geo.AABB, // world space aabb
-	world_oobb : geo.OBB,  // world space obb
-	world_mat  : matrix[4,4]f32, // Local to World
-	inv_world_mat  : matrix[4,4]f32, // World to Local
-	global_buf_info : DrawableGlobalBufferInfo,
-	prev_physics_world_transform : Transform, // World Transform of the previous physics state!
-}
 
 MeshManager :: struct {
 	num_loaded_meshes : u32,
 	meshes : #soa[dynamic]Mesh,
-	id_map : map[AssetUUID]MeshID,
 
 	global_vertecies 	: [dynamic][4]f32,
+	global_bl_bvh_nodes : [dynamic]geo.BvhNode, // 'bottom level acceleration structure'
 	// @Note: the indecies are reorderd for pupose of bvh traversal and not optimally chache friendly as what meshoptimizer would give us.
 	global_indecies  	: [dynamic]u32,
-	global_bl_bvh_nodes : [dynamic]geo.BvhNode, // 'bottom level acceleration structure'
 
 	global_vertecies_freelist 		: [dynamic]MultiFreelistEntry,
 	global_indecies_freelist  	 	: [dynamic]MultiFreelistEntry,
@@ -96,6 +72,8 @@ MeshManager :: struct {
 	global_vertecies_buf 			: BasicGPUBuffer,
 	global_indecies_buf 			: BasicGPUBuffer,
 }
+
+
 
 @(private="package")
 mesh_manager_init :: proc(manager : ^MeshManager){
@@ -110,9 +88,16 @@ mesh_manager_deinit :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice)
 
 		if mesh.gpu_data.index_buf != nil {
 			sdl.ReleaseGPUBuffer(gpu_device, mesh.gpu_data.index_buf);
+			mesh.gpu_data.index_buf = nil;
 		}
 		if mesh.gpu_data.vertex_buf != nil {
 			sdl.ReleaseGPUBuffer(gpu_device, mesh.gpu_data.vertex_buf);
+			mesh.gpu_data.vertex_buf = nil;
+		}
+
+		if mesh.gpu_data.vertex_pos_buf != nil {
+			sdl.ReleaseGPUBuffer(gpu_device, mesh.gpu_data.vertex_pos_buf);
+			mesh.gpu_data.vertex_pos_buf = nil;
 		}
 
 		if len(mesh.name) > 0 {
@@ -121,7 +106,7 @@ mesh_manager_deinit :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevice)
 	}
 
 	delete_soa(manager.meshes);
-	delete_map(manager.id_map);
+	//delete_map(manager.id_map);
 
 	delete(manager.global_vertecies);
 	delete(manager.global_indecies);
@@ -252,17 +237,6 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 	engine_assert(mesh_data != nil);
 
 	id : MeshID = -1;
-
-	// @Note: invalid uuid is allowed! 
-	// We generally want this system to allow storing meshes that are not stored with an
-	// asset_uuid but perhaps be programatically generated
-	invalid_uuid : bool = mesh_data.asset_uuid == AssetUUID_INVALID;
-
-	if !invalid_uuid {
-		if mesh_data.asset_uuid in manager.id_map {
-			return manager.id_map[mesh_data.asset_uuid];
-		}
-	}
 	
 	gpu_mesh_data, upload_ok := mesh_manager_upload_mesh_data_to_gpu(gpu_device, mesh_data);
 	
@@ -296,7 +270,7 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 				free_entry := &manager.global_bl_bvh_nodes_freelist[free_list_entry_index];
 				mesh.global_buf_info.bvh_nodes_offset = cast(u32)free_entry.index;
 				
-				upload_info_update_min_max(&manager.global_bl_bvh_nodes_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_nodes);
+				upload_info_update_min_max(&manager.global_bl_bvh_nodes_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_nodes -1);
 
 				mem.copy_non_overlapping(&manager.global_bl_bvh_nodes[free_entry.index], &mesh_data.bvh_nodes[0], num_nodes * size_of(geo.BvhNode));
 				multi_freelist_consume_entry_amount(&manager.global_bl_bvh_nodes_freelist, free_list_entry_index, cast(u64)num_nodes);
@@ -312,6 +286,8 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 
 				upload_info_update_min_max(&manager.global_bl_bvh_nodes_buf.upload_info, curr_len, now_last_index);
 			}
+
+			engine_assert(cast(int)mesh.global_buf_info.bvh_nodes_offset + cast(int)mesh.global_buf_info.num_bvh_nodes <= len(manager.global_bl_bvh_nodes))
 		}
 
 		// Blas Indecies 
@@ -325,7 +301,7 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 				free_entry := &manager.global_indecies_freelist[free_list_entry_index];
 				mesh.global_buf_info.indecies_offset = cast(u32)free_entry.index;
 
-				upload_info_update_min_max(&manager.global_indecies_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_indecies);
+				upload_info_update_min_max(&manager.global_indecies_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_indecies -1);
 
 				mem.copy_non_overlapping(&manager.global_indecies[free_entry.index], &mesh_data.bvh_indecies[0], num_indecies * size_of(u32));
 				multi_freelist_consume_entry_amount(&manager.global_indecies_freelist, free_list_entry_index, cast(u64)num_indecies);
@@ -340,9 +316,11 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 
 				upload_info_update_min_max(&manager.global_indecies_buf.upload_info, curr_len, now_last_index);
 			}
+			
+			engine_assert(cast(int)mesh.global_buf_info.indecies_offset + cast(int)mesh.global_buf_info.num_indecies <= len(manager.global_indecies))
 		}
 
-		// Blas Vertecies 
+		// Global Vertecies 
 		{
 			num_vertecies : int = cast(int)mesh_data.num_vertecies;
 			mesh.global_buf_info.num_vertecies = cast(u32)num_vertecies;
@@ -354,7 +332,7 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 				free_entry := &manager.global_vertecies_freelist[free_list_entry_index];
 				mesh.global_buf_info.vertecies_offset = cast(u32)free_entry.index;
 
-				upload_info_update_min_max(&manager.global_vertecies_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_vertecies);
+				upload_info_update_min_max(&manager.global_vertecies_buf.upload_info, int(free_entry.index), int(free_entry.index) + num_vertecies -1);
 
 				mem.copy_non_overlapping(&manager.global_vertecies[free_entry.index], &mesh_data.positions[0], num_vertecies * vertex_position_byte_size);
 				multi_freelist_consume_entry_amount(&manager.global_vertecies_freelist, free_list_entry_index, cast(u64)num_vertecies);
@@ -372,6 +350,8 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 
 				upload_info_update_min_max(&manager.global_vertecies_buf.upload_info, curr_len, now_last_index);
 			}
+			
+			engine_assert(cast(int)mesh.global_buf_info.vertecies_offset + cast(int)mesh.global_buf_info.num_vertecies <= len(manager.global_vertecies))
 		}
 	}
 
@@ -388,14 +368,13 @@ mesh_manager_add_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDevic
 		append_soa(&manager.meshes, mesh);
 		id = cast(MeshID)(len(manager.meshes) -1);
 	} else {
+		if len(manager.meshes[free_spot].name) > 0 {
+			delete_string(manager.meshes[free_spot].name); // Should not be neccesary here!
+		}
+
 		manager.meshes[free_spot] = mesh;
 		id = cast(MeshID)free_spot;
 	}
-
-	if !invalid_uuid {
-		manager.id_map[mesh_data.asset_uuid] = id;
-	}
-
 
 	manager.num_loaded_meshes += 1;
 
@@ -417,23 +396,23 @@ mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDe
 	}
 
 	if len(manager.meshes[index].name) > 0 {
-		delete(manager.meshes[index].name);
+		delete_string(manager.meshes[index].name);
+		manager.meshes[index].name = "";
 	}
 
 	if manager.meshes[index].gpu_data.index_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.index_buf);
+		manager.meshes[index].gpu_data.index_buf = nil;
 	}
-
-	// if manager.meshes[index].gpu_data.shadow_index_buf != nil {
-	// 	sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.shadow_index_buf);
-	// }
 
 	if manager.meshes[index].gpu_data.vertex_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.vertex_buf);
+		manager.meshes[index].gpu_data.vertex_buf = nil;
 	}
 
 	if manager.meshes[index].gpu_data.vertex_pos_buf != nil {
 		sdl.ReleaseGPUBuffer(gpu_device, manager.meshes[index].gpu_data.vertex_pos_buf);
+		manager.meshes[index].gpu_data.vertex_pos_buf = nil;
 	}
 
 
@@ -443,19 +422,22 @@ mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDe
 		index  = cast(u64)global_buf_info.bvh_nodes_offset,
 		amount = cast(u64)global_buf_info.num_bvh_nodes,
 	}
-	multi_freelist_add_or_merge_entry(&manager.global_bl_bvh_nodes_freelist, global_bl_bvh_nodes_freelist_entry);
+	multi_freelist_add_entry(&manager.global_bl_bvh_nodes_freelist, global_bl_bvh_nodes_freelist_entry);
 
 	global_vertecies_freelist_entry := MultiFreelistEntry{
 		index  = cast(u64)global_buf_info.vertecies_offset,
 		amount = cast(u64)global_buf_info.num_vertecies,
 	}
-	multi_freelist_add_or_merge_entry(&manager.global_vertecies_freelist, global_vertecies_freelist_entry);
+	multi_freelist_add_entry(&manager.global_vertecies_freelist, global_vertecies_freelist_entry);
 
 	global_indecies_freelist_entry := MultiFreelistEntry{
 		index  = cast(u64)global_buf_info.indecies_offset,
 		amount = cast(u64)global_buf_info.num_indecies,
 	}
-	multi_freelist_add_or_merge_entry(&manager.global_indecies_freelist, global_indecies_freelist_entry);
+	multi_freelist_add_entry(&manager.global_indecies_freelist, global_indecies_freelist_entry);
+
+
+	manager.meshes[index].global_buf_info = MeshGlobalBufferInfo{};
 
 
 	last : int = len(manager.meshes) -1;
@@ -463,23 +445,18 @@ mesh_manager_remove_mesh :: proc(manager : ^MeshManager, gpu_device : ^sdl.GPUDe
 		// if last entry, pop it of. there is no built in pop for #soa but this should be the same
 		ordered_remove_soa(&manager.meshes, last);
 	} else {
-		manager.meshes[index] = Mesh{}; // Zero memory.
+
+		// @Note: Assigning directly seems to be a compiler bug. 
+		// -> manager.meshes[index] = Mesh{} -> this causes fields after index to be modified
+		zero := Mesh{};
+		manager.meshes[index] = zero;
 	}
 
 
 	manager.num_loaded_meshes -= 1;
 
-	// @Note: For now we will do the slow thing and iterate the entire id map to see if id exists there (it may not).
-	// we could also store the UUID yet again inside Mesh structure when loading to make this faster but more memory..
-	for key, value in manager.id_map {
-		if value == mesh_id {
-			delete_key(&manager.id_map, key);
-			break;
-		}  
-	}
-
 	// invalidate callers id
-	id^ = -1;
+	 id^ = -1;
 
 	return;
 }
@@ -619,27 +596,6 @@ mesh_manager_is_valid_id :: proc(manager : ^MeshManager, mesh_id: MeshID) -> boo
 	return manager.meshes.used[index];
 }
 
-@(private="package")
-mesh_manager_get_id_from_asset_uuid :: proc(manager : ^MeshManager, asset_uuid : AssetUUID) -> (id : MeshID, exists : bool) {
-	return manager.id_map[asset_uuid];
-}
-
-// @Speed. this is slow..
-@(private="package")
-mesh_manager_get_asset_uuid_from_mesh_id :: proc(manager : ^MeshManager, mesh_id : MeshID) -> (asset_uuid : AssetUUID, exists : bool){
-	
-	if !mesh_manager_is_valid_id(manager, mesh_id) {
-		return AssetUUID_INVALID, false;
-	}
-
-	for a_uuid, m_id in manager.id_map {
-		if m_id == mesh_id {
-			return a_uuid, true;
-		}
-	}
-
-	return AssetUUID_INVALID, false;
-}
 
 @(private="package")
 mesh_manager_get_mesh_gpu_data :: proc(manager : ^MeshManager, id : MeshID) -> ^MeshGPUData{
@@ -686,7 +642,7 @@ mesh_manager_get_original_transform :: proc(manager :^MeshManager, id : MeshID) 
 
 // get a copy of the mesh name allocated using context.temp_allocator.
 // returns empty string on failure.
-mesh_get_mesh_name :: proc(id : MeshID) -> string {
+mesh_get_mesh_name :: proc(id : MeshID, allocator := context.temp_allocator) -> string {
 	manager :^MeshManager = engine.mesh_manager;
 
 
@@ -694,5 +650,5 @@ mesh_get_mesh_name :: proc(id : MeshID) -> string {
 		return "";
 	}
 
-	return strings.clone(manager.meshes[id].name, context.temp_allocator);
+	return strings.clone(manager.meshes[id].name, allocator);
 }

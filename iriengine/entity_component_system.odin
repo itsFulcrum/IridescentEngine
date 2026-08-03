@@ -1276,20 +1276,25 @@ ecs_drawable_remove :: proc(ecs : ^ECData, index : ^int) {
 
 	// Since drawable already stores the entity to which it belongs.
 	// we know which meshrenderer component holds the index to the swaped item
-	// so we just have to iterate the meshrenderer's indexes list
+	// so we just have to iterate the meshrenderer's 'draw_groups' 
 	// to find the index that pointed to the last element which is now removed.
 
 	mesh_renderer, ecsErr := ecs_get_component(ecs, ecs.drawables[_index].entity, MeshRendererComponent);
 	engine_assert(mesh_renderer != nil);
 
 	found : bool = false;
-	for i in 0..<len(mesh_renderer.drawable_indexes) {
+	
+	draw_group_loop: for i in 0..<len(mesh_renderer.draw_groups){
 
-		if mesh_renderer.drawable_indexes[i] == last {
+		group := &mesh_renderer.draw_groups[i];
 
-			mesh_renderer.drawable_indexes[i] = _index;
-			found = true;
-			break;
+		for j in 0..<len(group.drawable_index_refs){
+
+			if group.drawable_index_refs[j].drawable_index == last {
+				group.drawable_index_refs[j].drawable_index = _index;
+				found = true;
+				break draw_group_loop;
+			}
 		}
 	}
 

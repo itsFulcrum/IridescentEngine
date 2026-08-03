@@ -56,7 +56,7 @@ input_action_add_binding :: proc(input_action : ^InputAction, binding_variant : 
 
 	if processors != nil && len(processors) > 0 {
 
-		engine_assert(len(processors) < cast(int)c.UINT16_MAX, "InputSystem: A maximum of 65000 InputProcessor's are allowed per input binding.. What are you doing anyway?");
+		engine_assert(len(processors) < cast(int)c.UINT16_MAX, "InputSystem: A maximum of 64000 InputProcessor's are allowed per input binding.. What are you doing anyway?");
 		engine_assert(len(input_action.processors) < cast(int)c.UINT16_MAX)
 
 		offset : u16 = cast(u16)len(input_action.processors);
@@ -191,7 +191,7 @@ input_action_remove_processors :: proc(input_action : ^InputAction, processor_re
 }
 
 // Swap two processors of an input_action. Swap indexes a and b should be absolute indexes into the actions processors array.
-// This is usefull for when implementing a gui for input actions and reordering processors.
+// This is usefull for implementing a gui for input actions and reordering processors.
 input_action_swap_processors :: proc(input_action : ^InputAction, swap_index_a : int, swap_index_b : int){
 
 	// @Note: 

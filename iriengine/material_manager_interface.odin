@@ -2,17 +2,8 @@ package iri
 
 import "core:strings"
 
-material_manager_get_num_loaded :: proc() -> uint {
-	return cast(uint)len(engine.material_manager.materials);
-}
 
-material_register_asset :: proc(material : ^MaterialAsset) -> MaterialID {
-	manager := engine.material_manager;
-	return material_manager_add_material_asset(manager, material)
-}
-
-material_register :: proc(material : ^Material) -> MaterialID {
-	
+material_register :: proc(material : ^Material) -> MaterialID {	
 	manager := engine.material_manager;
 	return material_manager_add_material(manager, material)
 }
@@ -22,18 +13,9 @@ material_unregister :: proc(mat_id : ^MaterialID) {
 	material_manager_remove_material(manager, mat_id);
 }
 
-
 material_exists :: proc(mat_id : MaterialID) -> bool {
 	manager := engine.material_manager;
 	return material_manager_is_valid_id(manager, mat_id)
-}
-
-material_is_asset_loaded :: proc(asset_uuid : AssetUUID) -> bool {
-	return material_manager_is_asset_loaded(engine.material_manager, asset_uuid);
-}
-
-material_get_id_from_asset_uuid :: proc(asset_uuid : AssetUUID) -> (mat_id : MaterialID, exists : bool) {
-	return material_manager_get_id_from_asset_uuid(engine.material_manager, asset_uuid);
 }
 
 // Returns Default fallback material if id is invalid. pointers are only valid for as long as no other materials are added or removed.
@@ -48,8 +30,10 @@ material_get_by_id :: proc(mat_id : MaterialID) -> ^Material {
 	return material_manager_get_material_unsafe(manager, mat_id)
 }
 
-// returns a copy of the material name string allocated using context.temp_allocator.
-material_get_name :: proc(mat_id : MaterialID) -> string {
+// Returns a clone of the material name string allocated using context.temp_allocator.
+// Returns empty string if Id is invalid.
+material_get_name_clone :: proc(mat_id : MaterialID, allocator := context.temp_allocator) -> string {
+	
 	manager := engine.material_manager;
 
 	if !material_exists(mat_id) {
@@ -57,15 +41,11 @@ material_get_name :: proc(mat_id : MaterialID) -> string {
 	}
 
 	mat := material_get_by_id(mat_id)
-	return strings.clone(mat.name, context.temp_allocator);
-}
-
-material_load_from_asset_uuid :: proc(asset_uuid : AssetUUID) -> (mat_id : MaterialID, ok : bool){
-	return asset_io_load_material_asset_id(engine.asset_manager, engine.material_manager, asset_uuid)
+	return strings.clone(mat.name, allocator);
 }
 
 
-// Push changes made to a material variants so they get uploaded to the gpu next frame.
+// Push changes made to a material variant so they get uploaded to the gpu next frame.
 // If changes were made on the render_technique like changing the blend mode, use 'material_push_technique_changes' instead.
 material_push_changes :: proc(mat_id : MaterialID) {
 	manager := engine.material_manager;
@@ -73,7 +53,7 @@ material_push_changes :: proc(mat_id : MaterialID) {
 }
 
 // @Note: This can be very slow !! Might rebuild pipelines and recompile shaders!
-// Avoid changing material technique at runtime, create sperare materials instead.
+// Avoid changing material technique at runtime, create speparate materials instead.
 // this also calls normal 'material_push_changes' so no need to call that also.
 material_push_technique_changes :: proc(mat_id : MaterialID) {
 	manager := engine.material_manager;

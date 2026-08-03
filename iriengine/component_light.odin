@@ -92,17 +92,28 @@ comp_light_push_changes :: proc(comp : ^LightComponent){
 }
 
 
-comp_light_init_from_light_asset_uuid :: proc(comp : ^LightComponent, asset_uuid : AssetUUID, apply_transforms_to_entity : bool = true){
+comp_light_init_from_light_asset_id :: proc(comp : ^LightComponent, asset_id : AssetID, apply_transforms_to_entity : bool = true){
+	
 	asset_manager := engine.asset_manager;
-	asset , asset_ok := asset_io_load_light_asset(asset_manager, asset_uuid);
+	asset , asset_ok := asset_io_load_light_asset(asset_manager, asset_id);
 	if !asset_ok {
 		return;
 	}
 
-	comp_light_init_from_light_asset(comp, asset, apply_transforms_to_entity);
+	comp_light_init_from_asset_light(comp, asset, apply_transforms_to_entity);
 }
 
-comp_light_init_from_light_asset :: proc(comp : ^LightComponent, asset : iria.LightAsset, apply_transforms_to_entity : bool = true){
+comp_light_init_from_asset_light :: proc(comp : ^LightComponent, asset : iria.AssetLight, apply_transforms_to_entity : bool = true){
+
+
+	if apply_transforms_to_entity {
+		transform_comp := ecs_get_transform(comp.parent_ecs, comp.entity);
+		transform_comp.transform = asset.transform;
+	}
+
+	comp_light_init_from_asset_light_component_data(comp, asset.comp_data); // this pushes light changes
+}
+comp_light_init_from_asset_light_component_data :: proc(comp : ^LightComponent, asset : iria.AssetLightComponentData){
 
 
 	comp.color    = asset.color;
@@ -123,7 +134,7 @@ comp_light_init_from_light_asset :: proc(comp : ^LightComponent, asset : iria.Li
 
 		point_variant := PointLightVariant{};
 		point_variant.shadowmap_resolution = asset.shadowmap_res_0;
-		point_variant.draw_cone = iria.LightAssetFlag.DebugDrawFrustum in asset.flags;
+		point_variant.draw_cone = iria.AssetLightFlag.DebugDrawFrustum in asset.flags;
 		
 		comp.variant = point_variant;
 
@@ -133,13 +144,8 @@ comp_light_init_from_light_asset :: proc(comp : ^LightComponent, asset : iria.Li
 		spot_variant.shadowmap_resolution = asset.shadowmap_res_0;
 		spot_variant.inner_cone_angle_deg = linalg.to_degrees(min(asset.spot_inner_cone_angle_radians, asset.spot_outer_cone_angle_radians));
 		spot_variant.outer_cone_angle_deg = linalg.to_degrees(asset.spot_outer_cone_angle_radians);
-		spot_variant.draw_cone = iria.LightAssetFlag.DebugDrawFrustum in asset.flags;
+		spot_variant.draw_cone = iria.AssetLightFlag.DebugDrawFrustum in asset.flags;
 		comp.variant = spot_variant;
-	}
-
-	if apply_transforms_to_entity {
-		transform_comp := ecs_get_transform(comp.parent_ecs, comp.entity);
-		transform_comp.transform = asset.transform;
 	}
 
 	comp_light_push_changes(comp);
@@ -147,50 +153,48 @@ comp_light_init_from_light_asset :: proc(comp : ^LightComponent, asset : iria.Li
 
 
 // Create light asset structure from current component values.
-comp_light_create_light_asset :: proc(comp : ^LightComponent) -> iria.LightAsset {
+comp_light_create_asset_light_component_data :: proc(comp : ^LightComponent) -> iria.AssetLightComponentData {
 
-	asset := iria.LightAsset {
+	comp_data := iria.AssetLightComponentData {
 		color = comp.color,
 		strength = comp.strength,
-	}
+	}	
 
-	asset.flags = iria.LightAssetFlags{};
+
+	comp_data.flags = iria.AssetLightFlags{};
 	if comp.cast_shadows {
-		asset.flags += iria.LightAssetFlags{.CastShadows};
-	} else {
-		asset.flags -= iria.LightAssetFlags{.CastShadows};
-	}
+		comp_data.flags += iria.AssetLightFlags{.CastShadows};
+	} 
 
 	switch &v in comp.variant {
 		case DirectionalLightVariant: 	{
-			asset.type = LightType.DIRECTIONAL;
-			asset.shadowmap_res_0 = v.shadowmap_cascade_resolutions[0];
-			asset.shadowmap_res_1 = v.shadowmap_cascade_resolutions[1];
-			asset.shadowmap_res_2 = v.shadowmap_cascade_resolutions[2];
+			comp_data.type = LightType.DIRECTIONAL;
+			comp_data.shadowmap_res_0 = v.shadowmap_cascade_resolutions[0];
+			comp_data.shadowmap_res_1 = v.shadowmap_cascade_resolutions[1];
+			comp_data.shadowmap_res_2 = v.shadowmap_cascade_resolutions[2];
 		}
 		case PointLightVariant: {
-			asset.type = LightType.POINT;
-			asset.shadowmap_res_0 = v.shadowmap_resolution;
+			comp_data.type = LightType.POINT;
+			comp_data.shadowmap_res_0 = v.shadowmap_resolution;
 			if v.draw_cone {
-				asset.flags += iria.LightAssetFlags{.DebugDrawFrustum};
+				comp_data.flags += iria.AssetLightFlags{.DebugDrawFrustum};
 			}
 		}
 		case SpotLightVariant: {
-			asset.type = LightType.SPOT;
-			
-			asset.spot_inner_cone_angle_radians = linalg.to_radians(v.inner_cone_angle_deg);
-			asset.spot_outer_cone_angle_radians = linalg.to_radians(v.outer_cone_angle_deg);
-			asset.shadowmap_res_0 = v.shadowmap_resolution;
+			comp_data.type = LightType.SPOT;
+			comp_data.spot_inner_cone_angle_radians = linalg.to_radians(v.inner_cone_angle_deg);
+			comp_data.spot_outer_cone_angle_radians = linalg.to_radians(v.outer_cone_angle_deg);
+			comp_data.shadowmap_res_0 = v.shadowmap_resolution;
 			if v.draw_cone {
-				asset.flags += iria.LightAssetFlags{.DebugDrawFrustum};
+				comp_data.flags += iria.AssetLightFlags{.DebugDrawFrustum};
 			}
 		}
 	}
 
-	transform_comp := ecs_get_transform(comp.parent_ecs, comp.entity);
-	asset.transform = transform_comp.transform;
+	// transform_comp := ecs_get_transform(comp.parent_ecs, comp.entity);
+	// asset.transform = transform_comp.transform;
 
-	return asset;
+	return comp_data;
 }
 
 

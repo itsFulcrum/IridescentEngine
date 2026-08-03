@@ -26,8 +26,6 @@ BVH_MAX_TREE_DEPTH :: 32
 // producing several differnt output files from one imput file. Especially in the case of meshes.
 // Ideally the importer is never called at runtime of a distributed application.
 
-AssetWriteFlags :: iria.WriteFlags
-AssetWriteFlag  :: iria.WriteFlag
 
 AssetImportFlags :: distinct bit_set[AssetImportFlag]
 AssetImportFlag :: enum {
@@ -37,9 +35,8 @@ AssetImportFlag :: enum {
 	MeshImportMaterials,
 	MeshImportLights,
 	MeshJoinAllMeshes,				// combine all meshes into one, loses material information.
-	MeshJoinSameMaterial,			// TODO: join all meshes that share the same material. ignored if 'MeshJoinAllMeshes' is set.
+	//MeshJoinSameMaterial,			// TODO: join all meshes that share the same material. ignored if 'MeshJoinAllMeshes' is set.
 	MeshSeparateFiles,				// Store Each mesh as a separate mesh file.
-	MeshCreateCollection, 	   	   // 	
 	MeshForceVertexLayout,		   // enables forcing a vertex layout. specified by setting one of the 3 following flags.
 	MeshForceVertexLayoutMinimal,  // ignored if 'MeshForceVertexLayout' is not set.
 	MeshForceVertexLayoutStandard, // ignored if force minimal is set.
@@ -48,6 +45,9 @@ AssetImportFlag :: enum {
 
 asset_importer_import_gltf_to_project :: proc(load_path : string, store_directory_path : string, import_flags : AssetImportFlags) -> (ok : bool) {
 	
+	// TODO: 
+	// update poly library to handle mergeing of meshes and merging by material on a scene level so we dont have to deal with it in import code.
+
 	log_errors : bool = .LogErrors in import_flags;
 
 	store_dir_path_abs := clean_path_absolute(store_directory_path) or_return;
@@ -80,30 +80,16 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 	load_file_name_only := os.short_stem(load_file_name);
 
 	can_overwrite_existing : bool = .OverwriteExisting in import_flags;
-	write_flags : iria.WriteFlags = importer_iria_write_flags_from_asset_import_flags(import_flags);
+	write_flags : iria.AssetWriteFlags = importer_iria_write_flags_from_asset_import_flags(import_flags);
 
 	// @Note:
-	// we temp store the uuid of the materials we loaded and exported.
+	// we temp store the id of the materials we loaded and exported.
 	// even if exporting faild we write an Invalid ID because we need to ensure 
-	// that meshes can later reference the correct uuid
-	material_uuids : []AssetUUID = nil;
-	defer if material_uuids != nil {
-		delete(material_uuids);
+	// that meshes can later reference the correct asset_id
+	material_asset_ids : []AssetID = nil;
+	defer if material_asset_ids != nil {
+		delete(material_asset_ids);
 	}
-
-	create_collection : bool = .MeshCreateCollection in import_flags;
-
-	scene_collection : ^iria.SceneCollectionAsset = nil;
-	scene_collection_draw_insts : [dynamic]iria.DrawInstanceAsset;
-	scene_collection_lights     : [dynamic]AssetUUID;
-
-	if create_collection {
-		scene_collection = new(iria.SceneCollectionAsset, context.allocator);
-	}
-	defer if scene_collection != nil {
-		iria.free_scene_collection_asset(scene_collection);
-	}
-
 
 	// Get the full path we want to write the asset to.  "store_dir/asset_name.iria"
 	// If asset_name is empty string ("") use fallback name instead.
@@ -133,6 +119,25 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 		return full_store_filepath, exists, true;
 	}
 
+
+	lights_import: if .MeshImportLights in import_flags {
+		
+		lights_store_dir : string = store_dir_path_abs;
+
+		for &poly_light in poly_scene.lights {
+
+			light_asset := importer_create_asset_light_from_poly_LightData(&poly_light);
+
+			full_store_filepath, file_exists := get_write_filepath(lights_store_dir, poly_light.name, "NewLight", can_overwrite_existing, log_errors) or_continue;
+
+			asset_id := asset_manager_get_or_generate_asset_id(full_store_filepath, iria.AssetType.Light, log_errors) or_continue;
+
+			iria.asset_light_write_to_file(full_store_filepath, &light_asset, asset_id, write_flags) or_continue
+
+			is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
+		}
+	}
+
 	ImportMaterials: if .MeshImportMaterials in import_flags {
 
 		num_mats : int = len(poly_scene.materials);
@@ -140,39 +145,30 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 			break ImportMaterials;
 		}
 
-		material_uuids = make_slice([]AssetUUID, num_mats, context.allocator);
-
-		mats_store_dir : string = store_dir_path_abs;
-		if create_collection {
-			mats_dir_name : string = strings.join({load_file_name_only, "_Materials"},"", context.temp_allocator);
-			mats_store_dir = os.join_path({store_dir_path_abs, mats_dir_name}, context.temp_allocator) or_else store_dir_path_abs;
-
-			if !os.exists(mats_store_dir){
-				os.make_directory(mats_store_dir);
-			}
-		}
+		material_asset_ids = make_slice([]AssetID, num_mats, context.allocator);
+		mats_store_dir : string = store_dir_path_abs;		
 
 		for i in 0..<num_mats {
 
 			poly_mat := &poly_scene.materials[i];
 
 			mat := importer_create_material_from_poly_MaterialData(poly_mat);
-			// TODO we should make a generic free / deinit funciton..
+			
 			defer {
 				delete_string(mat.name);
 			}
 
 			full_store_filepath, file_exists := get_write_filepath(mats_store_dir, mat.name, "NewMaterial", can_overwrite_existing, log_errors) or_continue;
 
-			mat_asset : iria.MaterialAsset;
+			mat_asset : iria.AssetMaterial;
 			mat_asset.mat = mat;
-			mat_asset.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Material, log_errors) or_continue;
+			mat_asset.asset_id = asset_manager_get_or_generate_asset_id(full_store_filepath, iria.AssetType.Material, log_errors) or_continue;
 
 			iria.asset_material_write_to_file(full_store_filepath, &mat_asset, write_flags) or_continue
 
 			is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
 
-			material_uuids[i] = mat_asset.asset_uuid;
+			material_asset_ids[i] = mat_asset.asset_id;
 		}
 	}
 
@@ -183,26 +179,31 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 		defer poly.free_mesh(poly_combined_mesh);
 
 		mesh_data : ^MeshData = importer_make_MeshData_from_poly_MeshData(poly_combined_mesh, import_flags) or_break combined_mesh;
-		defer free_mesh_data(mesh_data);
+		defer iricom.mesh_data_free(mesh_data);
 
 		full_store_filepath, file_exists := get_write_filepath(store_dir_path_abs, mesh_data.name, "CombinedMesh", can_overwrite_existing, log_errors) or_break combined_mesh;
 		
-		mesh_data.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Mesh, log_errors) or_break combined_mesh;
+		asset_model : ^iria.AssetModel = new(iria.AssetModel, context.temp_allocator);
+		asset_model.name = mesh_data.name;
+		asset_model.asset_id = asset_manager_get_or_generate_asset_id(full_store_filepath, iria.AssetType.Model, log_errors) or_break combined_mesh;
 		
-		iria.asset_mesh_write_to_file(full_store_filepath, mesh_data, write_flags) or_break combined_mesh;
+		asset_model.meshes = {mesh_data};
 
-		if create_collection {
-			draw_asset : iria.DrawInstanceAsset;
-			draw_asset.flags     = iricom.DRAW_INSTANCE_FLAGS_DEFAULT;
-			draw_asset.mesh_uuid = mesh_data.asset_uuid;
+		if poly_combined_mesh.material_index > -1 && material_asset_ids != nil {
+			mat_asset_id := material_asset_ids[poly_combined_mesh.material_index];
+			asset_model.material_asset_ids = {mat_asset_id};
 
-			if poly_combined_mesh.material_index > -1 && material_uuids != nil {
-				draw_asset.mat_uuid = material_uuids[poly_combined_mesh.material_index];
-			}
-
-			append(&scene_collection_draw_insts, draw_asset);
+		} else {
+			asset_model.material_asset_ids = {iria.AssetID_NONE};
 		}
 
+		asset_model.aabb = geo.aabb_from_min_max_vec3(mesh_data.aabb_min, mesh_data.aabb_max);
+		asset_model.transform = geo.transform_create_identity();
+
+
+		iria.asset_model_write_to_file(full_store_filepath, asset_model, write_flags) or_break combined_mesh;
+
+		
 
 		is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
 
@@ -211,56 +212,64 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 
 		mesh_store_dir : string = store_dir_path_abs;
 
-		if create_collection {
-			mesh_dir_name : string = strings.join({load_file_name_only, "_Meshes"},"", context.temp_allocator);
-			mesh_store_dir = os.join_path({store_dir_path_abs, mesh_dir_name}, context.temp_allocator) or_else store_dir_path_abs;
-
-			if !os.exists(mesh_store_dir){
-				os.make_directory(mesh_store_dir);
-			}
-		}
 
 		if .MeshSeparateFiles in import_flags {
+			
+
+
+
 			for &poly_mesh in poly_scene.meshes {
 
 				mesh_data : ^MeshData = importer_make_MeshData_from_poly_MeshData(&poly_mesh, import_flags) or_continue;
-				defer free_mesh_data(mesh_data);
+				defer iricom.mesh_data_free(mesh_data);				
+
+				asset_model : ^iria.AssetModel = new(iria.AssetModel, context.temp_allocator);
+
+				asset_model.meshes = {mesh_data};
+
+				if poly_mesh.material_index > -1 && material_asset_ids != nil {
+					mat_asset_id := material_asset_ids[poly_mesh.material_index];
+
+					asset_model.material_asset_ids = {mat_asset_id};
+
+				} else {
+					asset_model.material_asset_ids = {AssetID_NONE};
+				}
+
+				asset_model.name = mesh_data.name;
 
 				full_store_filepath, file_exists := get_write_filepath(mesh_store_dir, mesh_data.name, "NewMesh", can_overwrite_existing, log_errors) or_break combined_mesh;
 
-				mesh_data.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Mesh, log_errors) or_continue;
+				asset_model.asset_id = asset_manager_get_or_generate_asset_id(full_store_filepath, iria.AssetType.Model, log_errors) or_continue;
 
-				iria.asset_mesh_write_to_file(full_store_filepath, mesh_data, write_flags) or_continue;
+				asset_model.aabb = geo.aabb_from_min_max_vec3(mesh_data.aabb_min, mesh_data.aabb_max);
+				asset_model.transform = geo.transform_create_identity();
 
-				if create_collection {
-					draw_asset : iria.DrawInstanceAsset;
-					draw_asset.flags     = iricom.DRAW_INSTANCE_FLAGS_DEFAULT;
-					draw_asset.mesh_uuid = mesh_data.asset_uuid;
 
-					if poly_mesh.material_index > -1 && material_uuids != nil {
-						draw_asset.mat_uuid = material_uuids[poly_mesh.material_index];
-					}
+				iria.asset_model_write_to_file(full_store_filepath, asset_model, write_flags) or_continue;
 
-					append(&scene_collection_draw_insts, draw_asset);
-				}
 
 				is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
 			}
-		} else {
+
+
+		} else { // Do not separate files.
 
 			model_filename : string = strings.join({load_file_name_only,"_Model"},"", context.temp_allocator);
 
 			full_store_filepath, file_exists := get_write_filepath(mesh_store_dir,model_filename, "NewModel", can_overwrite_existing, log_errors) or_break combined_mesh;
 
-			model : iricom.ModelAsset;
-			model.asset_id = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Model, log_errors) or_break combined_mesh;
+			model : iria.AssetModel;
+			model.asset_id = asset_manager_get_or_generate_asset_id(full_store_filepath, iria.AssetType.Model, log_errors) or_break combined_mesh;
 			//model.asset_alias = ""; // No alias yet.
+
+			model.name = strings.clone(load_file_name_only, context.temp_allocator);
 
 			model.aabb = geo.aabb_create_inverse_infinite();
 			model.transform = transform_create_identity();
 
 			submeshes : [dynamic]^MeshData;
-			submesh_mat_ids : [dynamic]AssetUUID;
+			submesh_mat_ids : [dynamic]AssetID;
 
 			for &poly_mesh in poly_scene.meshes {
 
@@ -273,101 +282,29 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 
 				append(&submeshes, mesh_data);
 
-				if poly_mesh.material_index > -1 && material_uuids != nil {
-					mat_id := material_uuids[poly_mesh.material_index];
+				if poly_mesh.material_index > -1 && material_asset_ids != nil {
+					mat_id := material_asset_ids[poly_mesh.material_index];
 					
 					append(&submesh_mat_ids, mat_id);
 				} else {
-					append(&submesh_mat_ids, AssetUUID_INVALID);
+					append(&submesh_mat_ids, AssetID_NONE);
 				}
-
-				//full_store_filepath, file_exists := get_write_filepath(mesh_store_dir, mesh_data.name, "NewMesh", can_overwrite_existing, log_errors) or_break combined_mesh;
-
-				//mesh_data.asset_uuid = asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Mesh, log_errors) or_continue;
-
-				//iria.asset_mesh_write_to_file(full_store_filepath, mesh_data, write_flags) or_continue;
-
-
-				//is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
 			}
 			
 			model.meshes = submeshes[:];
-			model.material_ids = submesh_mat_ids[:];
-
-			// TODO: support putting model into a collection ??
+			model.material_asset_ids = submesh_mat_ids[:];
 
 			iria.asset_model_write_to_file(full_store_filepath, &model, write_flags) or_break combined_mesh;
 			is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
 
 			for mesh_data in submeshes {
-				free_mesh_data(mesh_data);
+				iricom.mesh_data_free(mesh_data);
 			}
 			delete(submeshes);
 			delete(submesh_mat_ids);
 
 		}
 	}
-
-	lights_import: if .MeshImportLights in import_flags {
-
-		
-		lights_store_dir : string = store_dir_path_abs;
-
-		if create_collection {
-			lights_dir_name : string = strings.join({load_file_name_only, "_Lights"},"", context.temp_allocator);
-			lights_store_dir = os.join_path({store_dir_path_abs, lights_dir_name}, context.temp_allocator) or_else lights_store_dir;
-
-			if !os.exists(lights_store_dir){
-				os.make_directory(lights_store_dir);
-			}
-
-		}
-
-		for &poly_light in poly_scene.lights {
-
-			light_asset := importer_create_light_asset_from_poly_LightData(&poly_light);
-
-			full_store_filepath, file_exists := get_write_filepath(lights_store_dir, poly_light.name, "NewLight", can_overwrite_existing, log_errors) or_continue;
-
-			asset_uuid := asset_manager_get_or_generate_asset_uuid(full_store_filepath, iria.AssetType.Light, log_errors) or_continue;
-
-			iria.asset_light_write_to_file(full_store_filepath, &light_asset, asset_uuid, write_flags) or_continue
-			
-			if create_collection {
-				append(&scene_collection_lights, asset_uuid);
-			}
-
-			is_registered := asset_manager_register_asset_file_by_path(asset_manager, full_store_filepath);
-
-		}
-	}
-
-	collection: if create_collection {
-
-		if len(scene_collection_draw_insts) > 0 {
-			scene_collection.draw_inst_assets = scene_collection_draw_insts[:];
-		}
-
-		if len(scene_collection_lights) > 0 {
-			scene_collection.light_assets = scene_collection_lights[:];
-		}
-
-		// Filename will be   LoadFilename + "_IriCollection" + ".iria"
-		collection_filename : string = strings.join({load_file_name_only,"_SceneCollection"},"", context.temp_allocator);
-
-		collection_store_filepath, file_exists := get_write_filepath(store_dir_path_abs, collection_filename, "NewSceneCollection", can_overwrite_existing, log_errors) or_break collection;
-
-		scene_collection.asset_uuid = asset_manager_get_or_generate_asset_uuid(collection_store_filepath, iria.AssetType.SceneCollection, log_errors) or_break collection;
-
-		collection_write_ok := iria.asset_scene_collection_write_to_file(collection_store_filepath, scene_collection, write_flags);
-		if !collection_write_ok {
-			log.warnf("Failed to write Scene Collection asset to path: {}", collection_store_filepath);
-			break collection
-		}
-
-		is_registered := asset_manager_register_asset_file_by_path(asset_manager, collection_store_filepath);
-	}
-
 
 	return true;
 }
@@ -428,15 +365,15 @@ importer_encode_qtangent :: proc(normal : [3]f32, tangent : [4]f32) -> [4]f32 {
 }
 
 
-importer_iria_write_flags_from_asset_import_flags :: proc(import_flags : AssetImportFlags) -> iria.WriteFlags {
+importer_iria_write_flags_from_asset_import_flags :: proc(import_flags : AssetImportFlags) -> iria.AssetWriteFlags {
 	
-	write_flags : iria.WriteFlags = iria.WriteFlags{};
+	write_flags : iria.AssetWriteFlags = iria.AssetWriteFlags{};
 	
 	if .LogErrors in import_flags {
-		write_flags += iria.WriteFlags{.LogErrors}
+		write_flags += iria.AssetWriteFlags{.LogErrors}
 	}
 	if .OverwriteExisting in import_flags {
-		write_flags += iria.WriteFlags{.OverwriteExisting}
+		write_flags += iria.AssetWriteFlags{.OverwriteExisting}
 	}
 
 	return write_flags;
@@ -493,7 +430,7 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 	mesh_data.aabb_max = poly_mesh.aabb_max;
 	
 
-	layout : iria.VertexDataLayout = .Minimal;
+	layout : iricom.VertexDataLayout = .Minimal;
 
 	if force_layout {
 		layout = forced_layout;
@@ -736,7 +673,7 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 				normal  : [3]f32 = poly_mesh.normals[v];
 				tangent : [4]f32 = get_valid_tangent(poly_mesh, v, normal);
 
-				buf_extended[v] = iria.VertexDataExtended {
+				buf_extended[v] = VertexDataExtended {
 					qtangent    = importer_encode_qtangent(normal, tangent),
 					texcoord_0  = poly_mesh.texcoords_0 != nil ? poly_mesh.texcoords_0[v] : [2]f32{0,0},
 					texcoord_1  = poly_mesh.texcoords_1 != nil ? poly_mesh.texcoords_1[v] : [2]f32{0,0},
@@ -781,27 +718,30 @@ importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, im
 	return mesh_data, true;
 }
 
-// TODO: avoid stack copyies.
+
 @(private="package")
-importer_create_light_asset_from_poly_LightData :: proc(poly_light : ^poly.LightData) -> iria.LightAsset {
+importer_create_asset_light_from_poly_LightData :: proc(poly_light : ^poly.LightData) -> iria.AssetLight {
 
 	is_directonal : bool = poly_light.type == .DIRECTIONAL;
 	
-	light_flags := iria.LightAssetFlags{.CastShadows};
+	light_flags := iria.AssetLightFlags{.CastShadows};
 
-	light_asset := iria.LightAsset {
+	light_asset := iria.AssetLight {
 		
-		color    = poly_light.color, 
-		strength = poly_light.intensity,
-		flags 	= light_flags,
-		type = importer_get_LightType_from_poly_LightType(poly_light.type),
-		
-		spot_inner_cone_angle_radians = poly_light.spot_inner_cone_angle_radians,
-		spot_outer_cone_angle_radians = poly_light.spot_outer_cone_angle_radians,
+		comp_data = iria.AssetLightComponentData {
 
-		shadowmap_res_0 = is_directonal ? ._4096 : ._2048,
-		shadowmap_res_1 = ._2048,
-		shadowmap_res_2 = ._2048,
+			color    = poly_light.color, 
+			strength = poly_light.intensity,
+			flags 	 = light_flags,
+			type     = importer_get_LightType_from_poly_LightType(poly_light.type),
+			
+			spot_inner_cone_angle_radians = poly_light.spot_inner_cone_angle_radians,
+			spot_outer_cone_angle_radians = poly_light.spot_outer_cone_angle_radians,
+
+			shadowmap_res_0 = is_directonal ? ._4096 : ._2048,
+			shadowmap_res_1 = ._2048,
+			shadowmap_res_2 = ._2048,
+		},
 
 		transform = Transform {
 			scale 		= {1.0,1.0,1.0},
@@ -813,7 +753,6 @@ importer_create_light_asset_from_poly_LightData :: proc(poly_light : ^poly.Light
 	return light_asset;
 }
 
-// TODO: avoid stack copyies.
 @(private="package")
 importer_create_material_from_poly_MaterialData :: proc(poly_mat : ^poly.MaterialData) -> Material{
 	

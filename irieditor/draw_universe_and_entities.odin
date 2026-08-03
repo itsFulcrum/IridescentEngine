@@ -51,8 +51,6 @@ draw_universe_settings :: proc(universe: ^iri.Universe){
 	}
 
 
-
-
 }
 
 // Universe Scene View
@@ -91,9 +89,9 @@ draw_entity_list :: proc(universe: ^iri.Universe){
 
 			// @Note: we keep this static var ptr just so we can in place detect if universe changes 
 			// so we can update our rename buffer with the new name..
-			@static uni_id : iri.AssetUUID;
-			if uni_id != universe.asset_uuid {
-				uni_id = universe.asset_uuid;
+			@static uni_id : iri.AssetID;
+			if uni_id != universe.asset_id {
+				uni_id = universe.asset_id;
 				copy_string_to_buffer_null_terminate(editor.universe_rename_buf, cast(int)buf_size, universe.name);
 			}
 
@@ -534,7 +532,7 @@ draw_entity_viewer :: proc(universe: ^iri.Universe, entity : iri.Entity) {
 				light_comp, err := iri.entity_add_component(entity, iri.LightComponent, universe);
 				if light_comp != nil {
 
-					iri.comp_light_init_from_light_asset_uuid(light_comp, file_info.asset_uuid);
+					iri.comp_light_init_from_light_asset_id(light_comp, file_info.asset_id);
 				}
 
 			}
@@ -829,24 +827,6 @@ draw_component_editor_skybox :: proc (comp : ^iri.SkyboxComponent) {
 draw_component_editor_meshrenderer :: proc (comp : ^iri.MeshRendererComponent) {
 
 
-	button_remove_draw_inst_sameline :: proc(comp : ^iri.MeshRendererComponent, index : u32) -> (pressed : bool) {
-		
-		im.SameLine();
-		btn_lable := fmt_cstr("X##DrawInst{}", index);
-		
-		im.SetCursorPosX( im.GetCursorPosX() + max(0.0, im.GetContentRegionAvail().x - 30) );
-			
-		if im.Button(btn_lable, im.Vec2{30,0}) {
-			iri.comp_meshrenderer_remove_draw_instance(comp, index);
-			
-			return true;
-		}
-
-		im.SetItemTooltip("Remove Draw Instance");
-	
-		return false;
-	}
-
 	// TODO replace with 
 	draw_inst_flag_checkbox :: proc(label : cstring, flag : iri.DrawInstanceFlag,  flags : ^iri.DrawInstanceFlags) -> bool {
 
@@ -867,18 +847,15 @@ draw_component_editor_meshrenderer :: proc (comp : ^iri.MeshRendererComponent) {
 
 	im.Spacing();
 
-	if im.Button("Create Draw Instance") {
-		iri.comp_meshrenderer_create_draw_instance(comp);
-	}
-
-	im.Text("Number Draw Instances %d", len(comp.drawable_indexes));
 
 	if im.Button("All Static") {
-		iri.comp_meshrenderer_make_all_static(comp, true);
+		//iri.comp_meshrenderer_make_all_static(comp, true);
+		iri.comp_meshrenderer_add_or_remove_draw_instance_flags_all(comp, {.IsStatic})
 	}
 	im.SameLine()
 	if im.Button("All Dynamic") {
-		iri.comp_meshrenderer_make_all_static(comp, false);
+		//iri.comp_meshrenderer_make_all_static(comp, false);
+		iri.comp_meshrenderer_add_or_remove_draw_instance_flags_all(comp, {.IsStatic}, remove_flags_instead = true);
 	}
 
 
@@ -896,107 +873,150 @@ draw_component_editor_meshrenderer :: proc (comp : ^iri.MeshRendererComponent) {
 		node_open_state = false;
 	}
 
+	im.Spacing();
+	im.Spacing();
 
+	im.PushStyleColorImVec4(.Text, EDITOR_COL_FILE_DROP);
+	im.Selectable("Drag Model File - Here -")
+	im.PopStyleColor();
 
-	im.Selectable("Load/Drag Scene Collection")
-	collection_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.SceneCollection}); file_info != nil {
-		iri.comp_meshrenderer_append_scene_collection_asset(comp, file_info.asset_uuid);
+	im.Spacing();
+	im.Spacing();
+	
+	mesh_model_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.Model}); file_info != nil {	
+		iri.comp_meshrenderer_add_model_asset(comp, file_info.asset_id);
 	}
 
-
-	tree_node_flags := im.TreeNodeFlags{.DefaultOpen};
+	group_tree_node_flags := im.TreeNodeFlags{.DefaultOpen};
+	submesh_tree_node_flags := im.TreeNodeFlags{};
 	trans_tree_node_flags := im.TreeNodeFlags{};
 	
 	im.Spacing();
 	im.Spacing();
 
-	inst_loop: for i in 0..<len(comp.drawable_indexes) {
+	group_loop : for &group, group_index in comp.draw_groups {
 		
-		index : u32 = cast(u32)i;
-
-		draw_inst : ^iri.DrawInstance = iri.comp_meshrenderer_get_draw_instance(comp, index);
-		if draw_inst == nil {
-			continue;
-		}
-
-		drawable_index : int = comp.drawable_indexes[index]; // index into ecs.drawables array.
-		node_lable := fmt_cstr("DrawInstance: {}", index);
-
-		this_tree_node_flags := tree_node_flags;
-		if editor_is_initialized() {
-			if editor.selected_drawable_index == cast(i32)drawable_index{
-				this_tree_node_flags += im.TreeNodeFlags{.Selected}
-			}
-		}
-
+		group_node_label := fmt_cstr("Draw Group: {}", group_index);
+		
 		if set_node_open_state_for_all {
 			im.SetNextItemOpen(node_open_state);
 		}
 
-		if im.TreeNodeEx(node_lable, this_tree_node_flags) {
-			defer im.TreePop();
-			
-			if button_remove_draw_inst_sameline(comp, index) {
-				// For mem acces safty we want to break the entire loop after remove of an item!
-				// This is because the engine may have modified from 
-				// meshrenderers component array that we are currently iterating.
-				// Therefore its better to just skip a frame on the remaining indexes.
-				break inst_loop; 
+		delete_grp_btn_lable := fmt_cstr("x##DelGrp{}", group_index);
+		delete_btn_size := im.Vec2{40, 0};
+
+		if im.TreeNodeEx(group_node_label, group_tree_node_flags){
+			defer im.TreePop(); 
+
+			if button_align_right_sameline(delete_grp_btn_lable, delete_btn_size) {
+				iri.comp_meshrenderer_remove_draw_group(comp, group_index);
+				break group_loop; // Skip this frames groups since we romved array elem.
 			}
 
-			any_changed : bool = false;
+			im.SetItemTooltip("Delete This Group");
 
-			is_static_lable := fmt_cstr("Is Static##{}", index);
-			is_visible_lable := fmt_cstr("Is Visible##{}", index);
-			cast_shadow_lable := fmt_cstr("Cast Shadows##{}", index);
-			
-			any_changed |= enum_flags_checkbox(is_static_lable  , iri.DrawInstanceFlag.IsStatic, &draw_inst.flags);
-			im.SameLine();
-			any_changed |= enum_flags_checkbox(is_visible_lable , iri.DrawInstanceFlag.IsVisible, &draw_inst.flags);
-			im.SameLine();
-			any_changed |= enum_flags_checkbox(cast_shadow_lable, iri.DrawInstanceFlag.CastShadows, &draw_inst.flags);
+			for draw_index_ref, draw_index in group.drawable_index_refs {
+
+				draw_inst : ^iri.DrawInstance = iri.comp_meshrenderer_get_draw_instance(comp, group_index, draw_index);
+				if draw_inst == nil {
+					continue;
+				}
+
+				mesh_id := draw_inst.mesh_id;
+				mesh_name : string = iri.mesh_get_mesh_name(draw_inst.mesh_id);
+				
+				drawable_index : int = draw_index_ref.drawable_index; // index into ecs.drawables array.
+				
+				submesh_node_lable := fmt_cstr("{}##mesh{}", mesh_name, mesh_id);
+				
+
+				this_tree_node_flags := submesh_tree_node_flags;
+				if editor_is_initialized() {
+					if editor.selected_drawable_index == cast(i32)drawable_index{
+						this_tree_node_flags += im.TreeNodeFlags{.Selected}
+					}
+				}
+
+				if set_node_open_state_for_all {
+					im.SetNextItemOpen(node_open_state);
+				}
+
+			 	if im.TreeNodeEx(submesh_node_lable, this_tree_node_flags) {
+			 		defer im.TreePop(); 
+					
+					unique_index := drawable_index;
+					
+
+					im.Spacing();
+
+					mat_name : string = iri.material_get_name_clone(draw_inst.mat_id);
+					mat_selectable_lable : cstring = fmt_cstr("Material - {}##{}", mat_name, unique_index);
+					
+					im.PushStyleColorImVec4(.Text, EDITOR_COL_FILE_DROP);
+					if im.Selectable(mat_selectable_lable) {
+						// TODO: open editor to adjust material..
+					}
+					im.PopStyleColor();
+
+					mat_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.Material}); file_info != nil {
+						iri.comp_meshrenderer_assign_material_asset_to_draw_instance_in_draw_group(comp, file_info.asset_id, group_index, draw_index);
+					}
 
 
+					im.Spacing();
 
-			im.Text("DrawableIndex: %d", drawable_index);
-			mesh_name : string = iri.mesh_get_mesh_name(draw_inst.mesh_id);
-			mesh_selectable_lable : cstring = fmt_cstr("%s | MeshID : %d", mesh_name, draw_inst.mesh_id);
-			im.BulletText("Mesh:");
-			im.SameLine();
-			im.Selectable(mesh_selectable_lable)
+					any_changed : bool = false;
 
-			mesh_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.Mesh}); file_info != nil {	
-				iri.comp_meshrenderer_load_mesh_asset_to_draw_instance(comp,index, file_info.asset_uuid);
+					is_static_lable   := fmt_cstr("Is Static##{}", unique_index);
+					is_visible_lable  := fmt_cstr("Is Visible##{}", unique_index);
+					cast_shadow_lable := fmt_cstr("Cast Shadows##{}", unique_index);
+					ray_visible_lable := fmt_cstr("Raycast Visible##{}", unique_index);
+					
+					any_changed |= enum_flags_checkbox(is_static_lable  , iri.DrawInstanceFlag.IsStatic, &draw_inst.flags);
+					im.SameLine();
+					any_changed |= enum_flags_checkbox(is_visible_lable , iri.DrawInstanceFlag.IsVisible, &draw_inst.flags);
+					im.SameLine();
+					any_changed |= enum_flags_checkbox(cast_shadow_lable, iri.DrawInstanceFlag.CastShadows, &draw_inst.flags);
+					im.SameLine();
+					any_changed |= enum_flags_checkbox(ray_visible_lable, iri.DrawInstanceFlag.IsRaycastVisible, &draw_inst.flags);
+
+					
+				
+					trans_node_lable := fmt_cstr("Transform: ##{}", unique_index);
+					if im.TreeNodeEx(trans_node_lable, trans_tree_node_flags) {
+						any_changed |= draw_editor_transform(&draw_inst.transform)
+						im.TreePop();
+					}
+
+					if any_changed {
+						// FIXME: does not work when drawbale is set to static.
+						iri.comp_meshrenderer_force_update(comp, group_index, draw_index);
+						//iri.comp_meshrenderer_force_update(comp);
+					}
+
+				} // End Submesh TreeNode
+
+
 			}
-
-
-			im.BulletText("Material:");
-			im.SameLine();
-			mat_name : string = iri.material_get_name(draw_inst.mat_id);
-			mat_selectable_lable : cstring = fmt_cstr("%s | MatID : %d", mat_name, draw_inst.mat_id);
-			
-			im.Selectable(mat_selectable_lable);
-			mat_drop: if file_info := file_info_drag_drop_target({.AssetFile}, {.Material}); file_info != nil {
-				iri.comp_meshrenderer_load_material_asset_to_draw_instance(comp,index, file_info.asset_uuid);
-			}
-
-			trans_node_lable := fmt_cstr("Transform: ##{}", index);
-			if im.TreeNodeEx(trans_node_lable, trans_tree_node_flags) {
-				any_changed |= draw_editor_transform(&draw_inst.transform)
-				im.TreePop();
-			}
-
-			if any_changed {
-				iri.comp_meshrenderer_force_update_draw_instance(comp, cast(u32)i);
-			}
-
 		} else {
-
-			if button_remove_draw_inst_sameline(comp, index) {
-				// same here as above break and skip frame for remaining entries.
-				break inst_loop; 
+			if button_align_right_sameline(delete_grp_btn_lable, delete_btn_size) {
+				iri.comp_meshrenderer_remove_draw_group(comp, group_index);
+				break group_loop; // Skip this frames groups since we romved array elem.
 			}
+
+			im.SetItemTooltip("Delete This Group");
+				// if im.Button(delete_grp_btn_lable){
+
 		}
+
+		
+			// 	iri.comp_meshrenderer_remove_draw_group(comp, group_index);
+			// 	break group_loop; // Skip this frames groups since we romved array elem.
+			// }
+
+
+
+		im.Spacing();
 	}
 
 	im.Spacing();

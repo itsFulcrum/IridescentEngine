@@ -26,7 +26,7 @@ import "odinary:platformly"
 
 // the editor is build in a modular way and implements various ui interfaces as dear_imgui draw commands
 // that means even without initializing the editor some draw procedures can still be used anyway.
-// some procedure need to track state from the editor so it may still be adviasable to initialize the editor even when
+// some procedure need to track state from the editor so it may still be useful to initialize the editor even when
 // implementing your own editor ui on top of these procedures.
 // ===========================================================================
 
@@ -74,6 +74,8 @@ IriEditor :: struct {
 
 	// import 
 	curr_mesh_import_flags : iri.AssetImportFlags,
+
+	properties_panel_state : PropertiesPanel,
 }
 
 @(private="package")
@@ -131,7 +133,7 @@ init :: proc() {
 	// import options
 	editor.curr_mesh_import_flags = iri.AssetImportFlags{.LogErrors, .OverwriteExisting};
 
-
+	init_properties_panel(&editor.properties_panel_state);
 }
 
 deinit :: proc() {
@@ -223,7 +225,7 @@ draw_imgui_callback :: proc() {
 	draw_window_settings();
 	draw_window_universe_viewer();
 	draw_window_project_browser();
-	draw_window_properties();
+	draw_window_properties(editor);
 	draw_main_menu_bar();
 	
 	free_all(editor.tmp_allocator);
@@ -248,6 +250,8 @@ select_entity :: proc(universe : ^iri.Universe, entity : iri.Entity) {
 		// copy name to buffer
 		copy_string_to_buffer_null_terminate(editor.selected_entity_rename_buf ,cast(int)editor.selected_entity_rename_buf_len, ent_name)
 	}
+
+	properties_panel_select_tab(editor, .EntityView);
 }
 
 @(private="file")
