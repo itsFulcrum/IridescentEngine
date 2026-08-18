@@ -37,6 +37,25 @@ copy_string_to_buffer_null_terminate :: proc(buf : [^]u8, buf_size : int, str : 
 	buf[last_byte] = 0x00; // null termination for cstring..
 }
 
+InputTextBuffer :: struct {
+	buffer : []u8,
+}
+
+input_text_buffer_init :: proc(txt_buf : ^InputTextBuffer, capacity : int){
+
+	txt_buf.buffer = make_slice([]u8, capacity + 1, context.allocator);
+}
+
+input_text_buffer_free :: proc(txt_buf : ^InputTextBuffer){
+	delete_slice(txt_buf.buffer);
+	txt_buf.buffer = nil;
+}
+
+input_text_buffer_get_string :: proc(txt_buf : ^InputTextBuffer) -> string {
+	return string(txt_buf.buffer);
+}
+
+
 
 
 

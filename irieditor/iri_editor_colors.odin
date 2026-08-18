@@ -4,6 +4,8 @@ import im "odinary:dear_imguy"
 
 DIRECTORY_COL 		:: im.Vec4{0.28, 0.25, 0.25, 1.00}
 REG_FILE_COL 		:: im.Vec4{0.18, 0.21, 0.25, 1.00}
+
+FONT_ATLAS_ASSET_COL 		:: im.Vec4{0.10, 0.2, 0.4, 1.00}
 UNIVERSE_ASSET_COL 	:: im.Vec4{ 0.3, 0.27, 0.17, 1.00}
 MODEL_ASSET_COL 		:: im.Vec4{0.19, 0.25, 0.22, 1.00}
 MATERIAL_ASSET_COL 	:: im.Vec4{0.22, 0.21, 0.18, 1.00}

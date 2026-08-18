@@ -6,16 +6,25 @@ package iri
 ## Asteriods game
 
 
-## engine
+## Engine
+ 
+ ### UI rendering system
+  - World Space UI.
+ -  Bug. when _Not_ rendering at native resolution the Mouse Pos for hovering is wrong.
+	## Fonts
+	- test google material icons font.
+	- SDF fonts instead.
 
 
-	
-
-
+## Editor
+ - Editor Overhaul function names such that all function that require the editor to be initialized have some prefix
+ - Make Mesh importer take a CreateInfo structure instead.
 
 	   
 
 ### Graphics
+- BUG. validation error when not having any lights/Shadowmaps in the scene..
+- reversed Z buffer
 - test if using linearized depth is better for GTOA and Radiance Cascades.
 - try min and max GTAO in half res with min/max aware upsampling.
 - frustum culling using bvh tree.

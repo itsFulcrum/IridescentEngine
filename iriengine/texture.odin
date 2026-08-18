@@ -37,14 +37,14 @@ SamplerAddressMode :: enum int {
 texture_2D_destroy :: proc(gpu_device: ^sdl.GPUDevice, texture : ^Texture2D, zero_out_memory : bool = true){
 	engine_assert(texture != nil);
 
-	if(texture.binding.texture != nil){
+	if texture.binding.texture != nil {
 		sdl.ReleaseGPUTexture(gpu_device, texture.binding.texture);
 	}
-	if(texture.binding.sampler != nil){
+	if texture.binding.sampler != nil {
 		sdl.ReleaseGPUSampler(gpu_device, texture.binding.sampler);
 	}
 
-	if(zero_out_memory == true) {
+	if zero_out_memory == true {
 		texture.size = {0,0};
 		texture.num_mipmaps = 0;
 		texture.format = sdl.GPUTextureFormat.INVALID;
@@ -238,7 +238,7 @@ texture_create_shadowmap_sampler :: proc(gpu_device : ^sdl.GPUDevice, min_mag_fi
 }
 
 
-texture_upload_pic_info_to_gpu_texture_2D :: proc(gpu_device : ^sdl.GPUDevice, gpu_texture : ^sdl.GPUTexture , pic_info : ^picy.PicInfo) -> bool {
+texture_upload_pic_info_to_gpu_texture_2D :: proc(gpu_device : ^sdl.GPUDevice, gpu_texture : ^sdl.GPUTexture , pic_info : ^picy.PicInfo, gen_mips : bool = false) -> bool {
 
 	if gpu_texture == nil do return false;
 	
@@ -287,6 +287,11 @@ texture_upload_pic_info_to_gpu_texture_2D :: proc(gpu_device : ^sdl.GPUDevice, g
 	sdl.UploadToGPUTexture(copy_pass,tex_transfer_info, tex_region, cycle = false);
 
 	sdl.EndGPUCopyPass(copy_pass);
+
+	if gen_mips {
+		sdl.GenerateMipmapsForGPUTexture(cmd_buf, gpu_texture);
+	}
+
 
 	ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
 

@@ -2,11 +2,11 @@ package iriedit
 
 import "core:c"
 
-import iri "../iriengine"
+//import iri "../iriengine"
 import im "odinary:dear_imguy"
 
 
-draw_window_project_browser :: proc() {
+draw_window_project_browser :: proc(editor : ^IriEditor) {
 
 	window_enabled : bool = .ProjectBrowser in editor.enabled_windows
 
@@ -25,6 +25,7 @@ draw_window_project_browser :: proc() {
 	flags := im.WindowFlags{.MenuBar}
 	window_draw: if im.Begin("Project Browser", &window_enabled, flags) {
 
-		draw_project_browser();
+
+		draw_project_browser(editor);
 	}
 }

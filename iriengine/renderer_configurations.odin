@@ -27,12 +27,12 @@ renderer_set_render_config :: proc(ren_ctx : ^RenderContext, gpu_device : ^sdl.G
 
     ren_ctx.config = config;
 
-    ren_ctx.render_pass_infos[.Main].depth_target_format  = config.geo_depth_stencil_format;
-    ren_ctx.render_pass_infos[.Main].color_target_format  = config.geo_color_target_format;
+    ren_ctx.render_pass_infos[.SceneHDR].depth_target_format  = config.geo_depth_stencil_format;
+    ren_ctx.render_pass_infos[.SceneHDR].color_target_format  = config.geo_color_target_format;
     //ren_ctx.render_pass_infos[.Main].msaa                 = config.geo_msaa;
 
     //ren_ctx.render_pass_infos[.PostColorCorrect].color_target_format = config.post_correct_color_target_format;
-    ren_ctx.render_pass_infos[.DEPTH_PREPASS].depth_target_format = config.geo_depth_stencil_format;
+    ren_ctx.render_pass_infos[.DepthPrepass].depth_target_format = config.geo_depth_stencil_format;
     // @Note: - fulcrum
     // if we are not yet running we will anyway 
     // rebuild the pipelines and create render targets just before we enter the main loop
@@ -42,7 +42,7 @@ renderer_set_render_config :: proc(ren_ctx : ^RenderContext, gpu_device : ^sdl.G
 
     // rebuild pipelines        
     renderer_recreate_all_render_targets(ren_ctx, gpu_device);
-    pipe_manager_rebuild_all_pipelines_for_render_pass_types(pipe_manager, gpu_device, {.Main, .PostColorCorrect, .DEPTH_PREPASS});
+    pipe_manager_rebuild_all_pipelines_for_render_pass_types(pipe_manager, gpu_device, {.SceneHDR, .PostProcessToLDR, .DepthPrepass});
 }
 
 @(private="package")
@@ -70,21 +70,20 @@ renderer_set_render_target_format :: proc(ren_ctx : ^RenderContext,gpu_device : 
     }
 
     ren_ctx.config.geo_color_target_format = format;
-    ren_ctx.render_pass_infos[.Main].color_target_format = format;
+    ren_ctx.render_pass_infos[.SceneHDR].color_target_format = format;
 
     if engine.in_init_phase {
         return;
     }
 
-    if ren_ctx.geo_color_target_tex != nil {
-        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.geo_color_target_tex);
-        ren_ctx.geo_color_target_tex = nil; 
+    if ren_ctx.scene_hdr_color_target != nil {
+        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.scene_hdr_color_target)
     }
 
-    ren_ctx.geo_color_target_tex = renderer_create_render_target_texture(gpu_device, ren_ctx.current_frame_size, ren_ctx.config.geo_color_target_format, MSAA.OFF, {.COLOR_TARGET, .SAMPLER});
+    ren_ctx.scene_hdr_color_target = renderer_create_render_target_texture(gpu_device, ren_ctx.current_frame_size, ren_ctx.config.geo_color_target_format, MSAA.OFF, {.COLOR_TARGET, .SAMPLER});
 
     pipe_manager := engine.pipeline_manager;
-    pipe_manager_rebuild_all_pipelines_for_render_pass_types(pipe_manager, gpu_device, {.Main});
+    pipe_manager_rebuild_all_pipelines_for_render_pass_types(pipe_manager, gpu_device, {.SceneHDR});
 }
 
 @(private="package")
@@ -95,20 +94,20 @@ renderer_set_depth_stencil_target_format :: proc(ren_ctx : ^RenderContext, gpu_d
     }
 
     ren_ctx.config.geo_depth_stencil_format = format;
-    ren_ctx.render_pass_infos[.Main].depth_target_format = format;
-    ren_ctx.render_pass_infos[.DEPTH_PREPASS].depth_target_format = format;
+    ren_ctx.render_pass_infos[.SceneHDR].depth_target_format = format;
+    ren_ctx.render_pass_infos[.DepthPrepass].depth_target_format = format;
 
     if engine.in_init_phase {
         return;
     }
 
-    if ren_ctx.geo_depth_stencil_target_tex != nil {
-        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.geo_depth_stencil_target_tex);
+    if ren_ctx.scene_depth_stencil_target != nil {
+        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.scene_depth_stencil_target);
     }
-    ren_ctx.geo_depth_stencil_target_tex = renderer_create_depth_stencil_texture(gpu_device, ren_ctx.current_frame_size, ren_ctx.config.geo_depth_stencil_format, MSAA.OFF, {.DEPTH_STENCIL_TARGET, .SAMPLER});
+    ren_ctx.scene_depth_stencil_target = renderer_create_depth_stencil_texture(gpu_device, ren_ctx.current_frame_size, ren_ctx.config.geo_depth_stencil_format, MSAA.OFF, {.DEPTH_STENCIL_TARGET, .SAMPLER});
 
     pipe_manager := engine.pipeline_manager;
-    pipe_manager_rebuild_all_pipelines_for_render_pass_types(pipe_manager, gpu_device, {.Main, .DEPTH_PREPASS});
+    pipe_manager_rebuild_all_pipelines_for_render_pass_types(pipe_manager, gpu_device, {.SceneHDR, .DepthPrepass});
 }
 
 @(private="package")

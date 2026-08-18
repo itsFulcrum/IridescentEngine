@@ -26,9 +26,16 @@ BVH_MAX_TREE_DEPTH :: 32
 // producing several differnt output files from one imput file. Especially in the case of meshes.
 // Ideally the importer is never called at runtime of a distributed application.
 
-
-AssetImportFlags :: distinct bit_set[AssetImportFlag]
+AssetImportFlags :: bit_set[AssetImportFlag]
 AssetImportFlag :: enum {
+	LogErrors,
+	OverwriteExisting,
+}
+
+
+// TODO: rename this to AssetGLTF import flags or just make it a struct honestly.
+AssetMeshImportFlags :: distinct bit_set[AssetMeshImportFlag]
+AssetMeshImportFlag :: enum {
 	LogErrors,
 	OverwriteExisting, // if not set and asset exists already, import will fail
 	
@@ -43,7 +50,7 @@ AssetImportFlag :: enum {
 	MeshForceVertexLayoutExtended, // ignored if force standard or force minimal is set
 }
 
-asset_importer_import_gltf_to_project :: proc(load_path : string, store_directory_path : string, import_flags : AssetImportFlags) -> (ok : bool) {
+asset_importer_import_gltf_to_project :: proc(load_path : string, store_directory_path : string, import_flags : AssetMeshImportFlags) -> (ok : bool) {
 	
 	// TODO: 
 	// update poly library to handle mergeing of meshes and merging by material on a scene level so we dont have to deal with it in import code.
@@ -79,8 +86,8 @@ asset_importer_import_gltf_to_project :: proc(load_path : string, store_director
 	_ , load_file_name  := os.split_path(load_path);
 	load_file_name_only := os.short_stem(load_file_name);
 
-	can_overwrite_existing : bool = .OverwriteExisting in import_flags;
-	write_flags : iria.AssetWriteFlags = importer_iria_write_flags_from_asset_import_flags(import_flags);
+	can_overwrite_existing : bool = AssetMeshImportFlag.OverwriteExisting in import_flags;
+	write_flags : iria.AssetWriteFlags = importer_iria_write_flags_from_mesh_import_flags(import_flags);
 
 	// @Note:
 	// we temp store the id of the materials we loaded and exported.
@@ -379,11 +386,25 @@ importer_iria_write_flags_from_asset_import_flags :: proc(import_flags : AssetIm
 	return write_flags;
 }
 
+importer_iria_write_flags_from_mesh_import_flags :: proc(import_flags : AssetMeshImportFlags) -> iria.AssetWriteFlags {
+	
+	write_flags : iria.AssetWriteFlags = iria.AssetWriteFlags{};
+	
+	if .LogErrors in import_flags {
+		write_flags += iria.AssetWriteFlags{.LogErrors}
+	}
+	if .OverwriteExisting in import_flags {
+		write_flags += iria.AssetWriteFlags{.OverwriteExisting}
+	}
+
+	return write_flags;
+}
+
 
 // ======= Conversions from poly lib ==================
 
 @(private="package")
-importer_get_poly_load_flags_from_asset_import_flags :: proc(import_flags : AssetImportFlags) -> poly.LoadFlags {
+importer_get_poly_load_flags_from_asset_import_flags :: proc(import_flags : AssetMeshImportFlags) -> poly.LoadFlags {
 
 	load_flags := poly.LoadFlags{.CalcMissingNormals, .CalcMissingTangents};
 	if .LogErrors in import_flags {
@@ -399,7 +420,7 @@ importer_get_poly_load_flags_from_asset_import_flags :: proc(import_flags : Asse
 	return load_flags;
 }
 
-importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, import_flags : AssetImportFlags) -> (^MeshData, bool) {
+importer_make_MeshData_from_poly_MeshData :: proc(poly_mesh : ^poly.MeshData, import_flags : AssetMeshImportFlags) -> (^MeshData, bool) {
 	
 	engine_assert(poly_mesh != nil);
 	engine_assert(poly_mesh.num_indecies != 0);

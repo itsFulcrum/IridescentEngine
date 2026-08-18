@@ -15,12 +15,12 @@ FILE_EXTENTION_NAME : string :  "iria"
 AssetID 		:: uuid.Identifier
 AssetID_NONE 	:: AssetID{}
 
-ASSET_TYPE_FLAGS_ALL :: AssetTypeFlags{.Material, .Universe, .Light, .Model} 
+ASSET_TYPE_FLAGS_ALL :: AssetTypeFlags{.Material, .FontAtlas, .Universe, .Light, .Model} 
 AssetTypeFlags :: distinct bit_set[AssetType]
 AssetType :: enum u32 {
 // @NOTE!!! Do not reorder or remove from the middle.
 	None 		= 0,
-	_Unused_1	= 1,
+	FontAtlas	= 1,
 	Material 	= 2,
 	Universe 	= 3,
 	Light 		= 4,
@@ -87,7 +87,7 @@ get_current_version_for_type :: proc(asset_type : AssetType) -> u32 {
 	
 	switch asset_type {
 		case .None: 	 return 0;
-		case ._Unused_1: return 0;
+		case .FontAtlas: return ASSET_FONT_ATLAS_FILE_CURRENT_VERSION;
 		case .Material:	 return ASSET_MATERIAL_FILE_CURRENT_VERSION;
 		case .Universe:	 return ASSET_UNIVERSE_FILE_CURRENT_VERSION;
 		case .Light:	 return ASSET_LIGHT_FILE_CURRENT_VERSION;
@@ -102,7 +102,6 @@ get_current_version_for_type :: proc(asset_type : AssetType) -> u32 {
 create_common_header :: proc(type : AssetType, asset_id : AssetID, asset_version : u32 = 0) -> AssetFileCommonHeader {
 	
 	assert(type != .None);
-	assert(type != ._Unused_1);
 	assert(type != ._Unused_2);
 
 	return AssetFileCommonHeader {

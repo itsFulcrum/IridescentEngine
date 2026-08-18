@@ -104,6 +104,8 @@ UniversePhysicsUpdate_CallbackSignature :: #type proc(universe : ^Universe, time
 
 UniverseDebugGuiDraw_CallbackSignature :: #type proc(universe : ^Universe);
 
+UniverseUI_CallbackSignature :: #type proc(universe : ^Universe, frame_size : [2]f32, delta_time : f32);
+
 UniverseUpdateCallbacks :: struct{
 	init 	  : UniverseInit_CallbackSignature,
 	init_late : UniverseInit_CallbackSignature,
@@ -117,6 +119,7 @@ UniverseUpdateCallbacks :: struct{
 	deinit      : UniverseDeinit_CallbackSignature,
 	deinit_late : UniverseDeinit_CallbackSignature,
 
+	ui_draw : UniverseUI_CallbackSignature,
 	imgui_debug_draw : UniverseDebugGuiDraw_CallbackSignature,
 }
 

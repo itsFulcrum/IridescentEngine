@@ -8,7 +8,7 @@ window_set_swapchain_settings :: proc(target_settings : SwapchainSettings) -> bo
     window := get_window_context();
     
     success := window_context_set_swapchain_settings(window, target_settings);
-    pipe_manager_rebuild_all_pipelines_for_render_pass_types(engine.pipeline_manager, window.gpu_device, {.SWAPCHAIN_COMPOSIT});
+    pipe_manager_rebuild_all_pipelines_for_render_pass_types(engine.pipeline_manager, window.gpu_device, {.SwapchainComposit});
     return success;
 }
 
@@ -20,7 +20,7 @@ window_set_color_space :: proc(target_color_space: SwapchainColorSpace) -> bool 
 
     window := get_window_context();
     success := window_context_set_color_space(window, target_color_space);
-    pipe_manager_rebuild_all_pipelines_for_render_pass_types(engine.pipeline_manager, window.gpu_device, {.SWAPCHAIN_COMPOSIT})
+    pipe_manager_rebuild_all_pipelines_for_render_pass_types(engine.pipeline_manager, window.gpu_device, {.SwapchainComposit})
 
     return success;
 }

@@ -41,6 +41,8 @@ PipelineShader :: enum {
     SMAA_EDGE_DETECTION_FRAG,
     SMAA_BLEND_WEIGHT_FRAG,
     SMAA_NEIGHBORHOOD_BLEND_FRAG,
+    UI_RECT_VERT,
+    UI_RECT_FRAG,
 }
 
 MaterialPipelineShaders :: enum {
@@ -61,7 +63,7 @@ DepthOnlyPipelineShaders :: enum u32 {
 CorePipeline :: enum u32 {
 	Skybox,
     DearImGUI,
-    PostColorCorrect,
+    PostProcessToLDR, 
     SWAPCHAIN_COMPOSIT,
     WIREFRAME_CUBE,
     LINE_CUBE,   // LineList
@@ -71,6 +73,7 @@ CorePipeline :: enum u32 {
     SMAA_EDGE_DETECTION,
     SMAA_BLEND_WEIGHT,
     SMAA_NEIGHBORHOOD_BLEND,
+    UI_RECT,
 }
 
 PipelineManager :: struct {
@@ -145,7 +148,7 @@ pipe_manager_get_core_pipeline_shader_combination :: proc(pipeline : CorePipelin
     switch pipeline {
         case .Skybox:                   return ShaderCombination{vert = .SKYBOX_VERT      , frag = .SKYBOX_FRAG};
         case .DearImGUI:                return ShaderCombination{vert = .DEAR_IMGUI_VERT  , frag = .DEAR_IMGUI_FRAG};
-        case .PostColorCorrect:         return ShaderCombination{vert = .SCREENQUAD_VERT  , frag = .POST_COLOR_CORRECT_FRAG};
+        case .PostProcessToLDR:         return ShaderCombination{vert = .SCREENQUAD_VERT  , frag = .POST_COLOR_CORRECT_FRAG};
         case .SWAPCHAIN_COMPOSIT:       return ShaderCombination{vert = .SCREENQUAD_VERT  , frag = .SWAPCHAIN_COMPOSIT_FRAG};
         case .WIREFRAME_CUBE:           return ShaderCombination{vert = .UNIT_CUBE_VERT   , frag = .UNLIT_BASIC_FRAG};
         case .LINE_CUBE:                return ShaderCombination{vert = .LINE_CUBE_VERT   , frag = .LINE_BASIC_UNLIT_FRAG};
@@ -155,6 +158,9 @@ pipe_manager_get_core_pipeline_shader_combination :: proc(pipeline : CorePipelin
         case .SMAA_EDGE_DETECTION:      return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_EDGE_DETECTION_FRAG    , vert_variant = RenderEffectShaderVariant{.SMAA_PASS_EDGE_DETECTION}};
         case .SMAA_BLEND_WEIGHT:        return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_BLEND_WEIGHT_FRAG      , vert_variant = RenderEffectShaderVariant{.SMAA_PASS_BLEND_WEIGHT}};
         case .SMAA_NEIGHBORHOOD_BLEND:  return ShaderCombination{vert = .SMAA_VERT, frag = .SMAA_NEIGHBORHOOD_BLEND_FRAG, vert_variant = RenderEffectShaderVariant{.SMAA_PASS_NEIGHBORHOOD_BLEND}};
+        
+        // maybe variants ?? 
+        case .UI_RECT:  return ShaderCombination{vert = .UI_RECT_VERT, frag = .UI_RECT_FRAG};
     }
 
     panic("invalid codepath")
@@ -167,7 +173,7 @@ pipe_manager_get_core_pipeline_vertex_buf_descriptor_type :: proc(pipeline : Cor
     switch pipeline {
         case .Skybox:               return .PositionOnlyFloat3;
         case .DearImGUI:            return .DearImgui;
-        case .PostColorCorrect:     return .None;
+        case .PostProcessToLDR:     return .None;
         case .SWAPCHAIN_COMPOSIT:   return .None;
         case .WIREFRAME_CUBE:       return .None;
         case .LINE_CUBE:            return .None;
@@ -177,6 +183,7 @@ pipe_manager_get_core_pipeline_vertex_buf_descriptor_type :: proc(pipeline : Cor
         case .SMAA_EDGE_DETECTION:  return .None;
         case .SMAA_BLEND_WEIGHT:    return .None;
         case .SMAA_NEIGHBORHOOD_BLEND:    return .None;
+        case .UI_RECT:              return .None;
     }
 
     panic("invalid codepath")
@@ -187,18 +194,19 @@ pipe_manager_get_core_pipeline_vertex_buf_descriptor_type :: proc(pipeline : Cor
 pipe_manager_get_core_pipeline_render_pass_type :: proc(pipeline: CorePipeline) -> RenderPassType{
 
     switch pipeline {
-        case .Skybox:                   return RenderPassType.Main;
-        case .DearImGUI:                return RenderPassType.DebugGui;
-        case .PostColorCorrect:         return RenderPassType.PostColorCorrect;
-        case .SWAPCHAIN_COMPOSIT:       return RenderPassType.SWAPCHAIN_COMPOSIT;
-        case .WIREFRAME_CUBE:           return RenderPassType.Main;
-        case .LINE_CUBE:                return RenderPassType.Main;
-        case .LINE_LINE:                return RenderPassType.Main;
-        case .LINE_CIRCLE:              return RenderPassType.Main;
-        case .SOLID_CUBE:               return RenderPassType.Main;
-        case .SMAA_EDGE_DETECTION:      return RenderPassType.SMAA;
-        case .SMAA_BLEND_WEIGHT:        return RenderPassType.SMAA;
-        case .SMAA_NEIGHBORHOOD_BLEND:  return RenderPassType.SMAA;
+        case .Skybox:                   return RenderPassType.SceneHDR;
+        case .DearImGUI:                return RenderPassType.Ui;
+        case .PostProcessToLDR:         return RenderPassType.PostProcessToLDR;
+        case .SWAPCHAIN_COMPOSIT:       return RenderPassType.SwapchainComposit;
+        case .WIREFRAME_CUBE:           return RenderPassType.SceneHDR;
+        case .LINE_CUBE:                return RenderPassType.SceneHDR;
+        case .LINE_LINE:                return RenderPassType.SceneHDR;
+        case .LINE_CIRCLE:              return RenderPassType.SceneHDR;
+        case .SOLID_CUBE:               return RenderPassType.SceneHDR;
+        case .SMAA_EDGE_DETECTION:      return RenderPassType.Smaa;
+        case .SMAA_BLEND_WEIGHT:        return RenderPassType.Smaa;
+        case .SMAA_NEIGHBORHOOD_BLEND:  return RenderPassType.Smaa;
+        case .UI_RECT:                  return RenderPassType.Ui;
     }
 
     // Invalid Codepath
@@ -217,9 +225,10 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
 
                     // Depth Stencil
                     enable_depth_test   = true,
-                    enable_depth_write  = true,
+                    enable_depth_write  = false,
                     enable_stencil_test = false,
-                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+                    depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL,
+                    //depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
 
                     // Color Render Target
                     enable_blend = false,
@@ -252,7 +261,7 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
                     col_target_dst_alpha_blendfactor = BlendFactor.ONE_MINUS_SRC_ALPHA, // The value to be multiplied by the destination alpha.
                 }
 
-        case .PostColorCorrect:
+        case .PostProcessToLDR:
             return PipelineConfig {
                     raster_fill_mode = FillMode.Fill,
                     raster_cull_mode = CullMode.Back,
@@ -295,7 +304,7 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
                     enable_depth_test   = true,
                     enable_depth_write  = true,
                     enable_stencil_test = false,
-                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+                    depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL,
 
                     // Color Render Target
                     enable_blend = false,
@@ -308,7 +317,7 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
                     // Depth Stencil
                     enable_depth_test   = true,
                     enable_depth_write  = true,
-                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+                    depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL,
             }
         case .LINE_LINE:
             return PipelineConfig {
@@ -318,7 +327,7 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
                     // Depth Stencil
                     enable_depth_test   = true,
                     enable_depth_write  = true,
-                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+                    depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL,
             }
         case .LINE_CIRCLE:
             return PipelineConfig {
@@ -328,7 +337,7 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
                     // Depth Stencil
                     enable_depth_test   = true,
                     enable_depth_write  = true,
-                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+                    depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL,
             }
         case .SOLID_CUBE:
             return PipelineConfig {
@@ -339,7 +348,7 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
                     enable_depth_test   = true,
                     enable_depth_write  = true,
                     enable_stencil_test = false,
-                    depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+                    depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL,
 
                     // Color Render Target
                     enable_blend = false,
@@ -358,6 +367,26 @@ pipe_manager_create_core_pipeline_config :: proc(pipeline : CorePipeline) -> Pip
             return PipelineConfig {
                     raster_fill_mode = FillMode.Fill,
                     raster_cull_mode = CullMode.Back,
+                }
+        case .UI_RECT:
+            return PipelineConfig {
+                    raster_fill_mode = FillMode.Fill,
+                    raster_cull_mode = CullMode.None,
+
+                    // Depth Stencil
+                    enable_depth_test   = false,
+                    enable_depth_write  = false,
+                    enable_stencil_test = false,
+                    depth_stencil_compare_op = CompareOp.ALWAYS,
+
+                    // Color Render Target
+                    enable_blend = true,
+                    col_target_color_blend_op        = BlendOp.ADD,                      // The blend operation for the RGB components.
+                    col_target_src_color_blendfactor = BlendFactor.SRC_ALPHA,           // The value to be multiplied by the source RGB value.
+                    col_target_dst_color_blendfactor = BlendFactor.ONE_MINUS_SRC_ALPHA, // The value to be multiplied by the destination RGB value.
+                    col_target_alpha_blend_op        = BlendOp.ADD,                     // The blend operation for the alpha component.
+                    col_target_src_alpha_blendfactor = BlendFactor.ONE,           // The value to be multiplied by the source alpha.
+                    col_target_dst_alpha_blendfactor = BlendFactor.ONE_MINUS_SRC_ALPHA, // The value to be multiplied by the destination alpha.
                 }
             case:
     }
@@ -687,7 +716,7 @@ pipe_manager_init :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevic
             case .POST_COLOR_CORRECT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "post_process.frag"         }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);        
             case .DEAR_IMGUI_VERT:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "dear_imgui.vert"           }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .DEAR_IMGUI_FRAG:          id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "dear_imgui.frag"           }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
-            case .SWAPCHAIN_COMPOSIT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "swapchain_composit.frag"   }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);
+            case .SWAPCHAIN_COMPOSIT_FRAG:  id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "swapchain_composit.frag"   }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
             case .UNIT_CUBE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "unit_cube.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .LINE_CUBE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_cube.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .LINE_LINE_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "line_line.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
@@ -699,10 +728,13 @@ pipe_manager_init :: proc(manager : ^PipelineManager, gpu_device : ^sdl.GPUDevic
             case .DEPTH_ONLY_ALPHATEST_FRAG:id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "depth_pre_alpha_test.frag" }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
             case .SHADOWMAP_VERT:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "shadowmap.vert"            }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
             case .SHADOWMAP_FRAG:           id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "shadowmap.frag"            }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
-            case .SMAA_VERT:                id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa.vert"                 }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = true);
-            case .SMAA_EDGE_DETECTION_FRAG: id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa_edge_detection.frag"  }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);
-            case .SMAA_BLEND_WEIGHT_FRAG:   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa_blend_weight.frag"    }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);
-            case .SMAA_NEIGHBORHOOD_BLEND_FRAG:   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa_neighborhood_blend.frag"    }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);
+            case .SMAA_VERT:                id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa.vert"                 }, "/", context.temp_allocator) , .VERTEX  , enable_hot_reloading = false);
+            case .SMAA_EDGE_DETECTION_FRAG: id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa_edge_detection.frag"  }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
+            case .SMAA_BLEND_WEIGHT_FRAG:   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa_blend_weight.frag"    }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
+            case .SMAA_NEIGHBORHOOD_BLEND_FRAG:   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "smaa_neighborhood_blend.frag"    }, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = false);
+            
+            case .UI_RECT_VERT:   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "ui_rect.vert"}, "/", context.temp_allocator) , .VERTEX, enable_hot_reloading = true);
+            case .UI_RECT_FRAG:   id = shader_manager_register_shader_source(shader_manager, strings.join({shaders_path, "ui_rect.frag"}, "/", context.temp_allocator) , .FRAGMENT, enable_hot_reloading = true);
             case: 
         }
 
@@ -866,7 +898,7 @@ pipe_manager_rebuild_all_pipelines_for_render_pass_types :: proc(manager : ^Pipe
     material_manager := engine.material_manager;
     fallback_material : MaterialID = material_manager.fallback_material;
       
-    if RenderPassType.Main in render_pass_set {
+    if RenderPassType.SceneHDR in render_pass_set {
         
         // If Main Render Pass changed, we must unfortunately rebuild all cached material pipelines.
         pipe_manager_clear_material_pipeline_cache(manager, gpu_device);
@@ -880,7 +912,7 @@ pipe_manager_rebuild_all_pipelines_for_render_pass_types :: proc(manager : ^Pipe
     }
 
     // IF both we update both at the same time.
-    if .DEPTH_PREPASS in render_pass_set && .SHADOWMAP in render_pass_set {
+    if .DepthPrepass in render_pass_set && .Shadowmap in render_pass_set {
 
         pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, DEPTHONLY_PIPELINE_SHADER_SET_ALL);
         pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device, material_manager, fallback_material);
@@ -892,7 +924,7 @@ pipe_manager_rebuild_all_pipelines_for_render_pass_types :: proc(manager : ^Pipe
 
     } else {
         
-        if RenderPassType.DEPTH_PREPASS in render_pass_set {
+        if RenderPassType.DepthPrepass in render_pass_set {
             pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, {.DepthPre, .DepthPreAlphaTest});
             
             pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device,material_manager, fallback_material);
@@ -902,7 +934,7 @@ pipe_manager_rebuild_all_pipelines_for_render_pass_types :: proc(manager : ^Pipe
             }
         }
 
-        if RenderPassType.SHADOWMAP in render_pass_set {
+        if RenderPassType.Shadowmap in render_pass_set {
             
             pipe_manager_clear_depthonly_pipeline_cache(manager, gpu_device, {.Shadowmap, .ShadowmapAlphaTest});
             pipe_manager_update_depthonly_pipeline_cache_with_material(manager, gpu_device, material_manager, fallback_material);
@@ -1261,7 +1293,7 @@ pipe_manager_update_material_pipeline_cache_with_material_and_vertex_layouts :: 
             case .Extended: vert_buff_descrip_type = .LayoutExtended;
         }
 
-        render_pass_info := renderer_get_render_pass_info(engine.render_context, RenderPassType.Main);
+        render_pass_info := renderer_get_render_pass_info(engine.render_context, RenderPassType.SceneHDR);
 
         pipe_config := pipe_manager_create_pipeline_config_from_render_technique(material.render_technique);
 
@@ -1425,19 +1457,19 @@ pipe_manager_update_depthonly_pipeline_cache_with_material :: proc(manager : ^Pi
 
         switch depth_only_shader_type {
             case .DepthPre: {
-                render_pass_info = renderer_get_render_pass_info(engine.render_context, .DEPTH_PREPASS)
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .DepthPrepass)
                 pipe_config = pipe_manager_create_pipeline_config_from_render_technique_depth_pre(material.render_technique);
             }
             case .DepthPreAlphaTest: {
-                render_pass_info = renderer_get_render_pass_info(engine.render_context, .DEPTH_PREPASS)
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .DepthPrepass)
                 pipe_config = pipe_manager_create_pipeline_config_from_render_technique_depth_pre(material.render_technique);
             }
             case .Shadowmap: {
-                render_pass_info = renderer_get_render_pass_info(engine.render_context, .SHADOWMAP)
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .Shadowmap)
                 pipe_config = pipe_manager_create_pipeline_config_from_render_technique_shadowmap(material.render_technique);
             }
             case .ShadowmapAlphaTest: {
-                render_pass_info = renderer_get_render_pass_info(engine.render_context, .SHADOWMAP)
+                render_pass_info = renderer_get_render_pass_info(engine.render_context, .Shadowmap)
                 pipe_config = pipe_manager_create_pipeline_config_from_render_technique_shadowmap(material.render_technique);
             }
         }
@@ -1494,7 +1526,8 @@ pipe_manager_create_pipeline_config_from_render_technique_depth_pre :: proc(tech
         enable_depth_test   = .EnableDepthTest in tech.flags,
         enable_depth_write  = .EnableDepthWrite in tech.flags, // Note: doing a depth prepass with depth write disabled makes not sense
         enable_stencil_test = false, // hardcoded
-        depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+        //depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+        depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL, // reversed z
 
         // Color Render Target
         enable_blend = false,
@@ -1515,7 +1548,8 @@ pipe_manager_create_pipeline_config_from_render_technique :: proc(tech : RenderT
         enable_depth_test   = .EnableDepthTest in tech.flags,
         enable_depth_write  = .EnableDepthWrite in tech.flags,
         enable_stencil_test = false, // hardcoded
-        depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+        //depth_stencil_compare_op = CompareOp.LESS_OR_EQUAL,
+        depth_stencil_compare_op = CompareOp.GREATER_OR_EQUAL, // Reversed Z buffer
 
         // Color Render Target
         enable_blend = tech.alpha_mode == AlphaBlendMode.Blend,

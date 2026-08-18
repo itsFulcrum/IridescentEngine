@@ -3,11 +3,15 @@ package iri
 import "core:log"
 import "core:mem"
 import "core:c"
+import "core:strings"
 import "core:math"
 import "core:math/linalg"
 import "odinary:mathy"
 
 import sdl "vendor:sdl3"
+
+import "vendor:stb/easy_font"
+import "odinary:clay"
 
 import "core:math/rand"
 
@@ -17,10 +21,6 @@ RenderContext :: struct {
     // Note: it is the renderers job to ensure that all render pass infos are correctly setup
     render_pass_infos: [RenderPassType]RenderPassInfo,
 
-    geo_depth_stencil_target_tex : ^sdl.GPUTexture,
-    geo_color_target_tex : ^sdl.GPUTexture,   
-    geo_color_target_sampler: ^sdl.GPUSampler,
-
     brdf_lut : Texture2D,
     dummy_cubemap : TextureCube,
     white_texture : Texture2D,
@@ -28,25 +28,16 @@ RenderContext :: struct {
     // A depth texture for each mip level that we support for shadowmap rendering.
     shadowmap_depth_textures : [dynamic]^sdl.GPUTexture,
 
+    scene_depth_stencil_target : ^sdl.GPUTexture,
+    scene_hdr_color_target : ^sdl.GPUTexture,   
+    
     min_max_depth : ^sdl.GPUTexture,
-    //gtao_tex : ^sdl.GPUTexture, 
+    
+    ui_color_target : ^sdl.GPUTexture,
+    post_ldr_color_target : ^sdl.GPUTexture,
 
-    debug_gui_color_format : RenderTargetFormat, // hardcoded and non changable by users
-    debug_gui_color_target_tex: ^sdl.GPUTexture,
-    debug_gui_color_target_sampler: ^sdl.GPUSampler,
+    samplers : RendererSamplers,
 
-    post_correct_color_target_sampler: ^sdl.GPUSampler,
-    post_correct_color_target_tex : ^sdl.GPUTexture,
-
-    sampler_linear_mip_nearest_clamp : ^sdl.GPUSampler,
-
-
-    nearest_depth_sampler: ^sdl.GPUSampler,    
-    linear_depth_sampler: ^sdl.GPUSampler,
-
-    global_vertex_ubo : GlobalVertexUBO,
-
-    global_fragment_buffer : GlobalFragmentBuffer,
     global_fragment_gpu_buffer : ^sdl.GPUBuffer,
     global_fragment_transfer_buffer : ^sdl.GPUTransferBuffer,
 
@@ -68,25 +59,139 @@ RenderConfig :: struct {
     render_resolution : RenderResolution,
 }
 
-RENDER_PASS_SET_ALL :: RenderPassSet{.Main,.DebugGui,.PostColorCorrect,.SWAPCHAIN_COMPOSIT,.DEPTH_PREPASS, .SHADOWMAP, .SMAA};
+RENDER_PASS_SET_ALL :: RenderPassSet{.SceneHDR,.Ui,.PostProcessToLDR,.SwapchainComposit,.DepthPrepass, .Shadowmap, .Smaa};
 RenderPassSet :: bit_set[RenderPassType]
 RenderPassType :: enum {
     // @NOTE: When adding new passes dont forget to add them to the bit set all above
-    Main,
-    DebugGui,
-    PostColorCorrect,
-    SWAPCHAIN_COMPOSIT,
-    DEPTH_PREPASS,
-    SHADOWMAP,
-    SMAA,
+    DepthPrepass,
+    Shadowmap,
+    SceneHDR,
+    //PostProcessHDR,
+    PostProcessToLDR,
+    //PostProcessLDR,
+    Smaa,
+    Ui,
+    SwapchainComposit,
 }
 
 RenderPassInfo :: struct {
-    has_color_target: bool,
-    has_depth_target: bool,
     color_target_format: RenderTargetFormat,
     depth_target_format: DepthStencilFormat,
+    has_color_target: bool,
+    has_depth_target: bool,
 }
+
+
+RendererFrameGlobals :: struct {
+    
+    frame_size     : [2]u32,
+    swapchain_size : [2]u32,
+    gpu_device : ^sdl.GPUDevice,
+    
+    pipeline_manager : ^PipelineManager,
+    mesh_manager     : ^MeshManager,
+    material_manager : ^MaterialManager,
+    light_manager    : ^LightManager,
+
+    samplers : ^RendererSamplers,
+
+    dummy_white_texture_2D : ^Texture2D,
+
+    brdf_lut_binding : ^sdl.GPUTextureSamplerBinding,
+
+    global_index_buf_binding : sdl.GPUBufferBinding,
+    global_vert_buf_binding  : sdl.GPUBufferBinding,
+
+    global_vertex_ubo : ^GlobalVertexUBO,
+    global_fragment_buffer : ^sdl.GPUBuffer,
+
+    sky_gpu_buffer : ^sdl.GPUBuffer,
+    sky_cubemap_binding     : sdl.GPUTextureSamplerBinding,
+
+    material_buffer_unlit : ^sdl.GPUBuffer,
+    material_buffer_pbr   : ^sdl.GPUBuffer,
+
+    // Scene Data
+    camera : ^FrameCameraInfo,
+
+    any_draws_exist : bool,
+    drawables : ^#soa[dynamic]Drawable,
+    frame_renderables       : []u32,
+    frame_draws_opaque      : []u32,
+    frame_draws_alpha_test  : []u32,
+    frame_draws_alpha_blend : []u32,
+    frame_draws_shadow      : []ShadowDrawableInfo,
+
+
+    lights_buffer : ^sdl.GPUBuffer,
+    shadowmap_info_buffer : ^sdl.GPUBuffer,
+
+    geo_matrix_buffer              : ^sdl.GPUBuffer,
+    geo_inv_matrix_buf             : ^sdl.GPUBuffer,
+    
+    geo_tlas_nodes_buf             : ^sdl.GPUBuffer,
+    geo_frame_tl_draw_indecies_buf : ^sdl.GPUBuffer,
+    geo_drawables_globals_info_buf : ^sdl.GPUBuffer,
+}
+
+RendererFrameTransients :: struct{
+
+    scene_depth_stencil_target : ^sdl.GPUTexture,
+    scene_hdr_color_target : ^sdl.GPUTexture,
+
+
+    depth_hierarchy_max_mip_level : u32,
+    depth_hierarchy_sampler_binding       : sdl.GPUTextureSamplerBinding,
+
+    screen_space_ao_sampler_binding       : sdl.GPUTextureSamplerBinding,
+
+    shadowmap_array_binding : sdl.GPUTextureSamplerBinding,
+
+    raca_sampler_binding    : sdl.GPUTextureSamplerBinding,
+    raca_ao_sampler_binding : sdl.GPUTextureSamplerBinding,
+
+    convert_post_ldr_to_linear_on_load : bool, // by default Post_LDR is a _SRGB color target and gets converted to Linear By the GPU automatically, BUT if a pass overwrites this target with a _UNORM the to Linear has to be done manually in the final swapchain composit Shader.
+
+    post_ldr_color_target : ^sdl.GPUTexture,
+    ui_color_target : ^sdl.GPUTexture,
+}
+
+
+RendererSamplers :: struct {
+    linear  : ^sdl.GPUSampler,
+    nearest :^sdl.GPUSampler,
+    linear_mip_nearest_clamp : ^sdl.GPUSampler,
+    linear_mip_nearest_repeat : ^sdl.GPUSampler,
+    depth_nearest: ^sdl.GPUSampler,    
+    depth_linear : ^sdl.GPUSampler,
+}
+
+
+renderer_samplers_init :: proc (gpu_device : ^sdl.GPUDevice, samplers : ^RendererSamplers) {
+
+    samplers.depth_linear  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .CLAMP_TO_EDGE);
+    samplers.depth_nearest = texture_create_sampler(gpu_device, .NEAREST , .NEAREST,  .CLAMP_TO_EDGE);
+    samplers.linear_mip_nearest_clamp  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .CLAMP_TO_EDGE);
+    samplers.linear_mip_nearest_repeat  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .REPEAT);
+    samplers.linear  = texture_create_sampler(gpu_device, .LINEAR , .LINEAR , .REPEAT);
+    samplers.nearest = texture_create_sampler(gpu_device, .NEAREST, .NEAREST, .REPEAT);
+
+}
+
+renderer_samplers_deinit :: proc(gpu_device : ^sdl.GPUDevice, samplers : ^RendererSamplers){
+
+    sdl.ReleaseGPUSampler(gpu_device, samplers.linear_mip_nearest_clamp);
+    sdl.ReleaseGPUSampler(gpu_device, samplers.linear_mip_nearest_repeat);
+    sdl.ReleaseGPUSampler(gpu_device, samplers.linear);
+    sdl.ReleaseGPUSampler(gpu_device, samplers.nearest)
+    sdl.ReleaseGPUSampler(gpu_device, samplers.depth_linear);
+    sdl.ReleaseGPUSampler(gpu_device, samplers.depth_nearest);
+
+}
+
+// Hardcoded Formats
+POST_LDR_COLOR_TARGET_FORMAT :: RenderTargetFormat.RGBA8_SRGB 
+UI_COLOR_TARGET_FORMAT       :: RenderTargetFormat.RGBA8_SRGB
 
 @(private="package")
 renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice) {
@@ -94,30 +199,24 @@ renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_devic
     config := ren_ctx.config;
     frame_size := ren_ctx.current_frame_size;
 
-    // debug gui
-    if ren_ctx.debug_gui_color_target_tex != nil {
-        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.debug_gui_color_target_tex);
-        ren_ctx.debug_gui_color_target_tex = nil;
+    // ScreenUi is always rendered at native (swapchain) resolution.
+    if ren_ctx.ui_color_target != nil {
+        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.ui_color_target);
     }
-    ren_ctx.debug_gui_color_target_tex = renderer_create_render_target_texture(gpu_device, ren_ctx.current_swapchain_size, ren_ctx.debug_gui_color_format, MSAA.OFF, {.COLOR_TARGET,.SAMPLER});
+    ren_ctx.ui_color_target = renderer_create_render_target_texture(gpu_device, ren_ctx.current_swapchain_size, UI_COLOR_TARGET_FORMAT, MSAA.OFF, {.COLOR_TARGET,.SAMPLER});
     
-    // post texture
 
-    post_correct_target_format := RenderTargetFormat.RGBA8_SRGB; // Hardcoded, if change here remember to change in init function too.
-
-    if ren_ctx.post_correct_color_target_tex != nil {
-        sdl.ReleaseGPUTexture(gpu_device,ren_ctx.post_correct_color_target_tex);
-        ren_ctx.post_correct_color_target_tex = nil;
+    if ren_ctx.post_ldr_color_target != nil {
+        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.post_ldr_color_target);
     }
-    ren_ctx.post_correct_color_target_tex = renderer_create_render_target_texture(gpu_device, frame_size, post_correct_target_format, MSAA.OFF, {.COLOR_TARGET,.SAMPLER});
+    ren_ctx.post_ldr_color_target = renderer_create_render_target_texture(gpu_device, frame_size, POST_LDR_COLOR_TARGET_FORMAT, MSAA.OFF, {.COLOR_TARGET,.SAMPLER});
 
 
     // depth stencil
-    if ren_ctx.geo_depth_stencil_target_tex != nil {
-        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.geo_depth_stencil_target_tex);
-        ren_ctx.geo_depth_stencil_target_tex = nil;
+    if ren_ctx.scene_depth_stencil_target != nil {
+        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.scene_depth_stencil_target);
     }
-    ren_ctx.geo_depth_stencil_target_tex = renderer_create_depth_stencil_texture(gpu_device, frame_size, config.geo_depth_stencil_format, MSAA.OFF, {.DEPTH_STENCIL_TARGET, .SAMPLER});
+    ren_ctx.scene_depth_stencil_target = renderer_create_depth_stencil_texture(gpu_device, frame_size, config.geo_depth_stencil_format, MSAA.OFF, {.DEPTH_STENCIL_TARGET, .SAMPLER});
     
 
     // min-max depth pyramid
@@ -128,13 +227,11 @@ renderer_recreate_all_render_targets :: proc(ren_ctx : ^RenderContext, gpu_devic
     ren_ctx.min_max_depth = texture_create_2D(gpu_device, frame_size, sdl.GPUTextureFormat.R32G32_FLOAT, true, {.SAMPLER, .COMPUTE_STORAGE_READ, .COMPUTE_STORAGE_WRITE});
 
 
-    // release color target & color msaa resole
-    if ren_ctx.geo_color_target_tex != nil {
-        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.geo_color_target_tex);
-        ren_ctx.geo_color_target_tex = nil;
+    // release color target
+    if ren_ctx.scene_hdr_color_target != nil {
+        sdl.ReleaseGPUTexture(gpu_device, ren_ctx.scene_hdr_color_target);
     }
-
-    ren_ctx.geo_color_target_tex = renderer_create_render_target_texture(gpu_device, frame_size, config.geo_color_target_format, MSAA.OFF, {.COLOR_TARGET,.SAMPLER});
+    ren_ctx.scene_hdr_color_target = renderer_create_render_target_texture(gpu_device, frame_size, config.geo_color_target_format, MSAA.OFF, {.COLOR_TARGET,.SAMPLER});
 
     render_effects_reinit(gpu_device, &ren_ctx.effects, ren_ctx.config.ren_effect_flags, frame_size);
 }
@@ -146,8 +243,6 @@ renderer_init :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice, wind
     IRI_PROFILE_PROCEDURE()
 
     engine_assert(ren_ctx != nil);
-
-    ren_ctx.debug_gui_color_format = RenderTargetFormat.RGBA8_SRGB;
 
     // Setup Default Render Config
     ren_ctx.config = renderer_render_config_create_default();
@@ -163,40 +258,38 @@ renderer_init :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice, wind
         pass_info : RenderPassInfo;
 
         switch pass_type {
-            case .Main:
+            case .SceneHDR:
                 pass_info.has_color_target = true;
                 pass_info.color_target_format = ren_ctx.config.geo_color_target_format;
                 pass_info.has_depth_target = true;
                 pass_info.depth_target_format = ren_ctx.config.geo_depth_stencil_format;
             
-            case .DebugGui:
+            case .Ui:
                 pass_info.has_color_target = true;
-                pass_info.color_target_format = ren_ctx.debug_gui_color_format;
+                pass_info.color_target_format = UI_COLOR_TARGET_FORMAT;
                 pass_info.has_depth_target = false;
 
-            case .PostColorCorrect:
+            case .PostProcessToLDR:
                 pass_info.has_color_target = true;
-                pass_info.color_target_format = RenderTargetFormat.RGBA8_SRGB; // Hardcoded, if change here remember to change in recreate_all_rendertargets() too.
+                pass_info.color_target_format = POST_LDR_COLOR_TARGET_FORMAT
                 pass_info.has_depth_target = false;
-                pass_info.depth_target_format = ren_ctx.config.geo_depth_stencil_format;
 
-            case .SWAPCHAIN_COMPOSIT:
+            case .SwapchainComposit:
                 pass_info.has_color_target = true;
                 pass_info.color_target_format =   RenderTargetFormat.SWAPCHAIN;
                 pass_info.has_depth_target = false;
 
-            case .DEPTH_PREPASS:
+            case .DepthPrepass:
                 pass_info.has_depth_target = true;
-                //pass_info.depth_target_format = DepthStencilFormat.D32_FLOAT;
                 pass_info.depth_target_format = ren_ctx.config.geo_depth_stencil_format;
                 pass_info.has_color_target = false;
-                //pass_info.color_target_format = RenderTargetFormat.RGBA32_FLOAT;
-            case .SHADOWMAP:
+
+            case .Shadowmap:
                 pass_info.has_depth_target = true;
                 pass_info.depth_target_format = DepthStencilFormat.D32_FLOAT;
                 pass_info.has_color_target = true;
                 pass_info.color_target_format = RenderTargetFormat.R32_FLOAT;
-            case .SMAA:
+            case .Smaa:
                 pass_info.has_depth_target = false;
                 pass_info.has_color_target = true;
                 pass_info.color_target_format = RenderTargetFormat.RGBA8_UNORM;
@@ -215,25 +308,30 @@ renderer_init :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice, wind
     ren_ctx.dummy_cubemap = texture_cube_create_basic(gpu_device, 128, .R8G8B8A8_UNORM);
 
     // Create sampelrs
-    basic_sampler_ci : sdl.GPUSamplerCreateInfo = {
-        min_filter      = sdl.GPUFilter.LINEAR,
-        mag_filter      = sdl.GPUFilter.LINEAR,
-        mipmap_mode     = sdl.GPUSamplerMipmapMode.NEAREST,
-        address_mode_u  = sdl.GPUSamplerAddressMode.REPEAT,
-        address_mode_v  = sdl.GPUSamplerAddressMode.REPEAT,
-        address_mode_w  = sdl.GPUSamplerAddressMode.REPEAT,
-        enable_compare = false,
-    };
+    // basic_sampler_ci : sdl.GPUSamplerCreateInfo = {
+    //     min_filter      = sdl.GPUFilter.LINEAR,
+    //     mag_filter      = sdl.GPUFilter.LINEAR,
+    //     mipmap_mode     = sdl.GPUSamplerMipmapMode.NEAREST,
+    //     address_mode_u  = sdl.GPUSamplerAddressMode.REPEAT,
+    //     address_mode_v  = sdl.GPUSamplerAddressMode.REPEAT,
+    //     address_mode_w  = sdl.GPUSamplerAddressMode.REPEAT,
+    //     enable_compare = false,
+    // };
 
-    ren_ctx.geo_color_target_sampler = sdl.CreateGPUSampler(gpu_device, basic_sampler_ci);
-    ren_ctx.post_correct_color_target_sampler = sdl.CreateGPUSampler(gpu_device, basic_sampler_ci);
-    ren_ctx.debug_gui_color_target_sampler = sdl.CreateGPUSampler(gpu_device, basic_sampler_ci); // its the same sampler basically
+    //ren_ctx.geo_color_target_sampler = sdl.CreateGPUSampler(gpu_device, basic_sampler_ci);
+    //ren_ctx.post_correct_color_target_sampler = sdl.CreateGPUSampler(gpu_device, basic_sampler_ci);
+    //ren_ctx.ui_color_target_sampler = sdl.CreateGPUSampler(gpu_device, basic_sampler_ci); // its the same sampler basically
 
-    ren_ctx.linear_depth_sampler  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .CLAMP_TO_EDGE);
-    ren_ctx.nearest_depth_sampler = texture_create_sampler(gpu_device, .NEAREST , .NEAREST,  .CLAMP_TO_EDGE);
+    // ren_ctx.sampler_depth_linear  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .CLAMP_TO_EDGE);
+    // ren_ctx.sampler_depth_nearest = texture_create_sampler(gpu_device, .NEAREST , .NEAREST,  .CLAMP_TO_EDGE);
 
-    ren_ctx.sampler_linear_mip_nearest_clamp  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .CLAMP_TO_EDGE);
+    // ren_ctx.sampler_linear_mip_nearest_clamp  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .CLAMP_TO_EDGE);
+    // ren_ctx.sampler_linear_mip_nearest_repeat  = texture_create_sampler(gpu_device, .LINEAR  , .NEAREST,  .REPEAT);
 
+    // ren_ctx.sampler_linear  = texture_create_sampler(gpu_device, .LINEAR , .LINEAR , .REPEAT);
+    // ren_ctx.sampler_nearest = texture_create_sampler(gpu_device, .NEAREST, .NEAREST, .REPEAT);
+
+    renderer_samplers_init(gpu_device, &ren_ctx.samplers)
 
     // Shadowmap Depth Textures.
     for resolution_enum in ShadowmapResolution {
@@ -247,12 +345,12 @@ renderer_init :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice, wind
     {
         buf_ci := sdl.GPUBufferCreateInfo{
             usage = sdl.GPUBufferUsageFlags{.GRAPHICS_STORAGE_READ},
-            size = size_of(GlobalFragmentBuffer),
+            size = size_of(GlobalFragmentDataGPU),
         }
 
         transfer_buf_ci := sdl.GPUTransferBufferCreateInfo{
                 usage = sdl.GPUTransferBufferUsage.UPLOAD,
-                size = size_of(GlobalFragmentBuffer),
+                size = size_of(GlobalFragmentDataGPU),
         }
         ren_ctx.global_fragment_gpu_buffer = sdl.CreateGPUBuffer(gpu_device, buf_ci)
         ren_ctx.global_fragment_transfer_buffer = sdl.CreateGPUTransferBuffer(gpu_device, transfer_buf_ci)
@@ -308,20 +406,18 @@ renderer_deinit :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice) {
 
     IRI_PROFILE_PROCEDURE()
 
-
     primitive_destroy(gpu_device, ren_ctx.prim_icosphere);
     free(ren_ctx.prim_icosphere);
 
     render_effects_deinit_and_destroy(ren_ctx, gpu_device, ren_ctx.config.ren_effect_flags);
+    
 
-    sdl.ReleaseGPUSampler(gpu_device, ren_ctx.geo_color_target_sampler);
-    sdl.ReleaseGPUSampler(gpu_device, ren_ctx.debug_gui_color_target_sampler);
-    sdl.ReleaseGPUSampler(gpu_device, ren_ctx.sampler_linear_mip_nearest_clamp);
+    renderer_samplers_deinit(gpu_device, &ren_ctx.samplers)
 
-    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.geo_color_target_tex);
-    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.geo_depth_stencil_target_tex);
-    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.debug_gui_color_target_tex);
-    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.post_correct_color_target_tex);
+    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.scene_hdr_color_target);
+    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.scene_depth_stencil_target);
+    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.ui_color_target);
+    sdl.ReleaseGPUTexture(gpu_device, ren_ctx.post_ldr_color_target);
 
     texture_2D_destroy(gpu_device, &ren_ctx.brdf_lut, false);
     texture_cube_destroy(gpu_device, &ren_ctx.dummy_cubemap, false);
@@ -335,6 +431,7 @@ renderer_deinit :: proc(ren_ctx : ^RenderContext, gpu_device: ^sdl.GPUDevice) {
     delete(ren_ctx.shadowmap_depth_textures);
 }
 
+// @Dear imgui ui only atm
 @(private="package")
 renderer_draw_frame_UI_only :: proc(ren_ctx : ^RenderContext, window: ^WindowContext) {
 
@@ -368,32 +465,24 @@ renderer_draw_frame_UI_only :: proc(ren_ctx : ^RenderContext, window: ^WindowCon
         renderer_recreate_all_render_targets(ren_ctx, gpu_device);
     }
 
+    frame_globals : ^RendererFrameGlobals = new(RendererFrameGlobals, context.temp_allocator)
+   
+    frame_globals.gpu_device = gpu_device
+    frame_globals.pipeline_manager = pipe_manager
+    frame_globals.frame_size          = renderer_calculate_frame_size_from_swapchain_size(swapchain_tex_size, ren_ctx.config.render_resolution)
+    frame_globals.swapchain_size      = swapchain_tex_size
+    frame_globals.dummy_white_texture_2D = &ren_ctx.white_texture
+    frame_globals.samplers = &ren_ctx.samplers;
+    
 
-    // UI (DearImgui) RENDER PASS
-    {
-        
-        if debug_gui_is_enabled() {
-            
-            debug_gui_prepare_and_upload_draw_data(cmd_buf);
+    frame_transients : ^RendererFrameTransients = new(RendererFrameTransients, context.temp_allocator)
 
-            renderer_push_debug_group(cmd_buf, "Debug GUI Pass");
-            defer renderer_pop_debug_group(cmd_buf);
-
-            ui_color_target := sdl.GPUColorTargetInfo {
-                texture = ren_ctx.debug_gui_color_target_tex,
-                clear_color = sdl.FColor{0,0,0,0},
-                load_op  = sdl.GPULoadOp.CLEAR,
-                store_op = sdl.GPUStoreOp.STORE,
-                cycle = true,
-            }
-
-            debug_gui_render_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, &ui_color_target, 1, nil);
-
-            debug_gui_draw_frame(cmd_buf, debug_gui_render_pass, pipe_manager_get_core_pipeline(pipe_manager, .DearImGUI));
-
-            sdl.EndGPURenderPass(debug_gui_render_pass);
-        }
+    // UI RENDER PASS
+    if debug_gui_is_enabled() {
+        debug_gui_prepare_and_upload_draw_data(cmd_buf);
     }
+
+    renderer_execute_module_ui(ren_ctx, frame_globals, frame_transients, cmd_buf);
 
     // Clear scene render target
     {
@@ -401,7 +490,7 @@ renderer_draw_frame_UI_only :: proc(ren_ctx : ^RenderContext, window: ^WindowCon
         defer renderer_pop_debug_group(cmd_buf);
 
         color_target := sdl.GPUColorTargetInfo {
-                texture = ren_ctx.post_correct_color_target_tex,
+                texture = ren_ctx.post_ldr_color_target,
                 clear_color = sdl.FColor{0.02,0.02,0.02, 1},
                 load_op  = sdl.GPULoadOp.CLEAR,
                 store_op = sdl.GPUStoreOp.STORE,
@@ -411,58 +500,13 @@ renderer_draw_frame_UI_only :: proc(ren_ctx : ^RenderContext, window: ^WindowCon
         clear_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target,1,nil);
         
         sdl.EndGPURenderPass(clear_pass);
+
+        frame_transients.post_ldr_color_target = ren_ctx.post_ldr_color_target;
     }
 
-    // FINAL COMPOSIT INTO SWAPCHAIN
-    {
-        renderer_push_debug_group(cmd_buf, "Swapchain Composit Pass");
-        defer renderer_pop_debug_group(cmd_buf);
-
-        swapchain_target := sdl.GPUColorTargetInfo {
-            texture = swapchain_texture,
-            clear_color = sdl.FColor{1,0,1,1},
-            load_op  = sdl.GPULoadOp.CLEAR,
-            store_op = sdl.GPUStoreOp.STORE,
-            cycle = true,
-        }
-
-        swapchain_blit_pass := sdl.BeginGPURenderPass(cmd_buf, &swapchain_target,1, nil);
-        
-        sdl.BindGPUGraphicsPipeline(swapchain_blit_pass, pipe_manager_get_core_pipeline(pipe_manager, .SWAPCHAIN_COMPOSIT));
-
-        post_correct_tex_sampler_binding := sdl.GPUTextureSamplerBinding {
-            texture = ren_ctx.post_correct_color_target_tex,
-            sampler = ren_ctx.post_correct_color_target_sampler, // its just s standart sampler..
-        }
-
-        debug_gui_tex_sampler_binding := sdl.GPUTextureSamplerBinding {
-            texture = ren_ctx.debug_gui_color_target_tex,
-            sampler = ren_ctx.debug_gui_color_target_sampler,
-        }
-
-        sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 0, &post_correct_tex_sampler_binding, 1);
-        sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 1, &debug_gui_tex_sampler_binding, 1);
-        
-        SwapchainCompositUBO :: struct {
-            convert_to_srgb : u32,
-            convert_scene_tex_to_linear_on_load : u32,
-            padding1 : u32,
-            padding2 : u32,
-        }
-
-        swap_composit_ubo := SwapchainCompositUBO {
-            convert_to_srgb = window.swapchain_settings.color_space == SwapchainColorSpace.Srgb ? 1 : 0,
-            convert_scene_tex_to_linear_on_load = 0, // used only when smaa is enabled..
-        }
 
 
-        sdl.PushGPUFragmentUniformData(cmd_buf,0, &swap_composit_ubo, size_of(SwapchainCompositUBO));
-
-        // Draw 6 verts aka 2 triangles aka 1 screenquad
-        sdl.DrawGPUPrimitives(swapchain_blit_pass, 6, 1, 0,0);
-
-        sdl.EndGPURenderPass(swapchain_blit_pass);
-    }
+    renderer_execute_module_swapchain_composit(swapchain_texture, frame_globals, frame_transients, cmd_buf)
 
     submit_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
     engine_assert(submit_ok);
@@ -486,26 +530,39 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     frame_size : [2]u32 = ren_ctx.current_frame_size;
     frame_aspect_ratio : f32 = cast(f32)frame_size.x / cast(f32)frame_size.y;
 
-    camera_info := &universe.frame_camera_info;
+    frame_globals : ^RendererFrameGlobals = new(RendererFrameGlobals, context.temp_allocator);
+    frame_globals.camera = &universe.frame_camera_info;
 
     // Update global uniform buffer objects
-    ren_ctx.global_vertex_ubo.view_mat = camera_info.view_mat;
-    ren_ctx.global_vertex_ubo.proj_mat = camera_info.proj_mat;
-    ren_ctx.global_vertex_ubo.view_proj_mat = camera_info.view_proj_mat;
 
-    ren_ctx.global_fragment_buffer.camera_pos_ws = camera_info.position_ws;
-    ren_ctx.global_fragment_buffer.camera_dir_ws = camera_info.direction_ws;
+    //
+    // - Global Vertex UBO
+    //
+    frame_globals.global_vertex_ubo = new(GlobalVertexUBO, context.temp_allocator);
 
-    ren_ctx.global_fragment_buffer.time_seconds = clock_get_elapsed_time();
-    ren_ctx.global_fragment_buffer.frame_size = frame_size;
+    frame_globals.global_vertex_ubo.view_mat = frame_globals.camera.view_mat;
+    frame_globals.global_vertex_ubo.proj_mat = frame_globals.camera.proj_mat;
+    frame_globals.global_vertex_ubo.view_proj_mat = frame_globals.camera.view_proj_mat;
 
-    ren_ctx.global_fragment_buffer.near_plane = camera_info.near_plane;
-    ren_ctx.global_fragment_buffer.far_plane = camera_info.far_plane;
+    //
+    // - Global Fragment Buffer
+    //
 
-    ren_ctx.global_fragment_buffer.cascade_frust_split_1 = universe.shadow_cascade_split_1;
-    ren_ctx.global_fragment_buffer.cascade_frust_split_2 = universe.shadow_cascade_split_2;
-    ren_ctx.global_fragment_buffer.cascade_frust_split_3 = universe.shadow_cascade_split_3;
-    ren_ctx.global_fragment_buffer.camera_exposure = camera_info.camera_exposure;
+    global_fragment_data : ^GlobalFragmentDataGPU = new(GlobalFragmentDataGPU, context.temp_allocator);
+
+    global_fragment_data.camera_pos_ws = frame_globals.camera.position_ws;
+    global_fragment_data.camera_dir_ws = frame_globals.camera.direction_ws;
+
+    global_fragment_data.time_seconds = clock_get_elapsed_time();
+    global_fragment_data.frame_size = frame_size;
+
+    global_fragment_data.near_plane = frame_globals.camera.near_plane;
+    global_fragment_data.far_plane  = frame_globals.camera.far_plane;
+
+    global_fragment_data.cascade_frust_split_1 = universe.shadow_cascade_split_1;
+    global_fragment_data.cascade_frust_split_2 = universe.shadow_cascade_split_2;
+    global_fragment_data.cascade_frust_split_3 = universe.shadow_cascade_split_3;
+    global_fragment_data.camera_exposure = frame_globals.camera.camera_exposure;
 
 
 
@@ -526,8 +583,6 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         // ============================================================================================================
         // Query Data uploads and perform transfer buffer updates
         // ============================================================================================================
-        
-        skybox_requires_upload, skybox_transfer_buf_loc, skybox_buf_region := universe_query_skybox_buffer_upload(gpu_device, universe);
 
         copy_pass :  ^sdl.GPUCopyPass = sdl.BeginGPUCopyPass(upload_cmd_buf);
 
@@ -535,7 +590,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         {
 
             data : rawptr = sdl.MapGPUTransferBuffer(gpu_device, ren_ctx.global_fragment_transfer_buffer, true);
-            mem.copy(data, &ren_ctx.global_fragment_buffer, size_of(GlobalFragmentBuffer));
+            mem.copy(data, global_fragment_data, size_of(GlobalFragmentDataGPU));
             sdl.UnmapGPUTransferBuffer(gpu_device, ren_ctx.global_fragment_transfer_buffer);
 
             transfer_buf_location := sdl.GPUTransferBufferLocation {
@@ -546,7 +601,7 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             buf_region := sdl.GPUBufferRegion {
                 buffer = ren_ctx.global_fragment_gpu_buffer,
                 offset = 0,
-                size = cast(u32)size_of(GlobalFragmentBuffer),
+                size = cast(u32)size_of(GlobalFragmentDataGPU),
             }
 
             // @Note: here we can/should actually cycle because we resubmit this every frame.
@@ -633,8 +688,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             }
         }
 
+        // Material data
         {
-            // Upload changed material data
             
             for &upload_info in material_manager.frame_upload_info {
                 if upload_info.requires_upload {
@@ -646,6 +701,20 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             }
         }
 
+        // UI Draws @Note: i think we can cylce on these since they are uploaded each frame anew.
+        {
+            vert_upload_info := &engine.ui_manager.frame_vert_draw_data_gpu_buf.upload_info;
+            if vert_upload_info.requires_upload {
+                sdl.UploadToGPUBuffer(copy_pass, vert_upload_info.transfer_buf_location, vert_upload_info.transfer_buf_region, false);
+            }
+
+            frag_upload_info := &engine.ui_manager.frame_frag_draw_data_gpu_buf.upload_info;
+            if vert_upload_info.requires_upload {
+                sdl.UploadToGPUBuffer(copy_pass, frag_upload_info.transfer_buf_location, frag_upload_info.transfer_buf_region, false);
+            }
+        }
+
+        skybox_requires_upload, skybox_transfer_buf_loc, skybox_buf_region := universe_query_skybox_buffer_upload(gpu_device, universe);
         if skybox_requires_upload {
             sdl.UploadToGPUBuffer(copy_pass, skybox_transfer_buf_loc, skybox_buf_region, false);
         }
@@ -699,120 +768,493 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         frame_aspect_ratio = cast(f32)frame_size.x / cast(f32)frame_size.y;
     }
 
-    draw_depthonly_drawable_index_array :: proc(cmd_buf : ^sdl.GPUCommandBuffer, 
-                                                render_pass : ^sdl.GPURenderPass, 
-                                                drawable_index_array : ^[dynamic]u32, 
-                                                pipe_manager : ^PipelineManager,
-                                                mesh_manager : ^MeshManager,
-                                                universe : ^Universe,
-                                                depthonly_shader_type : DepthOnlyPipelineShaders) -> (num_draw_calls : u32, num_pipeline_switches : u32)
-    {
-
-        last_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
-
-        // Draw all opaque geometry
-        for drawable_index in drawable_index_array {
-            
-            mesh_id := universe.ecs.drawables[drawable_index].draw_instance.mesh_id;
-            mat_id  := universe.ecs.drawables[drawable_index].draw_instance.mat_id;
-
-            technique_hash := material_manager_get_render_technique_hash_unsafe(engine.material_manager,mat_id);
-
-            pipeline_variant := pipe_manager_get_depthonly_pipeline_variant(pipe_manager, depthonly_shader_type, technique_hash);
-            engine_assert(pipeline_variant != nil);
-            
-            if pipeline_variant != last_pipeline_variant {
-                sdl.BindGPUGraphicsPipeline(render_pass, pipeline_variant);
-                last_pipeline_variant = pipeline_variant;
-                num_pipeline_switches += 1;
-            }            
-            
-            global_buf_info := &mesh_manager.meshes.global_buf_info[mesh_id];
-            sdl.DrawGPUIndexedPrimitives(render_pass, global_buf_info.num_indecies, num_instances = 1, first_index = global_buf_info.indecies_offset, vertex_offset = cast(i32)global_buf_info.vertecies_offset, first_instance = drawable_index);
-
-            num_draw_calls += 1;
-        }
-
-        return num_draw_calls, num_pipeline_switches;
-    }
-
+   
     // Only concerning mesh_drawcalls. 
     // We still want to draw skybox, debug draws and ui etc.
     any_draws_exist : bool = len(universe.frame_renderables) > 0;
 
+    
 
-    FrameResourceBindings :: struct {
-        global_index_buf_binding : sdl.GPUBufferBinding,
-        global_vert_buf_binding : sdl.GPUBufferBinding,
+   //
+   //   - Setup Frame Globals
+   //
+    {
+        frame_globals.frame_size = frame_size
+        frame_globals.swapchain_size = swapchain_tex_size
         
-        minmax_sampler_binding : sdl.GPUTextureSamplerBinding,
+        // Managers
+        frame_globals.gpu_device       = gpu_device
+        frame_globals.pipeline_manager = pipe_manager
+        frame_globals.mesh_manager     = mesh_manager
+        frame_globals.material_manager = material_manager
+        frame_globals.light_manager    = &universe.light_manager
+
+        frame_globals.samplers = &ren_ctx.samplers;
+
+        frame_globals.brdf_lut_binding = &ren_ctx.brdf_lut.binding
+
+        frame_globals.global_vert_buf_binding = sdl.GPUBufferBinding {
+            buffer = mesh_manager.global_vertecies_buf.buf,
+        }
+        frame_globals.global_index_buf_binding = sdl.GPUBufferBinding {
+            buffer = mesh_manager.global_indecies_buf.buf, 
+        }
+
+
+        frame_globals.global_fragment_buffer = ren_ctx.global_fragment_gpu_buffer
+
+
+        sky_comp := ecs_get_active_skybox_component(ecs);
+
+        frame_globals.sky_gpu_buffer = universe.skybox_gpu_buffer;
+
+        if sky_comp != nil &&  sky_comp.cubemap.binding.texture != nil && sky_comp.cubemap.binding.sampler != nil{
+            frame_globals.sky_cubemap_binding = sky_comp.cubemap.binding;
+        } else {
+            frame_globals.sky_cubemap_binding = ren_ctx.dummy_cubemap.binding;
+        }
+
+
+        frame_globals.material_buffer_unlit = material_manager.gpu_mat_buf[.Unlit]
+        frame_globals.material_buffer_pbr   = material_manager.gpu_mat_buf[.Pbr]
+
+        // Scene Data 
+
+        frame_globals.any_draws_exist = len(universe.frame_renderables) > 0;
+        frame_globals.drawables = &universe.ecs.drawables
+
+        frame_globals.frame_renderables       = universe.frame_renderables[:]
+        frame_globals.frame_draws_opaque      = universe.frame_opaques[:]
+        frame_globals.frame_draws_alpha_test  = universe.frame_alpha_test[:]
+        frame_globals.frame_draws_alpha_blend = universe.frame_alpha_blend[:]
+        frame_globals.frame_draws_shadow      = universe.frame_shadow_draws[:]
+
+        frame_globals.shadowmap_info_buffer = universe.light_manager.gpu_shadowmap_infos_buf
+        frame_globals.lights_buffer         = universe.light_manager.gpu_lights_data_buf
+
+        frame_globals.geo_matrix_buffer = universe.matrix_buf
+
+        frame_globals.geo_inv_matrix_buf             = universe.inv_matrix_buf
+        frame_globals.geo_tlas_nodes_buf             = universe.tlas_nodes_buf.buf
+        frame_globals.geo_frame_tl_draw_indecies_buf = universe.frame_tl_draw_indecies_buf.buf
+        frame_globals.geo_drawables_globals_info_buf = universe.drawables_globals_info_buf.buf
+
+        // other rescourses
+        frame_globals.dummy_white_texture_2D = &ren_ctx.white_texture
+    }
+
+
+
+
+    frame_transients : ^RendererFrameTransients = new(RendererFrameTransients, context.temp_allocator);
+
+    // 
+    // DEPTH PRE PASS
+    //
+    renderer_execute_module_depth_prepass(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+    // 
+    // MIN MAX DEPTH HIERARCHY
+    //
+    renderer_execute_module_min_max_depth_hierarchy(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+    //
+    // SSAO / GTAO
+    //     
+    renderer_execute_module_gtao(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+    // 
+    // RADIANCE CASCADES
+    // 
+    renderer_execute_module_raca(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+    // 
+    // SHADOWMAP PASS
+    // 
+    renderer_execute_module_shadowmaps(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+    // 
+    // MAIN FORWARD RENDER PASS
+    // 
+    renderer_execute_module_geometry_pass(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+
+    // Post Process To LDR
+    renderer_execute_module_post_process_to_ldr(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+    //
+    // - SMAA
+    //
+    renderer_execute_module_smaa(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+    //
+    // - UI
+    //
+    renderer_execute_module_ui(ren_ctx, frame_globals, frame_transients, cmd_buf);
+
+
+
+    // FINAL COMPOSIT INTO SWAPCHAIN
+    renderer_execute_module_swapchain_composit(swapchain_texture, frame_globals, frame_transients, cmd_buf)
+
+
+    
+    submit_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
+    engine_assert(submit_ok);
+    //log.debugf("Submitted")
+    
+}
+
+
+@(private="package")
+renderer_get_render_pass_info :: proc(ren_ctx : ^RenderContext, render_pass_type: RenderPassType) -> RenderPassInfo{
+    return ren_ctx.render_pass_infos[render_pass_type];
+}
+
+
+@(private="file")
+renderer_push_debug_group :: proc(command_buffer : ^sdl.GPUCommandBuffer, name : cstring) {
+
+    when ENGINE_DEVELOPMENT {
+        sdl.PushGPUDebugGroup(command_buffer, name);
+    }
+}
+
+@(private="file")
+renderer_pop_debug_group :: proc(command_buffer : ^sdl.GPUCommandBuffer){
+
+    when ENGINE_DEVELOPMENT {
+        sdl.PopGPUDebugGroup(command_buffer);
+    }
+}
+
+@(private="file")
+renderer_execute_depthonly_drawcalls_drawable_index_array :: proc(frame_globals : ^RendererFrameGlobals, cmd_buf : ^sdl.GPUCommandBuffer, render_pass : ^sdl.GPURenderPass, drawable_indexes_array : []u32, depthonly_shader_type : DepthOnlyPipelineShaders) -> (num_draw_calls : u32, num_pipeline_switches : u32) {
+
+    last_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
+
+    // Draw all opaque geometry
+    for drawable_index in drawable_indexes_array {
         
-        sky_cubemap_binding : sdl.GPUTextureSamplerBinding,
-        gtao_sampler_binding  : sdl.GPUTextureSamplerBinding,
-        raca_sampler_binding : sdl.GPUTextureSamplerBinding,
-        raca_ao_sampler_binding : sdl.GPUTextureSamplerBinding,
+        mesh_id := frame_globals.drawables[drawable_index].draw_instance.mesh_id;
+        mat_id  := frame_globals.drawables[drawable_index].draw_instance.mat_id;
+
+        technique_hash := material_manager_get_render_technique_hash_unsafe(frame_globals.material_manager, mat_id);
+
+        pipeline_variant := pipe_manager_get_depthonly_pipeline_variant(frame_globals.pipeline_manager, depthonly_shader_type, technique_hash);
+        engine_assert(pipeline_variant != nil);
+        
+        if pipeline_variant != last_pipeline_variant {
+            sdl.BindGPUGraphicsPipeline(render_pass, pipeline_variant);
+            last_pipeline_variant = pipeline_variant;
+            num_pipeline_switches += 1;
+        }            
+        
+        global_buf_info := &frame_globals.mesh_manager.meshes.global_buf_info[mesh_id];
+        sdl.DrawGPUIndexedPrimitives(render_pass, global_buf_info.num_indecies, num_instances = 1, first_index = global_buf_info.indecies_offset, vertex_offset = cast(i32)global_buf_info.vertecies_offset, first_instance = drawable_index);
+
+        num_draw_calls += 1;
     }
 
-    res_bindings : ^FrameResourceBindings = new(FrameResourceBindings, context.temp_allocator);
+    return num_draw_calls, num_pipeline_switches;
+}
 
-    res_bindings.global_vert_buf_binding = sdl.GPUBufferBinding {
-        buffer = mesh_manager.global_vertecies_buf.buf,
+// TODO: UNIFINISHED REFACTOR
+@(private="file")
+renderer_execute_geometry_drawcalls_drawable_index_array :: proc(cmd_buf : ^sdl.GPUCommandBuffer, render_pass : ^sdl.GPURenderPass,  drawables_index_array : []u32,  frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients) ->(draw_calls : u32, pipeline_switches : u32) {
+
+    bind_unlit_material_resources :: proc(render_pass : ^sdl.GPURenderPass, frame_globals : ^RendererFrameGlobals) {
+
+        // @Note: im still not sure if we need to bind this here. i think only once should be fine since it stays at the first slot.
+        sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &frame_globals.global_fragment_buffer, 1);
+        
+        sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &frame_globals.material_buffer_unlit, 1);
     }
 
-    res_bindings.global_index_buf_binding = sdl.GPUBufferBinding {
-        buffer = mesh_manager.global_indecies_buf.buf, 
+    bind_pbr_material_resources :: proc(render_pass : ^sdl.GPURenderPass, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients) {
+        
+        // Brdf Lut
+        sdl.BindGPUFragmentSamplers(render_pass, 0 , frame_globals.brdf_lut_binding, 1);
+
+        // AO Texture
+        sdl.BindGPUFragmentSamplers(render_pass, 1, &frame_transients.screen_space_ao_sampler_binding, 1);
+        //sdl.BindGPUFragmentSamplers(render_pass, 1, &res_bindings.raca_ao_sampler_binding, 1);
+
+        // Skybox cubemap
+        sdl.BindGPUFragmentSamplers(render_pass, 2, &frame_globals.sky_cubemap_binding, 1);
+
+        // Shadowmap Array
+        sdl.BindGPUFragmentSamplers(render_pass, 3, &frame_transients.shadowmap_array_binding ,1);
+        
+        // Radiance Cascades
+        sdl.BindGPUFragmentSamplers(render_pass, 4, &frame_transients.raca_sampler_binding, 1);
+
+        // Bind buffers specific to opaque pbr pass..
+        sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &frame_globals.global_fragment_buffer, 1);
+
+        // Skybox Buffer
+        sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &frame_globals.sky_gpu_buffer, 1);
+
+        // PBR material buffer
+        sdl.BindGPUFragmentStorageBuffers(render_pass, 2, &frame_globals.material_buffer_pbr, 1);
+
+        // lights
+        sdl.BindGPUFragmentStorageBuffers(render_pass, 3, &frame_globals.lights_buffer, 1);
+        sdl.BindGPUFragmentStorageBuffers(render_pass, 4, &frame_globals.shadowmap_info_buffer, 1);
     }
+
+
+
+    last_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
+    last_material_shader_type : MaterialShaderType = .None; 
+
+    for drawable_index in drawables_index_array {
+
+            mesh_id := frame_globals.drawables[drawable_index].draw_instance.mesh_id;
+            mat_id  := frame_globals.drawables[drawable_index].draw_instance.mat_id;
+            
+            mat_shader_type := material_manager_get_material_shader_type_unsafe(frame_globals.material_manager, mat_id);
+
+            mesh_gpu_data := mesh_manager_get_mesh_gpu_data(frame_globals.mesh_manager, mesh_id);
+            vert_layout   := mesh_gpu_data.vertex_layout;
+
+            pipeline_variant := pipe_manager_get_material_pipeline_variant(frame_globals.pipeline_manager, frame_globals.material_manager, mat_id, vert_layout);
+
+            if pipeline_variant != last_pipeline_variant {
+
+                sdl.BindGPUGraphicsPipeline(render_pass, pipeline_variant);
+                last_pipeline_variant = pipeline_variant;
+
+                pipeline_switches += 1;
+
+                if mat_shader_type != last_material_shader_type {
+
+                    switch mat_shader_type {
+                        case .None:
+                        case .Pbr:   bind_pbr_material_resources(render_pass, frame_globals, frame_transients);
+                        case .Unlit: bind_unlit_material_resources(render_pass, frame_globals);
+                        case .Custom:
+                    }
+
+                    last_material_shader_type = last_material_shader_type;
+                }
+
+            }
+            
+            if pipeline_variant == nil {
+                log.debugf("DrawFrame: cannont exxecture draw call, pipeline not build");
+                continue;
+            }
+
+            // @Note:
+            // This part must adapt to which shader is in used.
+            // mainly because for custom shaders we probably will need to bind material specific buffers.
+            // for engine materials that are registered with the material manager we can stick to the gpu index
+            // into the respective material type gpu buffer.
+
+            frag_mat_ubo: MatUBO = MatUBO{
+                mat_index = cast(u32)frame_globals.material_manager.material_gpu_indexes[mat_id],
+            };
+
+            switch mat_shader_type {
+                case .None:
+                case .Pbr:   sdl.PushGPUFragmentUniformData(cmd_buf, 0, &frag_mat_ubo, size_of(MatUBO));
+                case .Unlit: {
+                    //unlit := engine.material_manager.unlit_materials_gpu[frag_mat_ubo.mat_index];
+                    sdl.PushGPUFragmentUniformData(cmd_buf, 0, &frag_mat_ubo, size_of(MatUBO));
+                }
+                case .Custom: {
+                    unimplemented();
+                }
+            }
+
+            global_buf_info := frame_globals.mesh_manager.meshes[mesh_id].global_buf_info
+
+            // @Note using global index buffer is much faster on cpu but probably slower on gpu
+            // because the global index buffer indecies are not cache optimized but instead ordered for ray traversal.
+            // still close vertecies should appear rather close to each other so its probably okey.
+            // bind index buffer
+            // index_buf_binding := sdl.GPUBufferBinding {
+            //     buffer = mesh_gpu_data.index_buf,
+            //     offset = 0,
+            // }
+            // sdl.BindGPUIndexBuffer(render_pass, index_buf_binding, sdl.GPUIndexElementSize._32BIT);
+            
+            // we cant yet use the global possition buffer unless we also have global buffer for the other vertex data as in vert_layouts minimal,standart and extended..                  
+            buffer_bindings : [2]sdl.GPUBufferBinding = ---;
+            buffer_bindings[0].buffer = mesh_gpu_data.vertex_pos_buf;
+            buffer_bindings[0].offset = 0;
+
+            buffer_bindings[1].buffer = mesh_gpu_data.vertex_buf;
+            buffer_bindings[1].offset = 0;
+            sdl.BindGPUVertexBuffers(render_pass, 0, &buffer_bindings[0], 2);
+
+            
+            num_indecies : u32 = mesh_gpu_data.num_indecies;
+            sdl.DrawGPUIndexedPrimitives(render_pass, num_indecies, num_instances = 1, first_index = global_buf_info.indecies_offset, vertex_offset = 0, first_instance = drawable_index);
+
+            //renderer_DRAW_CALL_draw_mesh_instance_gpu_data(render_pass, mesh_gpu_data, false);
+            draw_calls += 1;
+    }
+
+    return draw_calls, pipeline_switches;
+}
+
+@(private="package")
+renderer_execute_module_ui :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals,frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer) {
+
+    IRI_PROFILE_PROCEDURE()
+    
+    renderer_push_debug_group(cmd_buf, "Screen UI");
+    defer renderer_pop_debug_group(cmd_buf);
+
+
+    color_target := sdl.GPUColorTargetInfo {
+        texture = renderer.ui_color_target,
+        //texture     = smaa.edges_target, // we can recylce the edges target as final output for now
+        clear_color = sdl.FColor{0.0,0,0,0},
+        load_op     = .CLEAR,
+        store_op    = .STORE,
+        cycle = true,
+    }
+    
+
+    ui_ren_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil);
+    
+
+    ui_manager := engine.ui_manager;
+    clay_ui_rendering_enabled := ui_is_rendering_enabled();
+
+    //
+    //  Clay UI
+    //
+
+    if clay_ui_rendering_enabled && len(ui_manager.frame_draw_commands) > 0 {
+
+        ui_rect_pipe := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .UI_RECT)
+        engine_assert(ui_rect_pipe != nil)
+        sdl.BindGPUGraphicsPipeline(ui_ren_pass, ui_rect_pipe)
+
+        UIRectGlobalVertUBO :: struct {
+            frame_size : [2]f32,
+            layout_dimentions  : [2]f32,
+        }
+
+        // @Note: Ui Rendering always happens at native (swapchain) resolution.
+        swapchain_size_f := [2]f32{cast(f32)frame_globals.swapchain_size.x, cast(f32)frame_globals.swapchain_size.y}
+        
+        ui_global_vert_ubo := UIRectGlobalVertUBO{
+            // same currently
+            frame_size        = swapchain_size_f,
+            layout_dimentions = swapchain_size_f,
+        }
+
+        sdl.PushGPUVertexUniformData(cmd_buf, 0, &ui_global_vert_ubo , size_of(UIRectGlobalVertUBO));
+
+        //  Bind vert buffer
+        sdl.BindGPUVertexStorageBuffers(ui_ren_pass, 0, &ui_manager.frame_vert_draw_data_gpu_buf.buf, 1);
+        
+        // Bind default white texture
+        sdl.BindGPUFragmentSamplers(ui_ren_pass, 0, &frame_globals.dummy_white_texture_2D.binding, 1);
+        sdl.BindGPUFragmentStorageBuffers(ui_ren_pass, 0, &ui_manager.frame_frag_draw_data_gpu_buf.buf, 1);
+
+
+        for i in 0..<len(ui_manager.frame_draw_commands) {
+
+            ren_command := ui_manager.frame_draw_commands[i];
+            
+            switch &variant in ren_command.variant {
+
+                case UiDrawCommandRect: {
+                    sdl.DrawGPUPrimitives(ui_ren_pass, 6, num_instances = ren_command.num_instances, first_vertex = 0, first_instance = ren_command.base_instance_index);
+                }
+                case UiDrawCommandText: {
+
+                    sdl.BindGPUFragmentSamplers(ui_ren_pass, 0, &variant.font_atlas_tex_binding, 1);
+                    sdl.DrawGPUPrimitives(ui_ren_pass, 6, num_instances = ren_command.num_instances, first_vertex = 0, first_instance = ren_command.base_instance_index);
+                }
+                case UiDrawCommandSetScissors:
+                    sdl.SetGPUScissor(ui_ren_pass, variant.rect)
+            }
+        }
+    }
+
+    //
+    // - Dear Imgui UI
+    //
+    if debug_gui_is_enabled() {
+        debug_gui_pipeline := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .DearImGUI)
+        debug_gui_draw_frame(cmd_buf, ui_ren_pass, debug_gui_pipeline);
+    }
+
+
+    sdl.EndGPURenderPass(ui_ren_pass);
+
+    frame_transients.ui_color_target = renderer.ui_color_target;
+}
+
+
+@(private="package")
+renderer_execute_module_depth_prepass :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
+
+    IRI_PROFILE_SCOPE("Renderer: Depth Pre Pass (CPU)")
 
     // ============================================================================================================
     //                                      DEPTH PRE PASS
     // ============================================================================================================
     
-    depth_prepass: {
-        IRI_PROFILE_SCOPE("Renderer: Depth Pre Pass (CPU)")
+    perfs := get_performance_counters();
 
-        renderer_push_debug_group(cmd_buf, "Depth Pre Pass");
-        defer renderer_pop_debug_group(cmd_buf);
+    renderer_push_debug_group(cmd_buf, "Depth Pre Pass");
+    defer renderer_pop_debug_group(cmd_buf);
 
-        timer := timer_begin()
-        defer perfs.depth_prepass_cpu_ms = timer_end_get_miliseconds(timer);
-        perfs.depth_prepass_drawcalls = 0;
-        perfs.depth_prepass_num_pipeline_switches = 0;
+    timer := timer_begin()
+    defer perfs.depth_prepass_cpu_ms = timer_end_get_miliseconds(timer);
+    perfs.depth_prepass_drawcalls = 0;
+    perfs.depth_prepass_num_pipeline_switches = 0;
+    
+    depth_pre_depth_stencil_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
+        texture     = renderer.scene_depth_stencil_target,
+        clear_depth = 0,
+        load_op     = sdl.GPULoadOp.CLEAR,
+        store_op    = sdl.GPUStoreOp.STORE,
         
-        depth_pre_depth_stencil_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
-            texture     = ren_ctx.geo_depth_stencil_target_tex,
-            clear_depth = 1,
-            load_op     = sdl.GPULoadOp.CLEAR,
-            store_op    = sdl.GPUStoreOp.STORE,
-            
-            stencil_load_op = sdl.GPULoadOp.CLEAR,
-            stencil_store_op = sdl.GPUStoreOp.STORE,
-            cycle = true,
-            clear_stencil = 0,        // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. */
-        }
-
-        depth_pre_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, nil, 0, &depth_pre_depth_stencil_target_info);        
-        
-
-        if any_draws_exist {
-
-            sdl.PushGPUVertexUniformData(cmd_buf, 0, &ren_ctx.global_vertex_ubo, size_of(GlobalVertexUBO));
-            
-            // TODO: maybe we should have matrix buffer have always one identity matrix as first index.
-            // otherwise if its nil here we crash on this call. but if we dont bind anything we also crash at least in validation mode.
-            sdl.BindGPUVertexStorageBuffers(depth_pre_pass, 0, &universe.matrix_buf, 1);
-            
-            sdl.BindGPUIndexBuffer(depth_pre_pass, res_bindings.global_index_buf_binding, sdl.GPUIndexElementSize._32BIT);
-            sdl.BindGPUVertexBuffers(depth_pre_pass, 0, &res_bindings.global_vert_buf_binding, 1);
-
-            draws, switches := draw_depthonly_drawable_index_array(cmd_buf, depth_pre_pass, &universe.frame_opaques  , pipe_manager, mesh_manager, universe, .DepthPre);
-            perfs.depth_prepass_drawcalls += draws;
-            perfs.depth_prepass_num_pipeline_switches += switches;
-            draws, switches = draw_depthonly_drawable_index_array(cmd_buf, depth_pre_pass, &universe.frame_alpha_test, pipe_manager, mesh_manager, universe, .DepthPreAlphaTest);
-            perfs.depth_prepass_drawcalls += draws;
-            perfs.depth_prepass_num_pipeline_switches += switches;
-        }
-        sdl.EndGPURenderPass(depth_pre_pass);
+        stencil_load_op = sdl.GPULoadOp.CLEAR,
+        stencil_store_op = sdl.GPUStoreOp.STORE,
+        cycle = true,
+        clear_stencil = 0,        // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. */
     }
+
+    depth_pre_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, nil, 0, &depth_pre_depth_stencil_target_info);        
+    
+    if frame_globals.frame_renderables != nil && len(frame_globals.frame_renderables) > 0 {
+
+        sdl.PushGPUVertexUniformData(cmd_buf, 0, &frame_globals.global_vertex_ubo, size_of(GlobalVertexUBO));
+        
+        // TODO: maybe we should have matrix buffer have always one identity matrix as first index.
+        // otherwise if its nil here we crash on this call. but if we dont bind anything we also crash at least in validation mode.
+        sdl.BindGPUVertexStorageBuffers(depth_pre_pass, 0, &frame_globals.geo_matrix_buffer, 1);
+        
+        sdl.BindGPUIndexBuffer(depth_pre_pass, frame_globals.global_index_buf_binding, sdl.GPUIndexElementSize._32BIT);
+        sdl.BindGPUVertexBuffers(depth_pre_pass, 0, &frame_globals.global_vert_buf_binding, 1);
+
+        draws, switches := renderer_execute_depthonly_drawcalls_drawable_index_array(frame_globals, cmd_buf, depth_pre_pass, frame_globals.frame_draws_opaque, .DepthPre);
+        perfs.depth_prepass_drawcalls += draws;
+        perfs.depth_prepass_num_pipeline_switches += switches;
+        draws, switches = renderer_execute_depthonly_drawcalls_drawable_index_array(frame_globals,  cmd_buf, depth_pre_pass, frame_globals.frame_draws_alpha_test, .DepthPreAlphaTest);
+        perfs.depth_prepass_drawcalls += draws;
+        perfs.depth_prepass_num_pipeline_switches += switches;
+    }
+
+    sdl.EndGPURenderPass(depth_pre_pass);    
+
+    frame_transients.scene_depth_stencil_target = renderer.scene_depth_stencil_target;
+    
+}
+
+@(private="package")
+renderer_execute_module_min_max_depth_hierarchy :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
+
 
     // ============================================================================================================
     //                                      MIN MAX DEPTH HIERARCHY
@@ -822,11 +1264,16 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
     // iteration we will just perform a copy from the depth stencil target. (actually we also vertically flip while we're at it)
     // otherwise we use the previous mip level to construct a min and max depth for the current mip level
 
-    max_depth_mip : u32 = texture_util_calc_max_mip_level(frame_size.x, frame_size.y);
-    depth_hierarchy: {
-        IRI_PROFILE_SCOPE("Renderer: MIN MAX DEPTH HIERARCHY (CPU)")
 
-        renderer_push_debug_group(cmd_buf, "MinMax Depth Compute");
+    engine_assert(frame_transients.scene_depth_stencil_target != nil, "Depth Prepass Must happen First");
+
+
+    max_depth_mip : u32 = texture_util_calc_max_mip_level(frame_globals.frame_size.x, frame_globals.frame_size.y);
+    
+    depth_hierarchy: {
+        IRI_PROFILE_SCOPE("Renderer: Depth Hierarchy (CPU)")
+
+        renderer_push_debug_group(cmd_buf, "MinMax Depth Hierarchy Compute");
         defer renderer_pop_debug_group(cmd_buf);
 
         // TODO: we can pack this into 16 instead of 32 bytes dest_dimentions is always half se we can just calc that in the shader.
@@ -844,16 +1291,16 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
 
         // The first is src mip (high resolution) the second is dest mip (lower resolution)
         storage_rw_bindings : [2]sdl.GPUStorageTextureReadWriteBinding = {
-            {  texture = ren_ctx.min_max_depth , mip_level = 0},
-            {  texture = ren_ctx.min_max_depth , mip_level = 0}
+            {  texture = renderer.min_max_depth , mip_level = 0},
+            {  texture = renderer.min_max_depth , mip_level = 0}
         }
 
 
         compute_pipeline , thread_count := get_compute_pipeline(.MIN_MAX_DEPTH_HIERARCHY);
         
         // The first pass will esentially jut do a copy into mip_level 0 at same resolution
-        curr_src_dimentions  : [2]u32 = frame_size;
-        curr_dest_dimentions : [2]u32 = frame_size;
+        curr_src_dimentions  : [2]u32 = frame_globals.frame_size;
+        curr_dest_dimentions : [2]u32 = frame_globals.frame_size;
 
         for dest_mip_level in 0..<max_depth_mip {
 
@@ -879,8 +1326,8 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
             // but we only use it in the first iteration.           
             depth_stencil_target_tex_sampler_binding := sdl.GPUTextureSamplerBinding {
                 //texture = ren_ctx.pre_depth_stencil_target_tex,
-                texture = ren_ctx.geo_depth_stencil_target_tex,
-                sampler = ren_ctx.nearest_depth_sampler,
+                texture = frame_transients.scene_depth_stencil_target,
+                sampler = frame_globals.samplers.depth_nearest,
             }
         
             sdl.BindGPUComputeSamplers(compute_pass, 0, &depth_stencil_target_tex_sampler_binding, 1);
@@ -903,1286 +1350,1038 @@ renderer_draw_frame :: proc(ren_ctx : ^RenderContext, window: ^WindowContext, un
         }
     }
 
-    res_bindings.minmax_sampler_binding = sdl.GPUTextureSamplerBinding {
-        texture = ren_ctx.min_max_depth,
-        sampler = ren_ctx.nearest_depth_sampler,
-    }
 
-    // ============================================================================================================
-    //                                      SSAO / GTAO
-    // ============================================================================================================
+    frame_transients.depth_hierarchy_max_mip_level = max_depth_mip;
+    frame_transients.depth_hierarchy_sampler_binding = sdl.GPUTextureSamplerBinding{
+        texture = renderer.min_max_depth,
+        sampler = frame_globals.samplers.depth_nearest,
+    }
+}
+
+@(private="package")
+renderer_execute_module_shadowmaps :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer) {
+
+    perfs := get_performance_counters();
+
+     // TODO maybe move ligth pass after depth pre and ao so while ao is doing compute workload, 
+    // gemetry gpu parts can do depht buffer stuff.
+        
+    IRI_PROFILE_SCOPE("Renderer: Shadowmap Pass (CPU)")
+
+    light_manager := frame_globals.light_manager;
     
+    draw_calls : u32 = 0;
+    num_rendered_shadowmaps : u32 = 0;
+    num_pipe_switches : u32 = 0;
 
-    gtao_enabled : bool = .GTAO in ren_ctx.config.ren_effect_flags && !ren_ctx.effects.gtao.settings.temporary_disabled;
+    shadowmap_timer := timer_begin();
+    defer {            
+        perfs.shadowmap_pass_cpu_ms = timer_end_get_miliseconds(shadowmap_timer);
+        perfs.shadowmap_pass_drawcalls = draw_calls;
+        perfs.shadowmap_pass_num_rendered_shadowmaps = num_rendered_shadowmaps;
+        perfs.shadowmap_pass_num_pipeline_switches   = num_pipe_switches;
+    }
 
-    if gtao_enabled {
-        IRI_PROFILE_SCOPE("Renderer: GTAO Pass (CPU)")
-
-        renderer_push_debug_group(cmd_buf, "Render Effect: GTAO Compute");
+    if !frame_globals.any_draws_exist {
+        return
+    }
+    
+    if len(light_manager.gpu_shadowmap_infos) > 0 {
+    
+        renderer_push_debug_group(cmd_buf, "Shadowmaps");
         defer renderer_pop_debug_group(cmd_buf);
+    
+        for &sinfo, index in light_manager.gpu_shadowmap_infos {
 
-        gtao := ren_ctx.effects.gtao;
+            IRI_PROFILE_SCOPE("Renderer: Shadowmap Command Recording")
 
-        engine_assert(gtao != nil)
-        engine_assert(gtao.target_tex != nil);
-
-        full_res_ao : bool = gtao.settings.full_res;
-
-        ao_tex_dimentions : [2]u32 = full_res_ao ? frame_size : renderer_calculate_frame_size_from_swapchain_size(frame_size, RenderResolution.Half);
-
-        // GTAO Compute pass
-        {            
-            compute_pipeline , thread_count := get_compute_pipeline(.GTAO);
-            
-            ao_tex_storage_rw_binding := sdl.GPUStorageTextureReadWriteBinding{
-                texture   = gtao.target_tex,
-                mip_level = full_res_ao ? 0 : 1, // if full res we write directly into mip 0
-                layer     = 0,
-                cycle = true,
+            if sinfo.array_layer <= -1 {
+                continue; // skip unused shadowmap infos.
             }
 
-            //dimentions := ao_dimentions;
-
-            //log.debugf("Ran GTAO, is nil ? {}", gtao.target_tex)
-            compute_pass := sdl.BeginGPUComputePass(cmd_buf, &ao_tex_storage_rw_binding, 1, nil, 0);
-            sdl.BindGPUComputePipeline(compute_pass, compute_pipeline);
-
-            sdl.BindGPUComputeSamplers(compute_pass, 0, &res_bindings.minmax_sampler_binding, 1);
-            
-            // Matches shader ubo struct
-            GTAO_UBO :: struct {
-                _inv_proj_mat : matrix[4,4]f32,
-                // _inv_view_mat : matrix[4,4]f32, // we need this when we want to do Bent Normals, see shader for explanation
-                _ao_tex_size : [2]u32,
-                _sample_count   : u32,
-                _slice_count    : u32,
-                _sample_radius  : f32,
-                _hit_thickness  : f32,
-                _min_max_depth_mip_level : i32,
-                _strength  : f32,
-            }
-
-            ubo : GTAO_UBO = {
-                _inv_proj_mat  = camera_info.inv_proj_mat,            
-                _ao_tex_size   = ao_tex_dimentions,
-                _sample_count  = gtao.settings.sample_count ,
-                _slice_count   = gtao.settings.slice_count  ,
-                _sample_radius = gtao.settings.sample_radius,
-                _hit_thickness = gtao.settings.hit_thickness,
-
-                _min_max_depth_mip_level = full_res_ao ? 0 : 1,
-                _strength = gtao.settings.strength,
-            }
-
-            sdl.PushGPUComputeUniformData(cmd_buf,0, &ubo, size_of(ubo))
-
-            work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(thread_count, [3]u32{ao_tex_dimentions.x, ao_tex_dimentions.y, 1});
-
-            sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
-
-            sdl.EndGPUComputePass(compute_pass);
-        }
-        
-        // Upscale AO Pass
-        // @Note we only need to upscale if we dont do full resolution ao
-        if !full_res_ao {
-            UpscaleUBO :: struct {
-                _inv_proj_mat : matrix[4,4]f32,     
-                _src_dimentions  : [2]u32,
-                _dest_dimentions : [2]u32,
-                _dst_mip  : i32,
-                _multiply_dest   : i32,
-                _camera_near     : f32,
-                _camera_far      : f32,
-            }
-
-            rw_bindings : [2]sdl.GPUStorageTextureReadWriteBinding = {
-                // destination mip 0 (full res)
-                sdl.GPUStorageTextureReadWriteBinding{
-                    texture   = gtao.target_tex,
-                    mip_level = 0,
-                    layer     = 0,
-                    cycle = false,
-                },
-                // src mip 1 (half res) 
-                sdl.GPUStorageTextureReadWriteBinding{
-                    texture   = gtao.target_tex,
-                    mip_level = 1,
-                    layer     = 0,
-                    cycle = false,
-                },
-            }
-
-            compute_pass := sdl.BeginGPUComputePass(cmd_buf, &rw_bindings[0], 2, nil, 0);
-
-            compute_pipeline , thread_count := get_compute_pipeline(.UPSCALE_AO);
-            sdl.BindGPUComputePipeline(compute_pass, compute_pipeline);
-
-            // Min Max Depth tex
-            sdl.BindGPUComputeSamplers(compute_pass, 0, &res_bindings.minmax_sampler_binding, 1);
-
-            upscale_ubo : UpscaleUBO = {
-                _inv_proj_mat = camera_info.inv_view_proj_mat,
-                _src_dimentions  = ao_tex_dimentions,
-                _dest_dimentions = frame_size,
-                _dst_mip         = 0,
-                _multiply_dest   = 0, // dont need this anymore
-                _camera_near = camera_info.near_plane,
-                _camera_far  = camera_info.far_plane,
-            }
-
-            sdl.PushGPUComputeUniformData(cmd_buf,0, &upscale_ubo, size_of(upscale_ubo));
-
-            work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(thread_count, [3]u32{upscale_ubo._dest_dimentions.x, upscale_ubo._dest_dimentions.y, 1});
-            sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
-            sdl.EndGPUComputePass(compute_pass);
-        }
-    }
-
-    res_bindings.gtao_sampler_binding = sdl.GPUTextureSamplerBinding {
-        texture = gtao_enabled ? ren_ctx.effects.gtao.target_tex : ren_ctx.white_texture.binding.texture,
-        sampler = ren_ctx.nearest_depth_sampler, // for testings
-    }
-
-
-    // ============================================================================================================
-    //                                    RADIANCE CASCADES
-    // ============================================================================================================
-
-
-    raca_enabled : bool = .RACA in ren_ctx.config.ren_effect_flags && !ren_ctx.effects.raca.settings.temporary_disabled;
-    if !any_draws_exist {
-        raca_enabled = false;
-    }
-    raca_enabled = false; // Force disable for now.
-    if raca_enabled {
-        
-        IRI_PROFILE_SCOPE("RenEffect Radiance Cascades Command Recording");
-
-        renderer_push_debug_group(cmd_buf, "Render Effect: RACA Compute");
-        defer renderer_pop_debug_group(cmd_buf);
-
-        raca := ren_ctx.effects.raca;
-        engine_assert(raca != nil)
-
-        // given a hierarchicaly depth mip chain calculate the appropriate mip level and dimentions of that mip level 
-        // given the probe counts for a specific cascade such that idealy i probe maps directly to one pixel in the mip level.
-        calc_depth_mip_level_and_size_for_cascade :: proc(cascade_probe_counts : [2]u32, depth_base_dimentions : [2]u32, max_depth_mip_level : u32) -> (mip_level : u32, mip_dimentions :  [2]u32) {   
-            mip_level  = cast(u32)math.round(f32(depth_base_dimentions.x) / f32(cascade_probe_counts.x) / 2.0);
-            mip_level  = min(mip_level, max_depth_mip_level);
-            mip_dimentions = depth_base_dimentions / (u32(1) << mip_level) // dimentions / 2^mip_level
-            return mip_level, mip_dimentions;
-        }
-
-        // Matches shader ubo struct
-        RACA_UBO :: struct { 
-            // @Note This is a pretty big struct at this point.
-            // We can probably bind global fragment buffer instead for inv_view_proj matrix and pack some uints into u16
-            _inv_view_proj_mat : matrix[4,4]f32,
-            _target_size    : [2]u32,
-            _cascade_index  : u32,
-            _probe_size     : u32,
-            
-            _probe_counts   : [2]u32,
-            _interval_range : [2]f32,
-
-            _depth_mip_dimentions : [2]u32,
-            _depth_mip_level : u32,
-            _write_target    : u32,
-            _camera_pos_ws   : [3]f32,
-            _depth_bias      : f32,
-        }
-
-        raca_compute_pipeline, raca_thread_count := get_compute_pipeline(.RACA);
-
-        depth_max_dimentions : [2]u32 = frame_size;
-
-        
-        base_probe_counts    : [2]u32 = ren_effect_RACA_get_base_probe_counts(raca.settings.pixels_per_probe, frame_size);
-        raca_tex_resolution  : [2]u32 = base_probe_counts * raca.settings.base_probe_size;
-        
-        work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_thread_count, [3]u32{raca_tex_resolution.x, raca_tex_resolution.y, 1});
-
-
-        raca_ubo := RACA_UBO {
-            _inv_view_proj_mat  = camera_info.inv_view_proj_mat,
-            _target_size        = raca_tex_resolution,
-            _camera_pos_ws      = camera_info.position_ws,
-            _depth_bias         = raca.settings.depth_bias
-        }
-
-        renderer_push_debug_group(cmd_buf, "Render Effect: RACA Trace Cascades");
-        
-        // Setup initial storage rw bindings.
-        tex_storage_rw_binding : [2]sdl.GPUStorageTextureReadWriteBinding;
-        tex_storage_rw_binding[0] = sdl.GPUStorageTextureReadWriteBinding{
-            texture   = raca.cascade_array_tex,
-            layer     = 0,
-            mip_level = 0,
-            cycle     = false,
-        }
-        
-        tex_storage_rw_binding[1] = sdl.GPUStorageTextureReadWriteBinding{
-            texture   = raca.cascade_array_tex,
-            layer     = 1,
-            mip_level = 0,
-            cycle     = false,
-        }
-
-        // @Note: We run 2 dispatches in parralell if we can. For cascade N and N+1
-        // Since we are writing to different trextures (of the array texture) the compute dipatched don't deppend on each other
-        // but using one SDL compute pass per dispatch enforces pipeline barriers between compute passes. 
-        // Therefore we overlap 2 passes atm. In therory we could go higher but in practice it would be more complicated and would 
-        // probably not help that much since there is already plenty work to do. Generally though it seems to improve occupancy on my gpu (NV 3070).
-
-        // All this stuff is required for raytracing atm.
-        raca_storage_buffers : [8]^sdl.GPUBuffer;
-        raca_storage_buffers[0] = universe.matrix_buf;
-        raca_storage_buffers[1] = universe.inv_matrix_buf;    
-        raca_storage_buffers[2] = universe.tlas_nodes_buf.buf;
-        raca_storage_buffers[3] = universe.frame_tl_draw_indecies_buf.buf;
-        raca_storage_buffers[4] = universe.drawables_globals_info_buf.buf;
-        raca_storage_buffers[5] = mesh_manager.global_bl_bvh_nodes_buf.buf;
-        raca_storage_buffers[6] = res_bindings.global_index_buf_binding.buffer;
-        raca_storage_buffers[7] = res_bindings.global_vert_buf_binding.buffer;
-
-        //for cn : u32 = 0; cn < raca.settings.num_cascades; cn += 1 {
-        for cn : u32 = 0; cn < raca.settings.num_cascades +1; cn += 2 {
-
-            cascade_n_index  : u32 = cn;
-            cascade_n1_index : u32 = cn + 1;
-
-            if cascade_n_index == raca.settings.num_cascades {
-                break;
-            }
-            
-            tex_storage_rw_binding[0].layer = cascade_n_index;
-            tex_storage_rw_binding[1].layer = cascade_n1_index;
-            
-            // If uneven number of cascades we must run the last cascade as single dispatch and 
-            // since we must bind something to we just bind index 0 again (but not using it in the shader)
-            must_skip_n1 : bool = cascade_n1_index >= raca.settings.num_cascades;
-            if must_skip_n1 {
-                tex_storage_rw_binding[1].layer = 0; // just bind 0 since we know it should not be same as N as long as we have more than 2 cascades
-            }
-
-            compute_pass := sdl.BeginGPUComputePass(cmd_buf, &tex_storage_rw_binding[0], 2, nil, 0);
-            defer sdl.EndGPUComputePass(compute_pass);
-            
-            sdl.BindGPUComputePipeline(compute_pass, raca_compute_pipeline);
-
-            // Bind resources.            
-            sdl.BindGPUComputeSamplers(compute_pass, 0, &res_bindings.minmax_sampler_binding, 1);
-
-            sdl.BindGPUComputeStorageBuffers(compute_pass, 0, &raca_storage_buffers[0], num_bindings = 8);
-            
-            cascade_n_probe_counts    : [2]u32 = ren_effect_RACA_get_probe_counts_for_cascade(cascade_n_index, base_probe_counts);
-            cascade_n_interval_range  : [2]f32 = ren_effect_RACA_get_interval_range(cascade_n_index, raca.settings.base_ray_length);
-            cascade_n_probe_size      : u32 = ren_effect_RACA_get_probe_size_for_cascade(cascade_n_index, raca.settings.base_probe_size);
-
-            n_depth_mip_level, n_depth_mip_dimentions := calc_depth_mip_level_and_size_for_cascade(cascade_n_probe_counts, depth_max_dimentions, max_depth_mip);
-            //n_depth_mip_level : u32 = 0;
-            //n_depth_mip_dimentions : [2]u32 = frame_size;
-
-            // Update relevant ubo fields
-            raca_ubo._cascade_index        = cascade_n_index;
-            raca_ubo._probe_size           = cascade_n_probe_size;
-            raca_ubo._probe_counts         = cascade_n_probe_counts;
-            raca_ubo._interval_range       = cascade_n_interval_range;
-            raca_ubo._depth_mip_dimentions = n_depth_mip_dimentions;
-            raca_ubo._depth_mip_level      = n_depth_mip_level;
-            raca_ubo._write_target         = 0;
-            
-            // First dispatch
-            sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_ubo, size_of(raca_ubo));
-            sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
-
-            if must_skip_n1 {
-                continue
-            }
-
-            cascade_n1_probe_counts    : [2]u32 = ren_effect_RACA_get_probe_counts_for_cascade(cascade_n1_index, base_probe_counts);
-            cascade_n1_probe_size      : u32    = ren_effect_RACA_get_probe_size_for_cascade(cascade_n1_index, raca.settings.base_probe_size);
-            cascade_n1_interval_range  : [2]f32 = ren_effect_RACA_get_interval_range(cascade_n1_index, raca.settings.base_ray_length);
-
-            n1_depth_mip_level : u32 = cast(u32)math.round(f32(depth_max_dimentions.x) / f32(cascade_n1_probe_counts.x) / 2.0);
-            n1_depth_mip_level      = min(n1_depth_mip_level, max_depth_mip);
-            n1_depth_mip_dimentions : [2]u32 = depth_max_dimentions / (u32(1) << n1_depth_mip_level) // dimentions / 2^mip_level
-            
-            //n1_depth_mip_level : u32 = 0;
-            //n1_depth_mip_dimentions : [2]u32 = frame_size;
-        
-            raca_ubo._cascade_index  = cascade_n1_index;
-            raca_ubo._probe_size     = cascade_n1_probe_size;
-            raca_ubo._probe_counts   = cascade_n1_probe_counts;
-            raca_ubo._interval_range = cascade_n1_interval_range;
-            raca_ubo._depth_mip_dimentions = n1_depth_mip_dimentions;
-            raca_ubo._depth_mip_level = n1_depth_mip_level;
-            raca_ubo._write_target = 1;
-            
-            // Second Dispatch
-            sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_ubo, size_of(raca_ubo));
-            sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
-
-        }
-
-        renderer_pop_debug_group(cmd_buf);
-
-        // @Note: when gtao is also disables will this cause problems to bind same texture to two places ??
-        res_bindings.raca_sampler_binding = sdl.GPUTextureSamplerBinding {
-            //texture = raca_enabled ? ren_ctx.effects.raca.cascade_array_tex : ren_ctx.white_texture.binding.texture,
-            texture = ren_ctx.effects.raca.cascade_array_tex,
-            sampler = ren_ctx.nearest_depth_sampler,
-        }
-
-        DO_MERGE :: true
-        // ======== MERGE AO PASS =========
-        when DO_MERGE {
-
-            renderer_push_debug_group(cmd_buf, "Render Effect: RACA Merge");
+            renderer_push_debug_group(cmd_buf, "Shadowmap Pass");
             defer renderer_pop_debug_group(cmd_buf);
 
-            RACA_MERGE_UBO :: struct {
-                _inv_view_proj_mat : matrix[4,4]f32,
+            color_target := sdl.GPUColorTargetInfo {
+                texture =  light_manager.shadowmap_array_binding.texture,
+                mip_level = sinfo.mip_level,
+                layer_or_depth_plane = cast(u32)sinfo.array_layer,
+                clear_color = sdl.FColor{1.0,1.0,1.0,1.0},
+                load_op  = sdl.GPULoadOp.CLEAR,
+                store_op = .STORE,
+                cycle = false,
+            }
+
+            depth_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
+                texture     = renderer.shadowmap_depth_textures[sinfo.mip_level],
+                clear_depth = 1,                        // The value to clear the depth component with
+                load_op     = sdl.GPULoadOp.CLEAR,
+                store_op    = sdl.GPUStoreOp.DONT_CARE,
+
+                stencil_load_op = sdl.GPULoadOp.DONT_CARE,
+                stencil_store_op = sdl.GPUStoreOp.DONT_CARE,
+                cycle = true,         // true cycles the texture if the texture is bound and any load ops are not LOAD */
+                clear_stencil = 0,    // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. */
+            }
+
+            shadowmap_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target_info);
+
+            sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 0, &frame_globals.geo_matrix_buffer, 1);
+            sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 1, &frame_globals.shadowmap_info_buffer, 1);
+
+            sdl.BindGPUVertexBuffers(shadowmap_pass, 0, &frame_globals.global_vert_buf_binding, 1);
+            sdl.BindGPUIndexBuffer(shadowmap_pass, frame_globals.global_index_buf_binding, sdl.GPUIndexElementSize._32BIT);
+
+            last_shadow_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
+
+            for shadow_draw in frame_globals.frame_draws_shadow {
+
+                if !test_shadow_draw(sinfo.view_proj, frame_globals.drawables[shadow_draw.drawable_index].world_oobb, sinfo.resolution){
+                    continue;
+                }
+                // if universe.cull_shadow_draws {
+                // }
+
+                pipeline_variant := pipe_manager_get_depthonly_pipeline_variant(frame_globals.pipeline_manager, shadow_draw.shader_type, shadow_draw.technique_hash);
+
+                if pipeline_variant != last_shadow_pipeline_variant {
+
+                    sdl.BindGPUGraphicsPipeline(shadowmap_pass, pipeline_variant);
+                    last_shadow_pipeline_variant = pipeline_variant;
+                    num_pipe_switches += 1;
+                }
                 
-                _target_size         : [2]u32,
-                _n0_cascade_index    : u32,
-                _n0_probe_size       : u32,
-                _n0_probe_counts     : [2]u32,
-                _num_cascades        : u32,
-                _integrate_last_cascade : u32, 
-                _n0_depth_mip_dimentions : [2]u32,
-                _n0_depth_mip_level : u32,
-                _ : u32,
+                draw_instance_ubo := VertexDrawInstanceUBO{
+                    drawable_index = shadow_draw.drawable_index,
+                    user_1 = cast(u32)index, // shadowmap index.
+                }
+                
+                sdl.PushGPUVertexUniformData(cmd_buf, 0, &draw_instance_ubo, size_of(VertexDrawInstanceUBO));
+
+                mesh_id := frame_globals.drawables[shadow_draw.drawable_index].draw_instance.mesh_id;                    
+                global_buf_info := &frame_globals.mesh_manager.meshes.global_buf_info[mesh_id];
+
+                sdl.DrawGPUIndexedPrimitives(shadowmap_pass, global_buf_info.num_indecies, num_instances = 1, first_index = global_buf_info.indecies_offset, vertex_offset = cast(i32)global_buf_info.vertecies_offset, first_instance = shadow_draw.drawable_index);
+
+                draw_calls += 1;
             }
 
-            raca_merge_ubo := RACA_MERGE_UBO {
-                _inv_view_proj_mat = camera_info.inv_view_proj_mat,
-                _target_size       = raca_tex_resolution,
-                _num_cascades      = raca.settings.num_cascades,
-                _integrate_last_cascade = 0,
+            num_rendered_shadowmaps += 1;
+            sdl.EndGPURenderPass(shadowmap_pass);
+        }
+
+
+        frame_transients.shadowmap_array_binding = light_manager.shadowmap_array_binding;
+
+    } else {
+
+        // TODO: Does this Work ??
+        frame_transients.shadowmap_array_binding = renderer.white_texture.binding;
+    }
+}
+
+@(private="package")
+renderer_execute_module_geometry_pass :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
+
+    IRI_PROFILE_SCOPE("Renderer: Main Forward Pass (CPU)")
+
+
+    renderer_push_debug_group(cmd_buf, "Main Forward Pass");
+    defer renderer_pop_debug_group(cmd_buf);
+
+    forward_draw_calls : u32 = 0;
+    forward_pipe_switches : u32 = 0;
+    forward_pass_timer := timer_begin();
+
+    perfs := get_performance_counters();
+    defer {
+        perfs.forward_pass_drawcalls = forward_draw_calls;
+        perfs.forward_pass_num_pipeline_switches = forward_pipe_switches;
+        perfs.forward_pass_cpu_ms = timer_end_get_miliseconds(forward_pass_timer);
+    }
+
+    color_target := sdl.GPUColorTargetInfo {
+        texture     = renderer.scene_hdr_color_target,
+        clear_color = sdl.FColor{1,0,0,1},
+        load_op     = .CLEAR,
+        store_op    = .STORE,
+        cycle = true,
+    }
+
+    depth_stencil_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo{
+        texture =  frame_transients.scene_depth_stencil_target,
+        //clear_depth = 1,        
+        load_op  = sdl.GPULoadOp.LOAD,
+        store_op = sdl.GPUStoreOp.DONT_CARE,
+        
+        stencil_load_op = sdl.GPULoadOp.LOAD,
+        stencil_store_op = sdl.GPUStoreOp.DONT_CARE,
+        cycle = false,
+        clear_stencil = 0,
+    }
+
+    render_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, &color_target,1, &depth_stencil_target_info);
+
+    sdl.PushGPUVertexUniformData(cmd_buf, 0, frame_globals.global_vertex_ubo, size_of(GlobalVertexUBO));
+    
+    sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &frame_globals.global_fragment_buffer, 1);
+
+    sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &frame_globals.sky_gpu_buffer, 1);
+
+    // === Skybox Pass
+    // The skybox pass must happen before alpha blended materials.
+    // Since we already have a depth prepass, doing it as the first draw 
+    // should be just fine.
+    skybox: {
+        
+        renderer_push_debug_group(cmd_buf, "Skybox Pass");
+        defer renderer_pop_debug_group(cmd_buf);
+        
+        pipeline_skybox := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .Skybox);
+        sdl.BindGPUGraphicsPipeline(render_pass, pipeline_skybox);
+
+        sdl.BindGPUFragmentSamplers(render_pass, 0, &frame_globals.sky_cubemap_binding, 1);
+
+        // bind vertex buffer
+        vert_buffer_binding := sdl.GPUBufferBinding {
+            buffer = renderer.prim_icosphere.vert_buf,
+            offset = 0,
+        }
+
+        sdl.BindGPUVertexBuffers(render_pass, 0, &vert_buffer_binding, 1);
+
+        sdl.DrawGPUPrimitives(render_pass, renderer.prim_icosphere.num_vertecies , 1, 0, 0);
+    }
+    
+    // === MAIN DRAW CALLS ====
+    if frame_globals.any_draws_exist {
+
+        // @Note: if no draws exist, matrix buffer will be nill
+        sdl.BindGPUVertexStorageBuffers(render_pass, 0, &frame_globals.geo_matrix_buffer, 1);
+
+        sdl.BindGPUIndexBuffer(render_pass, frame_globals.global_index_buf_binding, sdl.GPUIndexElementSize._32BIT);
+        //sdl.BindGPUVertexBuffers(render_pass, 0, &global_vert_buf_binding, 1); // cant use this yet here.
+
+
+        // OPAQUES
+        draws, switches := renderer_execute_geometry_drawcalls_drawable_index_array(cmd_buf, render_pass, frame_globals.frame_draws_opaque, frame_globals, frame_transients);
+        forward_draw_calls += draws;
+        forward_pipe_switches += switches;
+        
+        // ALPHA TESTED
+        draws, switches = renderer_execute_geometry_drawcalls_drawable_index_array(cmd_buf, render_pass, frame_globals.frame_draws_alpha_test, frame_globals, frame_transients);
+        forward_draw_calls += draws;
+        forward_pipe_switches += switches;
+        
+        // ALPHA BLENDING
+        draws, switches = renderer_execute_geometry_drawcalls_drawable_index_array(cmd_buf, render_pass, frame_globals.frame_draws_alpha_blend, frame_globals, frame_transients);
+        forward_draw_calls += draws;
+        forward_pipe_switches += switches;
+    }
+
+    // EXECUTE DEBUG DRAW COMMANDS
+
+    if engine.debug_draw_manager.is_enabled {
+        
+        IRI_PROFILE_SCOPE("Renderer Debug Draws Command Recording")
+
+        line_cube_pipe   := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .LINE_CUBE);
+        line_line_pipe   := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .LINE_LINE);
+        line_circle_pipe := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .LINE_CIRCLE);
+
+        last_pipe : ^sdl.GPUGraphicsPipeline = nil;
+
+        for &debug_cmd, cmd_index in engine.debug_draw_manager.commands {
+            
+            curr_pipe : ^sdl.GPUGraphicsPipeline = nil; 
+            #partial switch debug_cmd.type {
+                case .Box:      curr_pipe = line_cube_pipe;
+                case .Circle:   curr_pipe = line_circle_pipe;
+                case .Line:     curr_pipe = line_line_pipe;
+                //case .Sphere:   continue; // sphere draws are currently drawnn as 3 circle draws
             }
-
-            raca_ao_merge_compute_pipeline, raca_merge_thread_count := get_compute_pipeline(.RC_MERGE_AO);
-            raca_merge_work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_merge_thread_count, [3]u32{raca_tex_resolution.x, raca_tex_resolution.y, 1});
-
-            texture_n0 : ^sdl.GPUTexture = raca.ao_tex_0;
-            texture_n1 : ^sdl.GPUTexture = raca.ao_tex_1;
-
-            merge_storage_rw_tex_bindings := [2]sdl.GPUStorageTextureReadWriteBinding {
-                sdl.GPUStorageTextureReadWriteBinding{texture = texture_n0, mip_level = 0, layer = 0, cycle = false},
-                sdl.GPUStorageTextureReadWriteBinding{texture = texture_n1, mip_level = 0, layer = 0, cycle = false},
+            if curr_pipe != last_pipe{
+                last_pipe = curr_pipe;
+                sdl.BindGPUGraphicsPipeline(render_pass, curr_pipe);
             }
+            
+            sdl.PushGPUFragmentUniformData(cmd_buf, 0, &debug_cmd.color , size_of(debug_cmd.color));
+            
+            sdl.PushGPUVertexUniformData(cmd_buf, 1, &debug_cmd.mat, size_of(debug_cmd.mat));
 
-            // Start with second to last cascade and merge with last cascade.
-            for cas : int = cast(int)raca.settings.num_cascades - 2; cas >= 0; cas -= 1 {
+            #partial switch debug_cmd.type {
+                case .Box:      sdl.DrawGPUPrimitives(render_pass, 24, 1, 0, 0);
+                case .Circle:   sdl.DrawGPUPrimitives(render_pass, 33, 1, 0, 0); // 33 verts is correct
+                case .Line: {
+                    verts : u32 = debug_cmd.mat[3][3] > 3.0 ? 4 : 2;
+                    sdl.DrawGPUPrimitives(render_pass,  verts, 1, 0, 0);
+                }
+            }
+        }
+    }
 
-                // Ping Pong swap textures
+    // End render pass
+    sdl.EndGPURenderPass(render_pass);
+
+
+    frame_transients.scene_hdr_color_target = renderer.scene_hdr_color_target;
+}
+
+@(private="package")
+renderer_execute_module_post_process_to_ldr :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
+    
+    engine_assert(frame_transients.scene_hdr_color_target != nil);
+
+    renderer_push_debug_group(cmd_buf, "Post Process To LDR");
+    defer renderer_pop_debug_group(cmd_buf);
+
+    post_correct_color_target := sdl.GPUColorTargetInfo {
+            texture = renderer.post_ldr_color_target,
+            load_op  = sdl.GPULoadOp.DONT_CARE,
+            store_op = sdl.GPUStoreOp.STORE,
+            cycle = true,
+    }
+
+    post_process_render_pass := sdl.BeginGPURenderPass(cmd_buf, &post_correct_color_target,1,nil);
+    sdl.BindGPUGraphicsPipeline(post_process_render_pass, pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .PostProcessToLDR));
+
+    scene_hdr_color_target_sampler_binding := sdl.GPUTextureSamplerBinding {
+        texture = frame_transients.scene_hdr_color_target,
+        sampler = frame_globals.samplers.linear_mip_nearest_clamp,
+    }
+
+    sdl.BindGPUFragmentSamplers(post_process_render_pass, 0, &scene_hdr_color_target_sampler_binding, 1);
+    
+    // TODO: expose this with settings
+    post_settings := PostProcessSettingsUBO{
+        exposure = 0.0,
+        tone_map_mode = 0,
+    }
+
+    sdl.PushGPUFragmentUniformData(cmd_buf,0, &post_settings, size_of(PostProcessSettingsUBO));
+
+    // Draw 6 verts aka 2 triangles aka 1 screenquad
+    sdl.DrawGPUPrimitives(post_process_render_pass, 6, 1, 0,0);
+
+    sdl.EndGPURenderPass(post_process_render_pass);
+
+    frame_transients.post_ldr_color_target = renderer.post_ldr_color_target;
+}
+
+
+@(private="package")
+renderer_execute_module_gtao :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
+
+    gtao_enabled : bool = .GTAO in renderer.config.ren_effect_flags && !renderer.effects.gtao.settings.temporary_disabled;
+
+    if !gtao_enabled {
+
+        frame_transients.screen_space_ao_sampler_binding = frame_globals.dummy_white_texture_2D.binding;
+        return;    
+    }
+
+    IRI_PROFILE_SCOPE("Renderer: GTAO Pass (CPU)")
+
+    renderer_push_debug_group(cmd_buf, "Render Effect: GTAO Compute");
+    defer renderer_pop_debug_group(cmd_buf);
+
+    gtao := renderer.effects.gtao;
+
+    engine_assert(gtao != nil)
+    engine_assert(gtao.target_tex != nil);
+
+    engine_assert(frame_transients.depth_hierarchy_sampler_binding.texture != nil, "GTAO Requires MinMax Depth hierarchy");
+    engine_assert(frame_transients.depth_hierarchy_sampler_binding.sampler != nil, "GTAO Requires MinMax Depth hierarchy");
+    
+
+    full_res_ao : bool = gtao.settings.full_res;
+
+    ao_tex_dimentions : [2]u32 = full_res_ao ? frame_globals.frame_size : renderer_calculate_frame_size_from_swapchain_size(frame_globals.frame_size, RenderResolution.Half);
+    
+
+    // GTAO Compute pass
+    {            
+        compute_pipeline , thread_count := get_compute_pipeline(.GTAO);
+        
+        ao_tex_storage_rw_binding := sdl.GPUStorageTextureReadWriteBinding{
+            texture   = gtao.target_tex,
+            mip_level = full_res_ao ? 0 : 1, // if full res we write directly into mip 0
+            layer     = 0,
+            cycle = true,
+        }
+
+        //dimentions := ao_dimentions;
+
+        //log.debugf("Ran GTAO, is nil ? {}", gtao.target_tex)
+        compute_pass := sdl.BeginGPUComputePass(cmd_buf, &ao_tex_storage_rw_binding, 1, nil, 0);
+        sdl.BindGPUComputePipeline(compute_pass, compute_pipeline);
+
+
+        sdl.BindGPUComputeSamplers(compute_pass, 0, &frame_transients.depth_hierarchy_sampler_binding, 1);
+        
+        // Matches shader ubo struct
+        GTAO_UBO :: struct {
+            _inv_proj_mat : matrix[4,4]f32,
+            // _inv_view_mat : matrix[4,4]f32, // we need this when we want to do Bent Normals, see shader for explanation
+            _ao_tex_size : [2]u32,
+            _sample_count   : u32,
+            _slice_count    : u32,
+            _sample_radius  : f32,
+            _hit_thickness  : f32,
+            _min_max_depth_mip_level : i32,
+            _strength  : f32,
+        }
+
+        ubo : GTAO_UBO = {
+            _inv_proj_mat  = frame_globals.camera.inv_proj_mat,            
+            _ao_tex_size   = ao_tex_dimentions,
+            _sample_count  = gtao.settings.sample_count ,
+            _slice_count   = gtao.settings.slice_count  ,
+            _sample_radius = gtao.settings.sample_radius,
+            _hit_thickness = gtao.settings.hit_thickness,
+
+            _min_max_depth_mip_level = full_res_ao ? 0 : 1,
+            _strength = gtao.settings.strength,
+        }
+
+        sdl.PushGPUComputeUniformData(cmd_buf,0, &ubo, size_of(ubo))
+
+        work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(thread_count, [3]u32{ao_tex_dimentions.x, ao_tex_dimentions.y, 1});
+
+        sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
+
+        sdl.EndGPUComputePass(compute_pass);
+    }
+    
+    // Upscale AO Pass
+    // @Note we only need to upscale if we dont do full resolution ao
+    if !full_res_ao {
+        UpscaleUBO :: struct {
+            _inv_proj_mat : matrix[4,4]f32,     
+            _src_dimentions  : [2]u32,
+            _dest_dimentions : [2]u32,
+            _dst_mip  : i32,
+            _multiply_dest   : i32,
+            _camera_near     : f32,
+            _camera_far      : f32,
+        }
+
+        rw_bindings : [2]sdl.GPUStorageTextureReadWriteBinding = {
+            // destination mip 0 (full res)
+            sdl.GPUStorageTextureReadWriteBinding{
+                texture   = gtao.target_tex,
+                mip_level = 0,
+                layer     = 0,
+                cycle = false,
+            },
+            // src mip 1 (half res) 
+            sdl.GPUStorageTextureReadWriteBinding{
+                texture   = gtao.target_tex,
+                mip_level = 1,
+                layer     = 0,
+                cycle = false,
+            },
+        }
+
+        compute_pass := sdl.BeginGPUComputePass(cmd_buf, &rw_bindings[0], 2, nil, 0);
+
+        compute_pipeline , thread_count := get_compute_pipeline(.UPSCALE_AO);
+        sdl.BindGPUComputePipeline(compute_pass, compute_pipeline);
+
+        // Min Max Depth tex
+        sdl.BindGPUComputeSamplers(compute_pass, 0, &frame_transients.depth_hierarchy_sampler_binding, 1);
+
+        upscale_ubo : UpscaleUBO = {
+            _inv_proj_mat = frame_globals.camera.inv_view_proj_mat,
+            _src_dimentions  = ao_tex_dimentions,
+            _dest_dimentions = frame_globals.frame_size,
+            _dst_mip         = 0,
+            _multiply_dest   = 0, // dont need this anymore
+            _camera_near = frame_globals.camera.near_plane,
+            _camera_far  = frame_globals.camera.far_plane,
+        }
+
+        sdl.PushGPUComputeUniformData(cmd_buf,0, &upscale_ubo, size_of(upscale_ubo));
+
+        work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(thread_count, [3]u32{upscale_ubo._dest_dimentions.x, upscale_ubo._dest_dimentions.y, 1});
+        sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
+        sdl.EndGPUComputePass(compute_pass);
+    }    
+
+    frame_transients.screen_space_ao_sampler_binding.texture = renderer.effects.gtao.target_tex;
+    frame_transients.screen_space_ao_sampler_binding.sampler = frame_globals.samplers.linear;
+}
+
+@(private="package")
+renderer_execute_module_raca :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
+
+    raca_enabled : bool = .RACA in renderer.config.ren_effect_flags && !renderer.effects.raca.settings.temporary_disabled;
+    
+    if len(frame_globals.frame_renderables) <= 0 {
+        raca_enabled = false;
+    }
+    
+    //
+    // Force disable for now.
+    //
+    raca_enabled = false; 
+
+    if !raca_enabled {
+    
+        // @Note is it problem to bind same texture twice ?
+        frame_transients.raca_sampler_binding = frame_globals.dummy_white_texture_2D.binding
+        frame_transients.raca_ao_sampler_binding = frame_globals.dummy_white_texture_2D.binding
+        return;
+    }
+
+        
+    IRI_PROFILE_SCOPE("RenEffect Radiance Cascades Command Recording");
+
+    renderer_push_debug_group(cmd_buf, "Render Effect: RACA Compute");
+    defer renderer_pop_debug_group(cmd_buf);
+
+    raca := renderer.effects.raca;
+    engine_assert(raca != nil)
+
+    // given a hierarchicaly depth mip chain calculate the appropriate mip level and dimentions of that mip level 
+    // given the probe counts for a specific cascade such that idealy i probe maps directly to one pixel in the mip level.
+    calc_depth_mip_level_and_size_for_cascade :: proc(cascade_probe_counts : [2]u32, depth_base_dimentions : [2]u32, max_depth_mip_level : u32) -> (mip_level : u32, mip_dimentions :  [2]u32) {   
+        mip_level  = cast(u32)math.round(f32(depth_base_dimentions.x) / f32(cascade_probe_counts.x) / 2.0);
+        mip_level  = min(mip_level, max_depth_mip_level);
+        mip_dimentions = depth_base_dimentions / (u32(1) << mip_level) // dimentions / 2^mip_level
+        return mip_level, mip_dimentions;
+    }
+
+    // Matches shader ubo struct
+    RACA_UBO :: struct { 
+        // @Note This is a pretty big struct at this point.
+        // We can probably bind global fragment buffer instead for inv_view_proj matrix and pack some uints into u16
+        _inv_view_proj_mat : matrix[4,4]f32,
+        _target_size    : [2]u32,
+        _cascade_index  : u32,
+        _probe_size     : u32,
+        
+        _probe_counts   : [2]u32,
+        _interval_range : [2]f32,
+
+        _depth_mip_dimentions : [2]u32,
+        _depth_mip_level : u32,
+        _write_target    : u32,
+        _camera_pos_ws   : [3]f32,
+        _depth_bias      : f32,
+    }
+
+    raca_compute_pipeline, raca_thread_count := get_compute_pipeline(.RACA);
+
+
+    frame_size := frame_globals.frame_size;
+    depth_max_dimentions : [2]u32 = frame_globals.frame_size;
+
+    
+    base_probe_counts    : [2]u32 = ren_effect_RACA_get_base_probe_counts(raca.settings.pixels_per_probe, frame_size);
+    raca_tex_resolution  : [2]u32 = base_probe_counts * raca.settings.base_probe_size;
+    
+    work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_thread_count, [3]u32{raca_tex_resolution.x, raca_tex_resolution.y, 1});
+
+
+    raca_ubo := RACA_UBO {
+        _inv_view_proj_mat  = frame_globals.camera.inv_view_proj_mat,
+        _target_size        = raca_tex_resolution,
+        _camera_pos_ws      = frame_globals.camera.position_ws,
+        _depth_bias         = raca.settings.depth_bias
+    }
+
+    renderer_push_debug_group(cmd_buf, "Render Effect: RACA Trace Cascades");
+    
+    // Setup initial storage rw bindings.
+    tex_storage_rw_binding : [2]sdl.GPUStorageTextureReadWriteBinding;
+    tex_storage_rw_binding[0] = sdl.GPUStorageTextureReadWriteBinding{
+        texture   = raca.cascade_array_tex,
+        layer     = 0,
+        mip_level = 0,
+        cycle     = false,
+    }
+    
+    tex_storage_rw_binding[1] = sdl.GPUStorageTextureReadWriteBinding{
+        texture   = raca.cascade_array_tex,
+        layer     = 1,
+        mip_level = 0,
+        cycle     = false,
+    }
+
+    // @Note: We run 2 dispatches in parralell if we can. For cascade N and N+1
+    // Since we are writing to different trextures (of the array texture) the compute dipatched don't deppend on each other
+    // but using one SDL compute pass per dispatch enforces pipeline barriers between compute passes. 
+    // Therefore we overlap 2 passes atm. In therory we could go higher but in practice it would be more complicated and would 
+    // probably not help that much since there is already plenty work to do. Generally though it seems to improve occupancy on my gpu (NV 3070).
+
+    // All this stuff is required for raytracing atm.
+    raca_storage_buffers : [8]^sdl.GPUBuffer;
+    raca_storage_buffers[0] = frame_globals.geo_matrix_buffer;
+    raca_storage_buffers[1] = frame_globals.geo_inv_matrix_buf;    
+    raca_storage_buffers[2] = frame_globals.geo_tlas_nodes_buf;
+    raca_storage_buffers[3] = frame_globals.geo_frame_tl_draw_indecies_buf;
+    raca_storage_buffers[4] = frame_globals.geo_drawables_globals_info_buf;
+    raca_storage_buffers[5] = frame_globals.mesh_manager.global_bl_bvh_nodes_buf.buf;
+    raca_storage_buffers[6] = frame_globals.global_index_buf_binding.buffer;
+    raca_storage_buffers[7] = frame_globals.global_vert_buf_binding.buffer;
+
+    //for cn : u32 = 0; cn < raca.settings.num_cascades; cn += 1 {
+    for cn : u32 = 0; cn < raca.settings.num_cascades +1; cn += 2 {
+
+        cascade_n_index  : u32 = cn;
+        cascade_n1_index : u32 = cn + 1;
+
+        if cascade_n_index == raca.settings.num_cascades {
+            break;
+        }
+        
+        tex_storage_rw_binding[0].layer = cascade_n_index;
+        tex_storage_rw_binding[1].layer = cascade_n1_index;
+        
+        // If uneven number of cascades we must run the last cascade as single dispatch and 
+        // since we must bind something to we just bind index 0 again (but not using it in the shader)
+        must_skip_n1 : bool = cascade_n1_index >= raca.settings.num_cascades;
+        if must_skip_n1 {
+            tex_storage_rw_binding[1].layer = 0; // just bind 0 since we know it should not be same as N as long as we have more than 2 cascades
+        }
+
+        compute_pass := sdl.BeginGPUComputePass(cmd_buf, &tex_storage_rw_binding[0], 2, nil, 0);
+        defer sdl.EndGPUComputePass(compute_pass);
+        
+        sdl.BindGPUComputePipeline(compute_pass, raca_compute_pipeline);
+
+        // Bind resources.            
+        sdl.BindGPUComputeSamplers(compute_pass, 0, &frame_transients.depth_hierarchy_sampler_binding, 1);
+
+        sdl.BindGPUComputeStorageBuffers(compute_pass, 0, &raca_storage_buffers[0], num_bindings = 8);
+        
+        cascade_n_probe_counts    : [2]u32 = ren_effect_RACA_get_probe_counts_for_cascade(cascade_n_index, base_probe_counts);
+        cascade_n_interval_range  : [2]f32 = ren_effect_RACA_get_interval_range(cascade_n_index, raca.settings.base_ray_length);
+        cascade_n_probe_size      : u32 = ren_effect_RACA_get_probe_size_for_cascade(cascade_n_index, raca.settings.base_probe_size);
+
+        n_depth_mip_level, n_depth_mip_dimentions := calc_depth_mip_level_and_size_for_cascade(cascade_n_probe_counts, depth_max_dimentions,frame_transients.depth_hierarchy_max_mip_level);
+        //n_depth_mip_level : u32 = 0;
+        //n_depth_mip_dimentions : [2]u32 = frame_size;
+
+        // Update relevant ubo fields
+        raca_ubo._cascade_index        = cascade_n_index;
+        raca_ubo._probe_size           = cascade_n_probe_size;
+        raca_ubo._probe_counts         = cascade_n_probe_counts;
+        raca_ubo._interval_range       = cascade_n_interval_range;
+        raca_ubo._depth_mip_dimentions = n_depth_mip_dimentions;
+        raca_ubo._depth_mip_level      = n_depth_mip_level;
+        raca_ubo._write_target         = 0;
+        
+        // First dispatch
+        sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_ubo, size_of(raca_ubo));
+        sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
+
+        if must_skip_n1 {
+            continue
+        }
+
+        cascade_n1_probe_counts    : [2]u32 = ren_effect_RACA_get_probe_counts_for_cascade(cascade_n1_index, base_probe_counts);
+        cascade_n1_probe_size      : u32    = ren_effect_RACA_get_probe_size_for_cascade(cascade_n1_index, raca.settings.base_probe_size);
+        cascade_n1_interval_range  : [2]f32 = ren_effect_RACA_get_interval_range(cascade_n1_index, raca.settings.base_ray_length);
+
+        n1_depth_mip_level : u32 = cast(u32)math.round(f32(depth_max_dimentions.x) / f32(cascade_n1_probe_counts.x) / 2.0);
+        n1_depth_mip_level      = min(n1_depth_mip_level, frame_transients.depth_hierarchy_max_mip_level);
+        n1_depth_mip_dimentions : [2]u32 = depth_max_dimentions / (u32(1) << n1_depth_mip_level) // dimentions / 2^mip_level
+        
+        //n1_depth_mip_level : u32 = 0;
+        //n1_depth_mip_dimentions : [2]u32 = frame_size;
+    
+        raca_ubo._cascade_index  = cascade_n1_index;
+        raca_ubo._probe_size     = cascade_n1_probe_size;
+        raca_ubo._probe_counts   = cascade_n1_probe_counts;
+        raca_ubo._interval_range = cascade_n1_interval_range;
+        raca_ubo._depth_mip_dimentions = n1_depth_mip_dimentions;
+        raca_ubo._depth_mip_level = n1_depth_mip_level;
+        raca_ubo._write_target = 1;
+        
+        // Second Dispatch
+        sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_ubo, size_of(raca_ubo));
+        sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
+
+    }
+
+    renderer_pop_debug_group(cmd_buf);
+
+    // @Note: when gtao is also disables will this cause problems to bind same texture to two places ??
+    frame_transients.raca_sampler_binding = sdl.GPUTextureSamplerBinding {
+        //texture = raca_enabled ? ren_ctx.effects.raca.cascade_array_tex : ren_ctx.white_texture.binding.texture,
+        texture = renderer.effects.raca.cascade_array_tex,
+        sampler = frame_globals.samplers.depth_nearest,
+    }
+
+    DO_MERGE :: true
+    // ======== MERGE AO PASS =========
+    when DO_MERGE {
+
+        renderer_push_debug_group(cmd_buf, "Render Effect: RACA Merge");
+        defer renderer_pop_debug_group(cmd_buf);
+
+        RACA_MERGE_UBO :: struct {
+            _inv_view_proj_mat : matrix[4,4]f32,
+            
+            _target_size         : [2]u32,
+            _n0_cascade_index    : u32,
+            _n0_probe_size       : u32,
+            _n0_probe_counts     : [2]u32,
+            _num_cascades        : u32,
+            _integrate_last_cascade : u32, 
+            _n0_depth_mip_dimentions : [2]u32,
+            _n0_depth_mip_level : u32,
+            _ : u32,
+        }
+
+        raca_merge_ubo := RACA_MERGE_UBO {
+            _inv_view_proj_mat = frame_globals.camera.inv_view_proj_mat,
+            _target_size       = raca_tex_resolution,
+            _num_cascades      = raca.settings.num_cascades,
+            _integrate_last_cascade = 0,
+        }
+
+        raca_ao_merge_compute_pipeline, raca_merge_thread_count := get_compute_pipeline(.RC_MERGE_AO);
+        raca_merge_work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_merge_thread_count, [3]u32{raca_tex_resolution.x, raca_tex_resolution.y, 1});
+
+        texture_n0 : ^sdl.GPUTexture = raca.ao_tex_0;
+        texture_n1 : ^sdl.GPUTexture = raca.ao_tex_1;
+
+        merge_storage_rw_tex_bindings := [2]sdl.GPUStorageTextureReadWriteBinding {
+            sdl.GPUStorageTextureReadWriteBinding{texture = texture_n0, mip_level = 0, layer = 0, cycle = false},
+            sdl.GPUStorageTextureReadWriteBinding{texture = texture_n1, mip_level = 0, layer = 0, cycle = false},
+        }
+
+        // Start with second to last cascade and merge with last cascade.
+        for cas : int = cast(int)raca.settings.num_cascades - 2; cas >= 0; cas -= 1 {
+
+            // Ping Pong swap textures
+            texture_n0, texture_n1 = texture_n1, texture_n0;
+            merge_storage_rw_tex_bindings[0].texture = texture_n0;
+            merge_storage_rw_tex_bindings[1].texture = texture_n1;
+
+            n0_cascade_index : u32 = cast(u32)cas;
+            n1_cascade_index : u32 = cast(u32)cas +1;
+
+            n0_cascade_probe_counts : [2]u32 = ren_effect_RACA_get_probe_counts_for_cascade(n0_cascade_index, base_probe_counts);
+            n0_cascade_probe_size   : u32    = ren_effect_RACA_get_probe_size_for_cascade(n0_cascade_index, raca.settings.base_probe_size);
+            
+
+            n0_depth_mip, n0_depth_mip_size := calc_depth_mip_level_and_size_for_cascade(n0_cascade_probe_counts, depth_max_dimentions, frame_transients.depth_hierarchy_max_mip_level);
+
+            // Update relvant ubo fields
+            raca_merge_ubo._n0_cascade_index  = n0_cascade_index;
+            raca_merge_ubo._n0_probe_size       = n0_cascade_probe_size;
+            raca_merge_ubo._n0_probe_counts     = n0_cascade_probe_counts;
+            raca_merge_ubo._n0_depth_mip_dimentions = n0_depth_mip_size;
+            raca_merge_ubo._n0_depth_mip_level      = n0_depth_mip;
+
+            compute_pass := sdl.BeginGPUComputePass(cmd_buf, &merge_storage_rw_tex_bindings[0], 2, nil, 0);
+            sdl.BindGPUComputePipeline(compute_pass, raca_ao_merge_compute_pipeline);
+
+            // Min Max Depth
+            // TODO: setup double binding outside loop.
+            sdl.BindGPUComputeSamplers(compute_pass, 0, &frame_transients.depth_hierarchy_sampler_binding, 1);
+            sdl.BindGPUComputeSamplers(compute_pass, 1, &frame_transients.raca_sampler_binding, 1);
+
+        
+            sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_merge_ubo, size_of(raca_merge_ubo));
+            sdl.DispatchGPUCompute(compute_pass, raca_merge_work_groups.x, raca_merge_work_groups.y , 1);
+
+            sdl.EndGPUComputePass(compute_pass);
+        }
+
+        // Integrate last cascade
+        DO_INTEGRATE :: true
+        if DO_INTEGRATE {
+
+            n0_cascade_index           : u32 = 0;                
+            n0_cascade_probe_counts    : [2]u32 = base_probe_counts;
+            n0_cascade_probe_size      : u32    = raca.settings.base_probe_size;
+            n0_depth_mip, n0_depth_mip_size := calc_depth_mip_level_and_size_for_cascade(n0_cascade_probe_counts, depth_max_dimentions, frame_transients.depth_hierarchy_max_mip_level);
+            
+            raca_merge_ubo._n0_cascade_index        = n0_cascade_index;
+            raca_merge_ubo._n0_probe_size           = n0_cascade_probe_size;
+            raca_merge_ubo._n0_probe_counts         = n0_cascade_probe_counts;
+            raca_merge_ubo._n0_depth_mip_dimentions = n0_depth_mip_size;
+            raca_merge_ubo._n0_depth_mip_level      = n0_depth_mip;
+
+
+            // first integrate pass. runs one invocation per probe.
+            {
+                // just run for each probe.
+                // Ping Pong swap
                 texture_n0, texture_n1 = texture_n1, texture_n0;
                 merge_storage_rw_tex_bindings[0].texture = texture_n0;
                 merge_storage_rw_tex_bindings[1].texture = texture_n1;
 
-                n0_cascade_index : u32 = cast(u32)cas;
-                n1_cascade_index : u32 = cast(u32)cas +1;
 
-                n0_cascade_probe_counts : [2]u32 = ren_effect_RACA_get_probe_counts_for_cascade(n0_cascade_index, base_probe_counts);
-                n0_cascade_probe_size   : u32    = ren_effect_RACA_get_probe_size_for_cascade(n0_cascade_index, raca.settings.base_probe_size);
+                raca_merge_ubo._target_size             = n0_cascade_probe_counts; 
+                raca_merge_ubo._integrate_last_cascade  = 1;
                 
+                compute_pass := sdl.BeginGPUComputePass(cmd_buf, &merge_storage_rw_tex_bindings[0], 2, nil, 0);
+                sdl.BindGPUComputePipeline(compute_pass, raca_ao_merge_compute_pipeline);
 
-                n0_depth_mip, n0_depth_mip_size := calc_depth_mip_level_and_size_for_cascade(n0_cascade_probe_counts, depth_max_dimentions, max_depth_mip);
+                // Min Max Depth
+                sdl.BindGPUComputeSamplers(compute_pass, 0, &frame_transients.depth_hierarchy_sampler_binding, 1);
+                sdl.BindGPUComputeSamplers(compute_pass, 1, &frame_transients.raca_sampler_binding, 1);
 
-                // Update relvant ubo fields
-                raca_merge_ubo._n0_cascade_index  = n0_cascade_index;
-                raca_merge_ubo._n0_probe_size       = n0_cascade_probe_size;
-                raca_merge_ubo._n0_probe_counts     = n0_cascade_probe_counts;
-                raca_merge_ubo._n0_depth_mip_dimentions = n0_depth_mip_size;
-                raca_merge_ubo._n0_depth_mip_level      = n0_depth_mip;
+
+                sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_merge_ubo, size_of(raca_merge_ubo));
+
+                work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_merge_thread_count, [3]u32{raca_merge_ubo._target_size.x, raca_merge_ubo._target_size.y, 1});
+                sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
+                sdl.EndGPUComputePass(compute_pass);
+            }
+            // Second integrate step run on frame size which should be equal to cascade texture size
+            {
+                // just run for each probe.
+                // Ping Pong swap
+                texture_n0, texture_n1 = texture_n1, texture_n0;
+                merge_storage_rw_tex_bindings[0].texture = texture_n0;
+                merge_storage_rw_tex_bindings[1].texture = texture_n1;
+
+                raca_merge_ubo._target_size             = frame_size; 
+                raca_merge_ubo._integrate_last_cascade  = 2;
 
                 compute_pass := sdl.BeginGPUComputePass(cmd_buf, &merge_storage_rw_tex_bindings[0], 2, nil, 0);
                 sdl.BindGPUComputePipeline(compute_pass, raca_ao_merge_compute_pipeline);
 
                 // Min Max Depth
-                // TODO: setup double binding outside loop.
-                sdl.BindGPUComputeSamplers(compute_pass, 0, &res_bindings.minmax_sampler_binding, 1);
-                sdl.BindGPUComputeSamplers(compute_pass, 1, &res_bindings.raca_sampler_binding, 1);
+                sdl.BindGPUComputeSamplers(compute_pass, 0, &frame_transients.depth_hierarchy_sampler_binding, 1);
+                sdl.BindGPUComputeSamplers(compute_pass, 1, &frame_transients.raca_sampler_binding, 1);
 
-            
+
                 sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_merge_ubo, size_of(raca_merge_ubo));
-                sdl.DispatchGPUCompute(compute_pass, raca_merge_work_groups.x, raca_merge_work_groups.y , 1);
 
+                work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_merge_thread_count, [3]u32{raca_merge_ubo._target_size.x, raca_merge_ubo._target_size.y, 1});
+                sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
                 sdl.EndGPUComputePass(compute_pass);
             }
-
-            // Integrate last cascade
-            DO_INTEGRATE :: true
-            if DO_INTEGRATE {
-
-                n0_cascade_index           : u32 = 0;                
-                n0_cascade_probe_counts    : [2]u32 = base_probe_counts;
-                n0_cascade_probe_size      : u32    = raca.settings.base_probe_size;
-                n0_depth_mip, n0_depth_mip_size := calc_depth_mip_level_and_size_for_cascade(n0_cascade_probe_counts, depth_max_dimentions, max_depth_mip);
-                
-                raca_merge_ubo._n0_cascade_index        = n0_cascade_index;
-                raca_merge_ubo._n0_probe_size           = n0_cascade_probe_size;
-                raca_merge_ubo._n0_probe_counts         = n0_cascade_probe_counts;
-                raca_merge_ubo._n0_depth_mip_dimentions = n0_depth_mip_size;
-                raca_merge_ubo._n0_depth_mip_level      = n0_depth_mip;
-
-
-                // first integrate pass. runs one invocation per probe.
-                {
-                    // just run for each probe.
-                    // Ping Pong swap
-                    texture_n0, texture_n1 = texture_n1, texture_n0;
-                    merge_storage_rw_tex_bindings[0].texture = texture_n0;
-                    merge_storage_rw_tex_bindings[1].texture = texture_n1;
-
-
-                    raca_merge_ubo._target_size             = n0_cascade_probe_counts; 
-                    raca_merge_ubo._integrate_last_cascade  = 1;
-                    
-                    compute_pass := sdl.BeginGPUComputePass(cmd_buf, &merge_storage_rw_tex_bindings[0], 2, nil, 0);
-                    sdl.BindGPUComputePipeline(compute_pass, raca_ao_merge_compute_pipeline);
-
-                    // Min Max Depth
-                    sdl.BindGPUComputeSamplers(compute_pass, 0, &res_bindings.minmax_sampler_binding, 1);
-                    sdl.BindGPUComputeSamplers(compute_pass, 1, &res_bindings.raca_sampler_binding, 1);
-
-
-                    sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_merge_ubo, size_of(raca_merge_ubo));
-
-                    work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_merge_thread_count, [3]u32{raca_merge_ubo._target_size.x, raca_merge_ubo._target_size.y, 1});
-                    sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
-                    sdl.EndGPUComputePass(compute_pass);
-                }
-                // Second integrate step run on frame size which should be equal to cascade texture size
-                {
-                    // just run for each probe.
-                    // Ping Pong swap
-                    texture_n0, texture_n1 = texture_n1, texture_n0;
-                    merge_storage_rw_tex_bindings[0].texture = texture_n0;
-                    merge_storage_rw_tex_bindings[1].texture = texture_n1;
-
-                    raca_merge_ubo._target_size             = frame_size; 
-                    raca_merge_ubo._integrate_last_cascade  = 2;
-
-                    compute_pass := sdl.BeginGPUComputePass(cmd_buf, &merge_storage_rw_tex_bindings[0], 2, nil, 0);
-                    sdl.BindGPUComputePipeline(compute_pass, raca_ao_merge_compute_pipeline);
-
-                    // Min Max Depth
-                    sdl.BindGPUComputeSamplers(compute_pass, 0, &res_bindings.minmax_sampler_binding, 1);
-                    sdl.BindGPUComputeSamplers(compute_pass, 1, &res_bindings.raca_sampler_binding, 1);
-
-
-                    sdl.PushGPUComputeUniformData(cmd_buf,0, &raca_merge_ubo, size_of(raca_merge_ubo));
-
-                    work_groups : [3]u32 = calc_work_groups_from_thread_counts_and_invocations(raca_merge_thread_count, [3]u32{raca_merge_ubo._target_size.x, raca_merge_ubo._target_size.y, 1});
-                    sdl.DispatchGPUCompute(compute_pass, work_groups.x, work_groups.y , 1);
-                    sdl.EndGPUComputePass(compute_pass);
-                }
-            }
-
-            res_bindings.raca_ao_sampler_binding = sdl.GPUTextureSamplerBinding {
-                texture = texture_n0,
-                sampler = ren_ctx.nearest_depth_sampler,
-            }    
-        }
-    } else { // Raca not enabled
-
-        // @Note is it problem to bind same texture twice ?
-        res_bindings.raca_sampler_binding = sdl.GPUTextureSamplerBinding {
-            texture = ren_ctx.white_texture.binding.texture,
-            sampler = ren_ctx.nearest_depth_sampler,
         }
 
-        res_bindings.raca_ao_sampler_binding = sdl.GPUTextureSamplerBinding {
-            texture = ren_ctx.white_texture.binding.texture,
-            sampler = ren_ctx.nearest_depth_sampler,
-        }
+        frame_transients.raca_ao_sampler_binding = sdl.GPUTextureSamplerBinding {
+            texture = texture_n0,
+            sampler = frame_globals.samplers.depth_nearest,
+        }    
+    }
+    
+}
+
+@(private="package")
+renderer_execute_module_smaa :: proc(renderer : ^RenderContext, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
+
+    // SMAA PASS
+    smaa_pass_enabled : bool = .SMAA in renderer.config.ren_effect_flags && !renderer.effects.smaa.settings.temporary_disabled
+    //smaa_pass_enabled = false; // force off rn
+    if smaa_pass_enabled {
+
+
+        return;
     }
 
-    // ============================================================================================================
-    //                                     SHADOWMAP PASS
-    // ============================================================================================================
 
-    // TODO maybe move ligth pass after depth pre and ao so while ao is doing compute workload, 
-    // gemetry gpu parts can do depht buffer stuff.
-    shadowmaps: {   
-        IRI_PROFILE_SCOPE("Renderer: Shadowmap Pass (CPU)")
+    renderer_push_debug_group(cmd_buf, "Render Effect: SMAA");
+    defer renderer_pop_debug_group(cmd_buf);
 
-        light_manager : ^LightManager = &universe.light_manager;
-        
-        draw_calls : u32 = 0;
-        num_rendered_shadowmaps : u32 = 0;
-        num_pipe_switches : u32 = 0;
+    smaa := renderer.effects.smaa;
 
-        shadowmap_timer := timer_begin();
-        defer {            
-            perfs.shadowmap_pass_cpu_ms = timer_end_get_miliseconds(shadowmap_timer);
-            perfs.shadowmap_pass_drawcalls = draw_calls;
-            perfs.shadowmap_pass_num_rendered_shadowmaps = num_rendered_shadowmaps;
-            perfs.shadowmap_pass_num_pipeline_switches = num_pipe_switches;
-        }
+    engine_assert(smaa != nil);
+    engine_assert(smaa.edges_target != nil);
+    engine_assert(smaa.blend_target != nil);
+    engine_assert(smaa.area_tex     != nil);
+    engine_assert(smaa.search_tex   != nil);
 
-        if !any_draws_exist {
-            break shadowmaps;
-        }
-        
-        if len(light_manager.gpu_shadowmap_infos) > 0 {
-        
-            renderer_push_debug_group(cmd_buf, "Shadowmaps");
-            defer renderer_pop_debug_group(cmd_buf);
-        
-            for &sinfo, index in light_manager.gpu_shadowmap_infos {
+    engine_assert(frame_transients.post_ldr_color_target != nil, "Hdr must be converted to ldr before executing smaa pass")
 
-                IRI_PROFILE_SCOPE("Renderer: Shadowmap Command Recording")
-
-                if sinfo.array_layer <= -1 {
-                    continue; // skip unused shadowmap infos.
-                }
-
-                renderer_push_debug_group(cmd_buf, "Shadowmap Pass");
-                defer renderer_pop_debug_group(cmd_buf);
-
-                color_target := sdl.GPUColorTargetInfo {
-                    texture =  light_manager.shadowmap_array_binding.texture,
-                    mip_level = sinfo.mip_level,
-                    layer_or_depth_plane = cast(u32)sinfo.array_layer,
-                    clear_color = sdl.FColor{1.0,1.0,1.0,1.0},
-                    load_op  = sdl.GPULoadOp.CLEAR,
-                    store_op = .STORE,
-                    cycle = false,
-                }
-
-                depth_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo {
-                    texture     = ren_ctx.shadowmap_depth_textures[sinfo.mip_level],
-                    clear_depth = 1,                        // The value to clear the depth component with
-                    load_op     = sdl.GPULoadOp.CLEAR,
-                    store_op    = sdl.GPUStoreOp.DONT_CARE,
-
-                    stencil_load_op = sdl.GPULoadOp.DONT_CARE,
-                    stencil_store_op = sdl.GPUStoreOp.DONT_CARE,
-                    cycle = true,         // true cycles the texture if the texture is bound and any load ops are not LOAD */
-                    clear_stencil = 0,    // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. */
-                }
-
-                shadowmap_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target_info);
-
-                sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 0, &universe.matrix_buf, 1);
-                sdl.BindGPUVertexStorageBuffers(shadowmap_pass, 1, &light_manager.gpu_shadowmap_infos_buf, 1);
-
-                sdl.BindGPUVertexBuffers(shadowmap_pass, 0, &res_bindings.global_vert_buf_binding, 1);
-                sdl.BindGPUIndexBuffer(shadowmap_pass, res_bindings.global_index_buf_binding, sdl.GPUIndexElementSize._32BIT);
-
-                last_shadow_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
-
-                for shadow_draw in universe.frame_shadow_draws {
-
-                    if universe.cull_shadow_draws {
-                        if !test_shadow_draw(sinfo.view_proj, ecs.drawables[shadow_draw.drawable_index].world_oobb, sinfo.resolution){
-                            continue;
-                        }
-                    }
-
-                    pipeline_variant := pipe_manager_get_depthonly_pipeline_variant(pipe_manager, shadow_draw.shader_type, shadow_draw.technique_hash);
-
-                    if pipeline_variant != last_shadow_pipeline_variant {
-
-                        sdl.BindGPUGraphicsPipeline(shadowmap_pass, pipeline_variant);
-                        last_shadow_pipeline_variant = pipeline_variant;
-                        num_pipe_switches += 1;
-                    }
-                    
-                    draw_instance_ubo := VertexDrawInstanceUBO{
-                        drawable_index = shadow_draw.drawable_index,
-                        user_1 = cast(u32)index, // shadowmap index.
-                    }
-                    
-                    sdl.PushGPUVertexUniformData(cmd_buf, 0, &draw_instance_ubo, size_of(VertexDrawInstanceUBO));
-
-                    mesh_id := ecs.drawables[shadow_draw.drawable_index].draw_instance.mesh_id;                    
-                    global_buf_info := &mesh_manager.meshes.global_buf_info[mesh_id];
-
-                    sdl.DrawGPUIndexedPrimitives(shadowmap_pass, global_buf_info.num_indecies, num_instances = 1, first_index = global_buf_info.indecies_offset, vertex_offset = cast(i32)global_buf_info.vertecies_offset, first_instance = shadow_draw.drawable_index);
-
-                    draw_calls += 1;
-                }
-
-                num_rendered_shadowmaps += 1;
-                sdl.EndGPURenderPass(shadowmap_pass);
-            }
-
-        }
+    SMAAEdgeDetectionUBO :: struct {
+        input_dimentions : [4]f32,
     }
 
-    // ============================================================================================================
-    //                                      MAIN FORWARD RENDER PASS
-    // ============================================================================================================
-    {
-        IRI_PROFILE_SCOPE("Renderer: Main Forward Pass (CPU)")
+    edge_detection_ubo := SMAAEdgeDetectionUBO{
+        input_dimentions = [4]f32{1.0 / f32(frame_globals.frame_size.x), 1.0 / f32(frame_globals.frame_size.y), f32(frame_globals.frame_size.x), f32(frame_globals.frame_size.y)},
+    }
 
-        renderer_push_debug_group(cmd_buf, "Main Forward Pass");
-        defer renderer_pop_debug_group(cmd_buf);
+    input_color_target_sampler_binding := sdl.GPUTextureSamplerBinding{
+        texture = frame_transients.post_ldr_color_target,
+        sampler = frame_globals.samplers.linear_mip_nearest_clamp,
+    }
 
-        forward_draw_calls : u32 = 0;
-        forward_pipe_switches : u32 = 0;
-        forward_pass_timer := timer_begin();
-
+    // FIRST PASS: EDGE DETECTION
+    {   
         color_target := sdl.GPUColorTargetInfo {
-            texture = ren_ctx.geo_color_target_tex,
-            clear_color = sdl.FColor{1,0,0,1},
+            texture = smaa.edges_target,
+            clear_color = sdl.FColor{0.0,0,0,0},
             load_op = sdl.GPULoadOp.CLEAR,
             store_op = .STORE,
 
             cycle = true,
         }
 
-        // @Note its kinda ineficiant to redo depth.. we shouldn't do that....
+        smaa_ren_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil);
 
-        depth_stencil_target_info : sdl.GPUDepthStencilTargetInfo = sdl.GPUDepthStencilTargetInfo{
-            texture =  ren_ctx.geo_depth_stencil_target_tex,
-            clear_depth = 1,                        // The value to clear the depth component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used. 
-            
-            load_op  = sdl.GPULoadOp.LOAD,          // What is done with the depth contents at the beginning of the render pass.
-            store_op = sdl.GPUStoreOp.DONT_CARE,
-            
-            stencil_load_op = sdl.GPULoadOp.LOAD,
-            stencil_store_op = sdl.GPUStoreOp.DONT_CARE,
-            cycle = false,         // true cycles the texture if the texture is bound and any load ops are not LOAD 
-            clear_stencil = 0,        // The value to clear the stencil component to at the beginning of the render pass. Ignored if GPU_LOADOP_CLEAR is not used.
-        }
+        smaa_edge_detection_pipe := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .SMAA_EDGE_DETECTION)
+        engine_assert(smaa_edge_detection_pipe != nil)
+        sdl.BindGPUGraphicsPipeline(smaa_ren_pass, smaa_edge_detection_pipe);
 
-        render_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, &color_target,1, &depth_stencil_target_info);
 
-        // Push global data for all pipline in this render pass
-        sdl.PushGPUVertexUniformData(cmd_buf, 0, &ren_ctx.global_vertex_ubo, size_of(GlobalVertexUBO));
-        
+        sdl.BindGPUFragmentSamplers(smaa_ren_pass, 0 , &input_color_target_sampler_binding,1);
 
-        sky_gpu_buffer := universe.skybox_gpu_buffer;
-        sky_comp := ecs_get_active_skybox_component(ecs);
 
-
-        if sky_comp != nil &&  sky_comp.cubemap.binding.texture != nil && sky_comp.cubemap.binding.sampler != nil{
-            res_bindings.sky_cubemap_binding = sky_comp.cubemap.binding;
-        } else {
-            res_bindings.sky_cubemap_binding = ren_ctx.dummy_cubemap.binding;
-        }
-
-
-        // BIND GLOBAL FRAGMENT BUFFER TO BUFFER SLOT 0
-        sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &ren_ctx.global_fragment_gpu_buffer, 1);
-
-        // SKYBOX BUFFER SLOT 1
-        sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &sky_gpu_buffer, 1);
-
-        // === Skybox Pass
-        // The skybox pass must happen before alpha blended materials.
-        // Since we already have a depth prepass, doing it as the first draw 
-        // should be just fine.
-        {
-            
-            renderer_push_debug_group(cmd_buf, "Skybox Pass");
-            defer renderer_pop_debug_group(cmd_buf);
-            
-            pipeline_skybox := pipe_manager_get_core_pipeline(pipe_manager, .Skybox);
-            sdl.BindGPUGraphicsPipeline(render_pass, pipeline_skybox);
-
-            sdl.BindGPUFragmentSamplers(render_pass, 0, &res_bindings.sky_cubemap_binding, 1);
-
-            // bind vertex buffer
-            vert_buffer_binding := sdl.GPUBufferBinding {
-                buffer = ren_ctx.prim_icosphere.vert_buf,
-                offset = 0,
-            }
-
-            sdl.BindGPUVertexBuffers(render_pass, 0, &vert_buffer_binding, 1);
-
-            sdl.DrawGPUPrimitives(render_pass, ren_ctx.prim_icosphere.num_vertecies , 1, 0, 0);
-        }
-
-        bind_unlit_material_resources :: proc(render_pass : ^sdl.GPURenderPass){
-
-            unlit_mat_storage_buffer := engine.material_manager.gpu_mat_buf[.Unlit];
-
-            // @Note: im still not sure if we need to bind this here. i think only once should be fine since it stays at the first slot.
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &engine.render_context.global_fragment_gpu_buffer, 1);
-            
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &unlit_mat_storage_buffer, 1);
-        }
-
-        bind_pbr_material_resources :: proc(ren_ctx : ^RenderContext, render_pass : ^sdl.GPURenderPass, universe : ^Universe, res_bindings : ^FrameResourceBindings) {
-            
-            // Brdf Lut
-            sdl.BindGPUFragmentSamplers(render_pass, 0 , &ren_ctx.brdf_lut.binding, 1);
-
-            // AO Texture
-            sdl.BindGPUFragmentSamplers(render_pass, 1, &res_bindings.gtao_sampler_binding, 1);
-            //sdl.BindGPUFragmentSamplers(render_pass, 1, &res_bindings.raca_ao_sampler_binding, 1);
-
-            // Skybox cubemap
-            sdl.BindGPUFragmentSamplers(render_pass, 2, &res_bindings.sky_cubemap_binding, 1);
-
-            // Shadowmap Array
-            sdl.BindGPUFragmentSamplers(render_pass, 3, &universe.light_manager.shadowmap_array_binding ,1);
-            
-            // Radiance Cascades
-            sdl.BindGPUFragmentSamplers(render_pass, 4, &res_bindings.raca_sampler_binding, 1);
-
-            // Bind buffers specific to opaque pbr pass..
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 0, &ren_ctx.global_fragment_gpu_buffer, 1);
-
-            // Skybox Buffer
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 1, &universe.skybox_gpu_buffer, 1);
-
-            // PBR material buffer
-            pbr_mat_storage_buffer := engine.material_manager.gpu_mat_buf[.Pbr];
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 2, &pbr_mat_storage_buffer, 1);
-
-            // lights
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 3, &universe.light_manager.gpu_lights_data_buf, 1);
-            sdl.BindGPUFragmentStorageBuffers(render_pass, 4, &universe.light_manager.gpu_shadowmap_infos_buf, 1);
-        }
-
-        draw_drawable_index_array :: proc(ren_ctx : ^RenderContext, 
-                                        cmd_buf             : ^sdl.GPUCommandBuffer, 
-                                        render_pass         : ^sdl.GPURenderPass, 
-                                        mesh_manager        : ^MeshManager, 
-                                        pipe_manager        : ^PipelineManager, 
-                                        material_manager    : ^MaterialManager, 
-                                        drawables_index_array : ^[dynamic]u32, 
-                                        universe : ^Universe, 
-                                        res_bindings : ^FrameResourceBindings) ->(draw_calls : u32, pipeline_switches : u32) {
-
-            last_pipeline_variant : ^sdl.GPUGraphicsPipeline = nil;
-            last_material_shader_type : MaterialShaderType = .None; 
-
-            for drawable_index in drawables_index_array {
-
-                    mesh_id := universe.ecs.drawables[drawable_index].draw_instance.mesh_id;
-                    mat_id  := universe.ecs.drawables[drawable_index].draw_instance.mat_id;
-                    
-                    mat_shader_type := material_manager_get_material_shader_type_unsafe(material_manager, mat_id);
-
-                    mesh_gpu_data := mesh_manager_get_mesh_gpu_data(mesh_manager, mesh_id);
-                    vert_layout   := mesh_gpu_data.vertex_layout;
-
-                    pipeline_variant := pipe_manager_get_material_pipeline_variant(pipe_manager, material_manager, mat_id, vert_layout);
-
-                    if pipeline_variant != last_pipeline_variant {
-
-                        sdl.BindGPUGraphicsPipeline(render_pass, pipeline_variant);
-                        last_pipeline_variant = pipeline_variant;
-
-                        pipeline_switches += 1;
-
-                        if mat_shader_type != last_material_shader_type {
-
-                            switch mat_shader_type {
-                                case .None:
-                                case .Pbr:   bind_pbr_material_resources(ren_ctx, render_pass, universe, res_bindings);
-                                case .Unlit: bind_unlit_material_resources(render_pass);
-                                case .Custom:
-                            }
-
-                            last_material_shader_type = last_material_shader_type;
-                        }
-
-                    }
-                    
-                    if pipeline_variant == nil {
-                        log.debugf("DrawFrame: cannont exxecture draw call, pipeline not build");
-                        continue;
-                    }
-
-                    // @Note:
-                    // This part must adapt to which shader is in used.
-                    // mainly because for custom shaders we probably will need to bind material specific buffers.
-                    // for engine materials that are registered with the material manager we can stick to the gpu index
-                    // into the respective material type gpu buffer.
-
-                    frag_mat_ubo: MatUBO = MatUBO{
-                        mat_index = cast(u32)material_manager.material_gpu_indexes[mat_id],
-                    };
-
-                    switch mat_shader_type {
-                        case .None:
-                        case .Pbr:   sdl.PushGPUFragmentUniformData(cmd_buf, 0, &frag_mat_ubo, size_of(MatUBO));
-                        case .Unlit: {
-                            //unlit := engine.material_manager.unlit_materials_gpu[frag_mat_ubo.mat_index];
-                            sdl.PushGPUFragmentUniformData(cmd_buf, 0, &frag_mat_ubo, size_of(MatUBO));
-                        }
-                        case .Custom: {
-                            unimplemented();
-                        }
-                    }
-
-                    global_buf_info := mesh_manager.meshes[mesh_id].global_buf_info
-
-                    // @Note using global index buffer is much faster on cpu but probably slower on gpu
-                    // because the global index buffer indecies are not cache optimized but instead ordered for ray traversal.
-                    // still close vertecies should appear rather close to each other so its probably okey.
-                    // bind index buffer
-                    // index_buf_binding := sdl.GPUBufferBinding {
-                    //     buffer = mesh_gpu_data.index_buf,
-                    //     offset = 0,
-                    // }
-                    // sdl.BindGPUIndexBuffer(render_pass, index_buf_binding, sdl.GPUIndexElementSize._32BIT);
-                    
-                    // we cant yet use the global possition buffer unless we also have global buffer for the other vertex data as in vert_layouts minimal,standart and extended..                  
-                    buffer_bindings : [2]sdl.GPUBufferBinding = ---;
-                    buffer_bindings[0].buffer = mesh_gpu_data.vertex_pos_buf;
-                    buffer_bindings[0].offset = 0;
-
-                    buffer_bindings[1].buffer = mesh_gpu_data.vertex_buf;
-                    buffer_bindings[1].offset = 0;
-                    sdl.BindGPUVertexBuffers(render_pass, 0, &buffer_bindings[0], 2);
-
-                    
-                    num_indecies : u32 = mesh_gpu_data.num_indecies;
-                    sdl.DrawGPUIndexedPrimitives(render_pass, num_indecies, num_instances = 1, first_index = global_buf_info.indecies_offset, vertex_offset = 0, first_instance = drawable_index);
-
-                    //renderer_DRAW_CALL_draw_mesh_instance_gpu_data(render_pass, mesh_gpu_data, false);
-                    draw_calls += 1;
-            }
-
-            return draw_calls, pipeline_switches;
-        }
-        
-        // === MAIN DRAW CALLS ====
-        if any_draws_exist {
-
-            // @Note: if no draws exist, matrix buffer will be nill
-            sdl.BindGPUVertexStorageBuffers(render_pass, 0, &universe.matrix_buf, 1);
-
-            sdl.BindGPUIndexBuffer(render_pass, res_bindings.global_index_buf_binding, sdl.GPUIndexElementSize._32BIT);
-            //sdl.BindGPUVertexBuffers(render_pass, 0, &global_vert_buf_binding, 1); // cant use this yet here.
-
-
-            // OPAQUES
-            draws, switches := draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, material_manager, &universe.frame_opaques    , universe, res_bindings);
-            forward_draw_calls += draws;
-            forward_pipe_switches += switches;
-            
-            // ALPHA TESTED
-            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, material_manager, &universe.frame_alpha_test , universe, res_bindings);
-            forward_draw_calls += draws;
-            forward_pipe_switches += switches;
-            
-            // ALPHA BLENDING
-            draws, switches = draw_drawable_index_array(ren_ctx, cmd_buf, render_pass, mesh_manager, pipe_manager, material_manager, &universe.frame_alpha_blend, universe, res_bindings);
-            forward_draw_calls += draws;
-            forward_pipe_switches += switches;
-        }
-
-        // EXECUTE DEBUG DRAW COMMANDS
-
-        if engine.debug_draw_manager.is_enabled {
-            
-            IRI_PROFILE_SCOPE("Renderer Debug Draws Command Recording")
-
-            line_cube_pipe   := pipe_manager_get_core_pipeline(pipe_manager, .LINE_CUBE);
-            line_line_pipe   := pipe_manager_get_core_pipeline(pipe_manager, .LINE_LINE);
-            line_circle_pipe := pipe_manager_get_core_pipeline(pipe_manager, .LINE_CIRCLE);
-
-            last_pipe : ^sdl.GPUGraphicsPipeline = nil;
-
-            for &debug_cmd, cmd_index in engine.debug_draw_manager.commands {
-                
-                curr_pipe : ^sdl.GPUGraphicsPipeline = nil; 
-                #partial switch debug_cmd.type {
-                    case .Box:      curr_pipe = line_cube_pipe;
-                    case .Circle:   curr_pipe = line_circle_pipe;
-                    case .Line:     curr_pipe = line_line_pipe;
-                    //case .Sphere:   continue; // sphere draws are currently drawnn as 3 circle draws
-                }
-                if curr_pipe != last_pipe{
-                    last_pipe = curr_pipe;
-                    sdl.BindGPUGraphicsPipeline(render_pass, curr_pipe);
-                }
-                
-                sdl.PushGPUFragmentUniformData(cmd_buf, 0, &debug_cmd.color , size_of(debug_cmd.color));
-                
-                sdl.PushGPUVertexUniformData(cmd_buf, 1, &debug_cmd.mat, size_of(debug_cmd.mat));
-
-                #partial switch debug_cmd.type {
-                    case .Box:      sdl.DrawGPUPrimitives(render_pass, 24, 1, 0, 0);
-                    case .Circle:   sdl.DrawGPUPrimitives(render_pass, 33, 1, 0, 0); // 33 verts is correct
-                    case .Line: {
-                        verts : u32 = debug_cmd.mat[3][3] > 3.0 ? 4 : 2;
-                        sdl.DrawGPUPrimitives(render_pass,  verts, 1, 0, 0);
-                    }
-                }
-            }
-        }
-
-
-        // End render pass
-        sdl.EndGPURenderPass(render_pass);
-
-        perfs.forward_pass_drawcalls = forward_draw_calls;
-        perfs.forward_pass_num_pipeline_switches = forward_pipe_switches;
-        perfs.forward_pass_cpu_ms = timer_end_get_miliseconds(forward_pass_timer);
-
-    }
-
-    // POST COLOR CORRECT PASS
-    // Here we just color correct the scene rendered img with tonemapping and srgb convertion
-
-    {
-        renderer_push_debug_group(cmd_buf, "Post Process Color Correction");
-        defer renderer_pop_debug_group(cmd_buf);
-
-        post_correct_color_target := sdl.GPUColorTargetInfo {
-                texture = ren_ctx.post_correct_color_target_tex,
-                // clear_color = sdl.FColor{0,0,0,1},
-                load_op  = sdl.GPULoadOp.DONT_CARE,
-                store_op = sdl.GPUStoreOp.STORE,
-                cycle = true,
-        }
-
-        post_process_render_pass := sdl.BeginGPURenderPass(cmd_buf, &post_correct_color_target,1,nil);
-        sdl.BindGPUGraphicsPipeline(post_process_render_pass, pipe_manager_get_core_pipeline(pipe_manager, .PostColorCorrect));
-
-        geo_color_target_sampler_binding := sdl.GPUTextureSamplerBinding {
-            texture = ren_ctx.geo_color_target_tex,
-            sampler = ren_ctx.geo_color_target_sampler,
-        }
-
-        sdl.BindGPUFragmentSamplers(post_process_render_pass, 0, &geo_color_target_sampler_binding, 1);
-        
-        // TODO: expose this with settings
-        post_settings := PostProcessSettingsUBO{
-            exposure = 0.0,
-            tone_map_mode = 0,
-            convert_to_srgb = window.swapchain_settings.color_space == SwapchainColorSpace.Srgb ? true : false,
-        }
-
-        sdl.PushGPUFragmentUniformData(cmd_buf,0, &post_settings, size_of(PostProcessSettingsUBO));
+        sdl.PushGPUFragmentUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
+        sdl.PushGPUVertexUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
 
         // Draw 6 verts aka 2 triangles aka 1 screenquad
-        sdl.DrawGPUPrimitives(post_process_render_pass, 6, 1, 0,0);
+        sdl.DrawGPUPrimitives(smaa_ren_pass, 6, 1, 0,0);
 
-        sdl.EndGPURenderPass(post_process_render_pass);
+        sdl.EndGPURenderPass(smaa_ren_pass);
     }
 
-    // SMAA PASS
-    smaa_pass_enabled : bool = .SMAA in ren_ctx.config.ren_effect_flags && !ren_ctx.effects.smaa.settings.temporary_disabled
-    //smaa_pass_enabled = false; // force off rn
-    if smaa_pass_enabled {
 
-        renderer_push_debug_group(cmd_buf, "Render Effect: SMAA");
-        defer renderer_pop_debug_group(cmd_buf);
-
-        smaa := ren_ctx.effects.smaa;
-
-        engine_assert(smaa != nil);
-        engine_assert(smaa.edges_target != nil);
-        engine_assert(smaa.blend_target != nil);
-        engine_assert(smaa.area_tex     != nil);
-        engine_assert(smaa.search_tex   != nil);
-
-        SMAAEdgeDetectionUBO :: struct {
-            input_dimentions : [4]f32,
-        }
-
-        edge_detection_ubo := SMAAEdgeDetectionUBO{
-            input_dimentions = [4]f32{1.0 / f32(frame_size.x), 1.0 / f32(frame_size.y), f32(frame_size.x), f32(frame_size.y)},
-        }
-
-        input_color_target_sampler_binding := sdl.GPUTextureSamplerBinding{
-            texture = ren_ctx.post_correct_color_target_tex,
-            sampler = ren_ctx.sampler_linear_mip_nearest_clamp,
-        }
-
-        // FIRST PASS: EDGE DETECTION
-        {   
-            color_target := sdl.GPUColorTargetInfo {
-                texture = smaa.edges_target,
-                clear_color = sdl.FColor{0.0,0,0,0},
-                load_op = sdl.GPULoadOp.CLEAR,
-                store_op = .STORE,
-
-                cycle = true,
-            }
-
-            smaa_ren_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil);
-
-            smaa_edge_detection_pipe := pipe_manager_get_core_pipeline(pipe_manager, .SMAA_EDGE_DETECTION)
-            engine_assert(smaa_edge_detection_pipe != nil)
-            sdl.BindGPUGraphicsPipeline(smaa_ren_pass, smaa_edge_detection_pipe);
-
-
-            sdl.BindGPUFragmentSamplers(smaa_ren_pass, 0 , &input_color_target_sampler_binding,1);
-
-
-            sdl.PushGPUFragmentUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
-            sdl.PushGPUVertexUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
-
-            // Draw 6 verts aka 2 triangles aka 1 screenquad
-            sdl.DrawGPUPrimitives(smaa_ren_pass, 6, 1, 0,0);
-
-            sdl.EndGPURenderPass(smaa_ren_pass);
-        }
-
-
-         // SECOND PASS: BLEND WEIGHT CALCULATION
-        {
-            color_target := sdl.GPUColorTargetInfo {
-                texture = smaa.blend_target,
-                clear_color = sdl.FColor{0.0,0,0,0},
-                load_op = sdl.GPULoadOp.CLEAR,
-                store_op = .STORE,
-
-                cycle = true,
-            }
-
-            smaa_ren_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil);
-
-            smaa_blend_weight_pipe := pipe_manager_get_core_pipeline(pipe_manager, .SMAA_BLEND_WEIGHT)
-            engine_assert(smaa_blend_weight_pipe != nil)
-            sdl.BindGPUGraphicsPipeline(smaa_ren_pass, smaa_blend_weight_pipe);
-
-
-
-            // TODO: since we pushed them before to the same slots we can omit these calls here i think??
-            sdl.PushGPUFragmentUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
-            sdl.PushGPUVertexUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
-
-
-            edges_target_sampler_binding := sdl.GPUTextureSamplerBinding{
-                texture = smaa.edges_target,
-                sampler = ren_ctx.sampler_linear_mip_nearest_clamp,
-            }
-
-
-            area_tex_sampler_binding := sdl.GPUTextureSamplerBinding{
-                texture = smaa.area_tex,
-                sampler = ren_ctx.sampler_linear_mip_nearest_clamp,
-            }
-
-            search_tex_sampler_binding := sdl.GPUTextureSamplerBinding{
-                texture = smaa.search_tex,
-                sampler = ren_ctx.sampler_linear_mip_nearest_clamp,
-            }
-            // TODO: can bind in one call.
-            sdl.BindGPUFragmentSamplers(smaa_ren_pass, 0 , &edges_target_sampler_binding,1);
-            sdl.BindGPUFragmentSamplers(smaa_ren_pass, 1 , &area_tex_sampler_binding,1);
-            sdl.BindGPUFragmentSamplers(smaa_ren_pass, 2 , &search_tex_sampler_binding,1);
-
-            // Draw 6 verts aka 2 triangles aka 1 screenquad
-            sdl.DrawGPUPrimitives(smaa_ren_pass, 6, 1, 0,0);
-
-            sdl.EndGPURenderPass(smaa_ren_pass);
-        }
-
-        // THIRD PASS NEIGHBORHOOD BLENDING
-        {
-            color_target := sdl.GPUColorTargetInfo {
-                texture = smaa.edges_target, // we can recylce the edges target as final output for now
-                clear_color = sdl.FColor{0.0,0,0,0},
-                load_op = sdl.GPULoadOp.CLEAR,
-                store_op = .STORE,
-
-                cycle = true,
-            }
-
-            smaa_ren_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil);
-
-            smaa_neighborhood_blend_pipe := pipe_manager_get_core_pipeline(pipe_manager, .SMAA_NEIGHBORHOOD_BLEND)
-            engine_assert(smaa_neighborhood_blend_pipe != nil)
-            sdl.BindGPUGraphicsPipeline(smaa_ren_pass, smaa_neighborhood_blend_pipe);
-
-
-            // TODO: since we pushed them before to the same slots we can omit these calls here i think??
-            sdl.PushGPUFragmentUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
-            sdl.PushGPUVertexUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
-
-            blend_target_sampler_binding := sdl.GPUTextureSamplerBinding{
-                texture = smaa.blend_target,
-                sampler = ren_ctx.sampler_linear_mip_nearest_clamp,
-            }
-
-            sdl.BindGPUFragmentSamplers(smaa_ren_pass, 0 , &input_color_target_sampler_binding,1);
-            sdl.BindGPUFragmentSamplers(smaa_ren_pass, 1 , &blend_target_sampler_binding,1);
-
-            // Draw 6 verts aka 2 triangles aka 1 screenquad
-            sdl.DrawGPUPrimitives(smaa_ren_pass, 6, 1, 0,0);
-
-            sdl.EndGPURenderPass(smaa_ren_pass);
-        }
-    }
-
-    // UI (DearImgui) RENDER PASS
+    // SECOND PASS: BLEND WEIGHT CALCULATION
     {
+        color_target := sdl.GPUColorTargetInfo {
+            texture = smaa.blend_target,
+            clear_color = sdl.FColor{0.0,0,0,0},
+            load_op = sdl.GPULoadOp.CLEAR,
+            store_op = .STORE,
 
-        if debug_gui_is_enabled() {
-
-            renderer_push_debug_group(cmd_buf, "Debug GUI Pass");
-            defer renderer_pop_debug_group(cmd_buf);
-
-            ui_color_target := sdl.GPUColorTargetInfo {
-                texture = ren_ctx.debug_gui_color_target_tex,
-                clear_color = sdl.FColor{0,0,0,0},
-                load_op  = sdl.GPULoadOp.CLEAR,
-                store_op = sdl.GPUStoreOp.STORE,
-                cycle = true,
-            }
-
-            debug_gui_render_pass : ^sdl.GPURenderPass = sdl.BeginGPURenderPass(cmd_buf, &ui_color_target, 1, nil);
-
-            debug_gui_draw_frame(cmd_buf, debug_gui_render_pass, pipe_manager_get_core_pipeline(pipe_manager, .DearImGUI));
-
-            sdl.EndGPURenderPass(debug_gui_render_pass);
-        }
-    }
-
-
-    // FINAL COMPOSIT INTO SWAPCHAIN
-    {
-        renderer_push_debug_group(cmd_buf, "Swapchain Composit Pass");
-        defer renderer_pop_debug_group(cmd_buf);
-
-        swapchain_target := sdl.GPUColorTargetInfo {
-                texture = swapchain_texture,
-                clear_color = sdl.FColor{1,0,1,1},
-                load_op  = sdl.GPULoadOp.CLEAR,
-                store_op = sdl.GPUStoreOp.STORE,
-                cycle = true,
+            cycle = true,
         }
 
-        swapchain_blit_pass := sdl.BeginGPURenderPass(cmd_buf, &swapchain_target,1, nil);
-        
-        sdl.BindGPUGraphicsPipeline(swapchain_blit_pass, pipe_manager_get_core_pipeline(pipe_manager, .SWAPCHAIN_COMPOSIT));
+        smaa_ren_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil);
+
+        smaa_blend_weight_pipe := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .SMAA_BLEND_WEIGHT)
+        engine_assert(smaa_blend_weight_pipe != nil)
+        sdl.BindGPUGraphicsPipeline(smaa_ren_pass, smaa_blend_weight_pipe);
 
 
-        post_correct_tex_sampler_binding := sdl.GPUTextureSamplerBinding {
-            //texture = ren_ctx.effects.smaa.edges_target, // nocheckin
-            //texture = ren_ctx.post_correct_color_target_tex,
-            texture = smaa_pass_enabled ?  ren_ctx.effects.smaa.edges_target : ren_ctx.post_correct_color_target_tex,
-            sampler = ren_ctx.post_correct_color_target_sampler, // its just s standart sampler..
-        }
 
-        debug_gui_tex_sampler_binding := sdl.GPUTextureSamplerBinding {
-            texture = ren_ctx.debug_gui_color_target_tex,
-            sampler = ren_ctx.debug_gui_color_target_sampler,
-        }
+        // TODO: since we pushed them before to the same slots we can omit these calls here i think??
+        sdl.PushGPUFragmentUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
+        sdl.PushGPUVertexUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
 
-        sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 0, &post_correct_tex_sampler_binding, 1);
-        sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 1, &debug_gui_tex_sampler_binding, 1);
-        
-        SwapchainCompositUBO :: struct {
-            convert_to_srgb : u32,
-            convert_scene_tex_to_linear_on_load : u32,
-            padding1 : u32,
-            padding2 : u32,
-        }
 
-        swap_composit_ubo := SwapchainCompositUBO {
-            convert_to_srgb = window.swapchain_settings.color_space == SwapchainColorSpace.Srgb ? 1 : 0,
-            convert_scene_tex_to_linear_on_load = smaa_pass_enabled ? 1 : 0,
+        edges_target_sampler_binding := sdl.GPUTextureSamplerBinding{
+            texture = smaa.edges_target,
+            sampler = frame_globals.samplers.linear_mip_nearest_clamp,
         }
 
 
-        sdl.PushGPUFragmentUniformData(cmd_buf,0, &swap_composit_ubo, size_of(SwapchainCompositUBO));
+        area_tex_sampler_binding := sdl.GPUTextureSamplerBinding{
+            texture = smaa.area_tex,
+            sampler = frame_globals.samplers.linear_mip_nearest_clamp,
+        }
+
+        search_tex_sampler_binding := sdl.GPUTextureSamplerBinding{
+            texture = smaa.search_tex,
+            sampler = frame_globals.samplers.linear_mip_nearest_clamp,
+        }
+        // TODO: can bind in one call.
+        sdl.BindGPUFragmentSamplers(smaa_ren_pass, 0 , &edges_target_sampler_binding,1);
+        sdl.BindGPUFragmentSamplers(smaa_ren_pass, 1 , &area_tex_sampler_binding,1);
+        sdl.BindGPUFragmentSamplers(smaa_ren_pass, 2 , &search_tex_sampler_binding,1);
 
         // Draw 6 verts aka 2 triangles aka 1 screenquad
-        sdl.DrawGPUPrimitives(swapchain_blit_pass, 6, 1, 0,0);
+        sdl.DrawGPUPrimitives(smaa_ren_pass, 6, 1, 0,0);
 
-        sdl.EndGPURenderPass(swapchain_blit_pass);
+        sdl.EndGPURenderPass(smaa_ren_pass);
     }
 
-    
-    submit_ok := sdl.SubmitGPUCommandBuffer(cmd_buf);
-    engine_assert(submit_ok);
-    //log.debugf("Submitted")
+    // THIRD PASS NEIGHBORHOOD BLENDING
+    {
+        color_target := sdl.GPUColorTargetInfo {
+            texture = smaa.edges_target, // we can recylce the edges target as final output for now
+            clear_color = sdl.FColor{0.0,0,0,0},
+            load_op = sdl.GPULoadOp.CLEAR,
+            store_op = .STORE,
+
+            cycle = true,
+        }
+
+        smaa_ren_pass := sdl.BeginGPURenderPass(cmd_buf, &color_target, 1, nil);
+
+        smaa_neighborhood_blend_pipe := pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .SMAA_NEIGHBORHOOD_BLEND)
+        engine_assert(smaa_neighborhood_blend_pipe != nil)
+        sdl.BindGPUGraphicsPipeline(smaa_ren_pass, smaa_neighborhood_blend_pipe);
+
+
+        // TODO: since we pushed them before to the same slots we can omit these calls here i think??
+        sdl.PushGPUFragmentUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
+        sdl.PushGPUVertexUniformData(cmd_buf, 0, &edge_detection_ubo , size_of(SMAAEdgeDetectionUBO));
+
+        blend_target_sampler_binding := sdl.GPUTextureSamplerBinding{
+            texture = smaa.blend_target,
+            sampler = frame_globals.samplers.linear_mip_nearest_clamp,
+        }
+
+        sdl.BindGPUFragmentSamplers(smaa_ren_pass, 0 , &input_color_target_sampler_binding,1);
+        sdl.BindGPUFragmentSamplers(smaa_ren_pass, 1 , &blend_target_sampler_binding,1);
+
+        // Draw 6 verts aka 2 triangles aka 1 screenquadscene_hdr_color_target_sampler_binding
+        sdl.DrawGPUPrimitives(smaa_ren_pass, 6, 1, 0,0);
+
+        sdl.EndGPURenderPass(smaa_ren_pass);
+    }
     
 
+    frame_transients.post_ldr_color_target = smaa.edges_target
+    frame_transients.convert_post_ldr_to_linear_on_load = true // see comment in struct declaration.
 }
-
 
 @(private="package")
-renderer_get_render_pass_info :: proc(ren_ctx : ^RenderContext, render_pass_type: RenderPassType) -> RenderPassInfo{
-    return ren_ctx.render_pass_infos[render_pass_type];
-}
+renderer_execute_module_swapchain_composit :: proc(swapchain_color_target : ^sdl.GPUTexture, frame_globals : ^RendererFrameGlobals, frame_transients : ^RendererFrameTransients, cmd_buf : ^sdl.GPUCommandBuffer){
 
+    renderer_push_debug_group(cmd_buf, "Swapchain Composit Pass");
+    defer renderer_pop_debug_group(cmd_buf);
 
-@(private="file")
-renderer_DRAW_CALL_draw_mesh_instance_gpu_data :: proc "contextless" (render_pass : ^sdl.GPURenderPass, mesh_gpu_data : ^MeshGPUData, only_position_buf : bool = false){
-                
-    // bind index buffer
-    index_buf_binding : sdl.GPUBufferBinding;
-    index_buf_binding.buffer = mesh_gpu_data.index_buf;
-    index_buf_binding.offset = 0;
-  
-    // bind vertex buffer
-    if only_position_buf {
-        
-        buffer_bindings : [1]sdl.GPUBufferBinding;
-        buffer_bindings[0].buffer = mesh_gpu_data.vertex_pos_buf;
-        buffer_bindings[0].offset = 0;
-        sdl.BindGPUVertexBuffers(render_pass, 0, &buffer_bindings[0], 1);
-        
-        index_buf_binding.buffer = mesh_gpu_data.index_buf; 
+    engine_assert(frame_transients.post_ldr_color_target != nil);
+    engine_assert(frame_transients.ui_color_target != nil);
 
-    } else {
-
-        buffer_bindings : [2]sdl.GPUBufferBinding;
-        buffer_bindings[0].buffer = mesh_gpu_data.vertex_pos_buf;
-        buffer_bindings[0].offset = 0;
-
-        buffer_bindings[1].buffer = mesh_gpu_data.vertex_buf;
-        buffer_bindings[1].offset = 0;
-        sdl.BindGPUVertexBuffers(render_pass, 0, &buffer_bindings[0], 2);
+    swapchain_target := sdl.GPUColorTargetInfo {
+            texture = swapchain_color_target,
+            clear_color = sdl.FColor{1,0,1,1},
+            load_op  = sdl.GPULoadOp.CLEAR,
+            store_op = sdl.GPUStoreOp.STORE,
+            cycle = true,
     }
 
-    sdl.BindGPUIndexBuffer(render_pass, index_buf_binding, sdl.GPUIndexElementSize._32BIT);
-
-
-    num_indecies : u32 = mesh_gpu_data.num_indecies;
-    sdl.DrawGPUIndexedPrimitives(render_pass, num_indecies, 1, 0, 0, 0);
-}
-
-@(private="file")
-renderer_DRAW_CALL_draw_mesh_instance_shadow :: proc "contextless" (render_pass : ^sdl.GPURenderPass, mesh_gpu_data : ^MeshGPUData){
-    vert_buf_binding := sdl.GPUBufferBinding {
-        buffer = mesh_gpu_data.vertex_pos_buf,
-    }
-    sdl.BindGPUVertexBuffers(render_pass, 0, &vert_buf_binding, 1);
+    swapchain_blit_pass := sdl.BeginGPURenderPass(cmd_buf, &swapchain_target,1, nil);
     
-    index_buf_binding := sdl.GPUBufferBinding {
-        buffer = mesh_gpu_data.index_buf, 
+    sdl.BindGPUGraphicsPipeline(swapchain_blit_pass, pipe_manager_get_core_pipeline(frame_globals.pipeline_manager, .SWAPCHAIN_COMPOSIT));
+
+    post_ldr_target_binding := sdl.GPUTextureSamplerBinding {
+        texture = frame_transients.post_ldr_color_target,
+        sampler = frame_globals.samplers.linear, 
     }
-    sdl.BindGPUIndexBuffer(render_pass, index_buf_binding, sdl.GPUIndexElementSize._32BIT);
 
-    sdl.DrawGPUIndexedPrimitives(render_pass, mesh_gpu_data.num_indecies, 1, 0, 0, 0);
-}
+    ui_target_sampler_binding := sdl.GPUTextureSamplerBinding {
+        texture = frame_transients.ui_color_target,
+        sampler = frame_globals.samplers.linear_mip_nearest_clamp,
+    }
 
-
-// Note: must use a pipeline with unit_cube vertex shader
-@(private="file")
-renderer_DRAW_CALL_draw_unit_cube :: proc "contextless" (command_buffer : ^sdl.GPUCommandBuffer, render_pass : ^sdl.GPURenderPass, transform_matrix : matrix[4,4]f32){
+    sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 0, &post_ldr_target_binding, 1);
+    sdl.BindGPUFragmentSamplers(swapchain_blit_pass, 1, &ui_target_sampler_binding, 1);
     
-    mesh_vertex_ubo : MeshVertexUBO = {
-        model_mat = transform_matrix,
+    SwapchainCompositUBO :: struct {
+        convert_to_srgb : u32,
+        convert_scene_tex_to_linear_on_load : u32,
+        padding1 : u32,
+        padding2 : u32,
     }
 
-    sdl.PushGPUVertexUniformData(command_buffer, 1, &mesh_vertex_ubo, size_of(MeshVertexUBO));
-
-    sdl.DrawGPUPrimitives(render_pass, 36 * 3, 1, 0,0)
-}
-
-@(private="file")
-renderer_push_debug_group :: proc(command_buffer : ^sdl.GPUCommandBuffer, name : cstring) {
-
-    when ENGINE_DEVELOPMENT {
-        sdl.PushGPUDebugGroup(command_buffer, name);
+    window := get_window_context()
+    swap_composit_ubo := SwapchainCompositUBO {
+        convert_to_srgb =  window.swapchain_settings.color_space == SwapchainColorSpace.Srgb ? 1 : 0,
+        convert_scene_tex_to_linear_on_load = frame_transients.convert_post_ldr_to_linear_on_load ? 1 : 0,
     }
-}
 
-@(private="file")
-renderer_pop_debug_group :: proc(command_buffer : ^sdl.GPUCommandBuffer){
+    sdl.PushGPUFragmentUniformData(cmd_buf,0, &swap_composit_ubo, size_of(SwapchainCompositUBO));
 
-    when ENGINE_DEVELOPMENT {
-        sdl.PopGPUDebugGroup(command_buffer);
-    }
+    // Draw 6 verts aka 2 triangles aka 1 screenquad
+    sdl.DrawGPUPrimitives(swapchain_blit_pass, 6, 1, 0,0);
+
+    sdl.EndGPURenderPass(swapchain_blit_pass);
 }

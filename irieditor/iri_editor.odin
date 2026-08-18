@@ -70,15 +70,14 @@ IriEditor :: struct {
 	file_rename_buf_len : u32,
 
 	curr_proj_dir_file_infos : [dynamic]FileInfo,
-	curr_import_path : string,
 
 	// import 
-	curr_mesh_import_flags : iri.AssetImportFlags,
+
+	importer_settings : ImporterSettings,
 
 	properties_panel_state : PropertiesPanel,
 }
 
-@(private="package")
 editor : ^IriEditor;
 
 init :: proc() {
@@ -129,9 +128,7 @@ init :: proc() {
 
 	proj_browser_switch_curr_proj_dir(iri.get_project_content_path());
 
-
-	// import options
-	editor.curr_mesh_import_flags = iri.AssetImportFlags{.LogErrors, .OverwriteExisting};
+	importer_settings_init(&editor.importer_settings)
 
 	init_properties_panel(&editor.properties_panel_state);
 }
@@ -151,9 +148,7 @@ deinit :: proc() {
 		delete_string(editor.curr_proj_dir);
 	}
 
-	if len(editor.curr_import_path) > 0 {
-		delete_string(editor.curr_import_path);
-	}
+	importer_setting_deinit(&editor.importer_settings)
 
 	if editor.curr_proj_dir_buf != nil {
 		free(editor.curr_proj_dir_buf);
@@ -224,7 +219,7 @@ draw_imgui_callback :: proc() {
 
 	draw_window_settings();
 	draw_window_universe_viewer();
-	draw_window_project_browser();
+	draw_window_project_browser(editor);
 	draw_window_properties(editor);
 	draw_main_menu_bar();
 	

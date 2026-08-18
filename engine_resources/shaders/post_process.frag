@@ -14,10 +14,8 @@ layout(set=2, binding=0) uniform sampler2D _render_tex;
 layout(set=3, binding=0) uniform post_settings_ubo {
 	float exposure;
 	uint tone_map_mode;
-	bool convert_to_srgb;
-	bool padding1;
-	bool padding2;
-	bool padding3;
+	uint padding0;
+	uint padding1;
 } _post_settings;
 
 // Fragment output color

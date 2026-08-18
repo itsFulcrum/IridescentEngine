@@ -32,6 +32,7 @@ project_validate_engine_resources_path :: proc(engine_resources_path : string) -
 	shaders_path    , alloc_err1 := os.join_path({engine_resources_path, "shaders"}, context.temp_allocator);
 	shader_lib_path , alloc_err2 := os.join_path({engine_resources_path, "shader_lib"}, context.temp_allocator);
 	rendering_path  , alloc_err3 := os.join_path({engine_resources_path, "rendering"}, context.temp_allocator);
+	default_font_path  , _ := os.join_path({engine_resources_path, "rendering/default_font"}, context.temp_allocator);
 
 	if !os.is_directory(shaders_path) {
 		return false;
@@ -42,6 +43,10 @@ project_validate_engine_resources_path :: proc(engine_resources_path : string) -
 	}
 
 	if !os.is_directory(rendering_path) {
+		return false;
+	}
+
+	if !os.is_directory(default_font_path) {
 		return false;
 	}
 

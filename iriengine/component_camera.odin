@@ -48,9 +48,10 @@ comp_camera_set_defaults :: proc(comp: ^CameraComponent) {
 // Component procedures
 // =====================================================================
 
-comp_camera_get_projection_matrix :: proc(comp: ^CameraComponent, aspect_ratio : f32) -> matrix[4,4]f32 {
+comp_camera_get_projection_matrix :: proc(comp: ^CameraComponent, aspect_ratio : f32, flip_z_axis : bool = true) -> matrix[4,4]f32 {
 	//return linalg.matrix4_perspective_f32(linalg.to_radians(comp.fov_deg), aspect_ratio, comp.near_clip, comp.far_clip, flip_z_axis = true);
-	return linalg.matrix4_perspective_f32(linalg.to_radians(comp.fov_deg), aspect_ratio, comp.near_clip, comp.far_clip, flip_z_axis = true);
+	//return linalg.matrix4_perspective_f32(linalg.to_radians(comp.fov_deg), aspect_ratio, comp.near_clip, comp.far_clip, flip_z_axis = flip);
+	return mathy.matrix4_perspective_01_f32(linalg.to_radians(comp.fov_deg), aspect_ratio, comp.near_clip, comp.far_clip, flip_z_axis = flip_z_axis);
 }
 // not in use atm
 comp_camera_get_frustum_planes :: proc(comp: ^CameraComponent, aspect_ratio : f32, transform : Transform) -> FrustumPlanes {

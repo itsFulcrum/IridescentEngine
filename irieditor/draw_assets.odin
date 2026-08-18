@@ -33,6 +33,8 @@ draw_assets_view :: proc(){
 	enum_flags_checkbox("Model##FilterFlag", iria.AssetType.Model, &asset_type_filter);
 	im.SameLine();
 	enum_flags_checkbox("Light##FilterFlag", iria.AssetType.Light, &asset_type_filter);
+	im.SameLine();
+	enum_flags_checkbox("FontAtlas##FilterFlag", iria.AssetType.FontAtlas, &asset_type_filter);
 
 	table_flags := im.TableFlags_Resizable |  im.TableFlags_Borders;
 

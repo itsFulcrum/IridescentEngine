@@ -313,6 +313,18 @@ universe_manager_update_universe :: proc(gpu_device : ^sdl.GPUDevice, universe :
     }
 
 
+    when false {
+    	for transform_comp in universe.ecs.transform_components {
+
+    		forward, right, up := get_forward_right_up(transform_comp);
+
+    		debug_draw_ray(DebugColor.Blue , transform_comp.position, forward);
+    		debug_draw_ray(DebugColor.Red  , transform_comp.position, right  );
+    		debug_draw_ray(DebugColor.Green, transform_comp.position, up );
+
+    	}
+    }
+
 
 }
 
@@ -375,6 +387,57 @@ universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ra
         info.far_plane   = cam_comp.far_clip;
         info.camera_exposure = comp_camera_get_exposure(cam_comp);
 
+
+
+        // if input_keyboard(.P, {.WasPressed}).triggered {
+
+	    //     cam_pos := [4]f32{0,0,0,1};
+	    //     cam_pos.xyz = info.position_ws;
+
+	    //     pos_far  := [4]f32{0,0,0,1};
+	    //     pos_near := [4]f32{0,0,0,1};
+		//     pos_far.xyz  = cam_pos.xyz + (info.direction_ws * info.far_plane );
+	    //     pos_near.xyz = cam_pos.xyz + (info.direction_ws * info.near_plane);
+
+	    //     proj_no_flip := comp_camera_get_projection_matrix(cam_comp, frame_aspect_ratio, false);
+
+	    //     view_proj_flip  := info.proj_mat * info.view_mat;
+	    //     view_proj_no_flip := proj_no_flip * info.view_mat;
+
+	    //     pos_near_flip    := view_proj_flip * pos_near
+	    //     pos_near_no_flip := view_proj_no_flip * pos_near
+
+	    //     pos_far_flip    := view_proj_flip    * pos_far
+	    //     pos_far_no_flip := view_proj_no_flip * pos_far
+
+
+	    //     pos_near_flip.xyz    /= pos_near_flip.w;
+	    //     pos_near_no_flip.xyz /= pos_near_no_flip.w;
+	    //     pos_far_flip.xyz     /= pos_far_flip.w;
+	    //     pos_far_no_flip.xyz  /= pos_far_no_flip.w;
+
+		// 	log.warnf("Projection Flip")
+		// 	log.warnf("{}", info.proj_mat);
+		// 	log.warnf("[0] [{},{},{},{}]", info.proj_mat[0,0],info.proj_mat[0,1], info.proj_mat[0,2], info.proj_mat[0, 3]);
+		// 	log.warnf("[1] [{},{},{},{}]", info.proj_mat[1,0],info.proj_mat[1,1], info.proj_mat[1,2], info.proj_mat[1, 3]);
+		// 	log.warnf("[2] [{},{},{},{}]", info.proj_mat[2,0],info.proj_mat[2,1], info.proj_mat[2,2], info.proj_mat[2, 3]);
+		// 	log.warnf("[3] [{},{},{},{}]", info.proj_mat[3,0],info.proj_mat[3,1], info.proj_mat[3,2], info.proj_mat[3, 3]);
+			
+		// 	log.warnf("Projection No Flip")
+		// 	log.warnf("[0] [{},{},{},{}]", proj_no_flip[0,0],proj_no_flip[0,1], proj_no_flip[0,2], proj_no_flip[0, 3]);
+		// 	log.warnf("[1] [{},{},{},{}]", proj_no_flip[1,0],proj_no_flip[1,1], proj_no_flip[1,2], proj_no_flip[1, 3]);
+		// 	log.warnf("[2] [{},{},{},{}]", proj_no_flip[2,0],proj_no_flip[2,1], proj_no_flip[2,2], proj_no_flip[2, 3]);
+		// 	log.warnf("[3] [{},{},{},{}]", proj_no_flip[3,0],proj_no_flip[3,1], proj_no_flip[3,2], proj_no_flip[3, 3]);
+			
+
+		// 	log.warnf("Position Near No Flip z: {}", pos_near_no_flip.z)
+		// 	log.warnf("Position Far  No Flip z: {}", pos_far_no_flip.z)
+		// 	log.warnf("Position Near Flipped z: {}", pos_near_flip.z)
+		// 	log.warnf("Position Far  Flipped z: {}", pos_far_flip.z)
+        // }
+
+
+
     } else {
         // default values
         info.fov_radians = linalg.to_radians(cast(f32)65.0);
@@ -385,6 +448,7 @@ universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ra
         info.position_ws  = [3]f32{0,0,0};
         info.direction_ws = TRANSFORM_WORLD_FORWARD;
         info.view_mat     = linalg.MATRIX4F32_IDENTITY;
+        // TODO: use reverse Z buffer projection matrix.
         info.proj_mat     = linalg.matrix4_perspective_f32(info.fov_radians, frame_aspect_ratio , info.near_plane, info.far_plane, flip_z_axis = true);
     	info.camera_exposure = linalg.pow(f32(2.0), -8.0);
     }
@@ -395,6 +459,8 @@ universe_update_frame_camera_info :: proc (universe : ^Universe, frame_aspect_ra
     info.inv_proj_mat 		= linalg.inverse(info.proj_mat);
     info.inv_view_proj_mat 	= linalg.inverse(info.view_proj_mat);
 
+
+    // FIXME: we dont need this anymore i think ??
 
     // Calc shadow map cascade projection matrecies
     // These are effectivly subregions of our main camera frustum.

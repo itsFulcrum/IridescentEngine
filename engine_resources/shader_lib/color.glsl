@@ -93,4 +93,44 @@ vec3 srgb_to_linear_gamma_2_2(vec3 sRGBColor) {
   return pow(sRGBColor.rgb, vec3(2.2f));
 }
 
+
+vec3 hsv_to_rgb(float h, float s, float v) {
+    
+    float c = v * s;
+    float x = c * (1.0f - abs(mod(h * 6.0f, 2.0f) - 1.0));
+    float m = v - c;
+
+
+    float r = 0.0; 
+    float g = 0.0;
+    float b = 0.0;
+    vec3 rgb = vec3(0.0);
+
+    if (h < 1.0/6.0){
+      
+      rgb = vec3(c, x, 0);
+
+    } else if (h < 2.0/6.0) {
+      rgb = vec3(x, c, 0);
+    } else if (h < 3.0/6.0) {
+      rgb = vec3(0, c, x);
+    } else if (h < 4.0/6.0) {
+      rgb = vec3(0, x, c);
+    } else if (h < 5.0/6.0) {
+      rgb = vec3(x, 0, c);
+    } else {
+      rgb = vec3(c, 0, x);
+    }
+    
+
+    return rgb + vec3(m);
+}
+
+vec3 hash_color(uint i) {
+    // Golden ratio distribution
+    float h = mod(float(i) * 0.61803398875f, 1.0);
+
+    return hsv_to_rgb(h, 0.65, 0.95);
+}
+
 #endif // COLOR_GLSL

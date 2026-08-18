@@ -45,6 +45,12 @@ AssetLoadHandleMaterial :: struct {
 	ref_count : u32,
 }
 
+@(private="package")
+AssetLoadHandleFontAtlas :: struct {
+	runtime_handle : FontID,
+	ref_count : u32,
+}
+
 AssetManager :: struct {
 
 	// allocator exclusivly for allocating string paths
@@ -60,6 +66,7 @@ AssetManager :: struct {
 
 	model_handles    : map[AssetID]AssetLoadHandleModel,
 	material_handles : map[AssetID]AssetLoadHandleMaterial,
+	font_handles     : map[AssetID]AssetLoadHandleFontAtlas,
 }
 
 @(private="package")
@@ -91,6 +98,7 @@ asset_manager_deinit :: proc(asset_manager :  ^AssetManager) {
 
 	delete_map(asset_manager.model_handles);
 	delete_map(asset_manager.material_handles);
+	delete_map(asset_manager.font_handles);
 
 	free_all(asset_manager.path_allocator);
 	mem.dynamic_arena_destroy(&asset_manager.path_arena);
@@ -320,6 +328,8 @@ asset_manager_get_absolute_filepath :: proc (asset_manager :  ^AssetManager, ass
 	return cleaned, true;
 }
 
+
+// TODO: replace this with something like - does_asset_exist_at_path
 
 // Checks the filepath to see if there is an asset file, if yes and the type matches the expected type we 
 // return the asset id stored in that file because we likely want to overwrite it with a new version of the asset.

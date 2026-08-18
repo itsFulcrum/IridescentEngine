@@ -165,8 +165,6 @@ debug_gui_prepare_and_upload_draw_data :: proc(cmd_buf: ^sdl.GPUCommandBuffer){
 
 @(private="package")
 debug_gui_draw_frame :: proc(cmd_buf: ^sdl.GPUCommandBuffer, render_pass: ^sdl.GPURenderPass, pipeline: ^sdl.GPUGraphicsPipeline = nil) {
-
-	IRI_PROFILE_PROCEDURE()
 	
 	imgui_sdl3gpu.RenderDrawData(debug_gui_ctx.imgui_curr_draw_data, cmd_buf, render_pass, pipeline);
 	debug_gui_ctx.imgui_curr_draw_data = nil;

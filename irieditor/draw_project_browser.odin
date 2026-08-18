@@ -17,8 +17,76 @@ import "core:sort"
 import sdl "vendor:sdl3"
 
 
+ImporterSettings :: struct {
+	
+	curr_import_path : string,
+
+	// Mesh
+	curr_mesh_import_flags : iri.AssetMeshImportFlags,
+
+	// Font
+	font_custom_utf8_input_txt_buffer : InputTextBuffer,
+	font_create_info : iri.FontAtlasCreateInfo,
+}
+
+// Setup deafault importer settings
+importer_settings_init :: proc(importer_settings : ^ImporterSettings){
+
+
+	// Mesh
+	importer_settings.curr_mesh_import_flags = iri.AssetMeshImportFlags{.LogErrors, .OverwriteExisting};
+
+	// Font
+	input_text_buffer_init(&importer_settings.font_custom_utf8_input_txt_buffer, 255);
+	
+	importer_settings.font_create_info = iri.FontAtlasCreateInfo{
+
+		import_flags = iri.AssetImportFlags{.LogErrors, .OverwriteExisting},
+
+		font_size = 24,
+
+		use_nearest_neighboor_filtering = false,
+		oversampling_x = 2,
+		oversampling_y = 2,
+		glyph_range_flags = iri.FontGlyphRangeFlags{.Ascii, .AsciiExtention},
+		// @NOTE: this becomes an alias to the backing buffer which is also null terminated. DO NOT FREE THIS!
+		custom_codepoints = input_text_buffer_get_string(&importer_settings.font_custom_utf8_input_txt_buffer),
+	}
+
+
+}
+
+importer_setting_deinit :: proc(importer_settings : ^ImporterSettings){
+
+	if len(importer_settings.curr_import_path) > 0 {
+		delete_string(importer_settings.curr_import_path);
+		importer_settings.curr_import_path = "";
+	}
+
+	// FONT:..
+
+	{
+		input_text_buffer_free(&importer_settings.font_custom_utf8_input_txt_buffer);
+		create_info := &importer_settings.font_create_info;
+
+		if len(create_info.asset_alias) > 0 {
+			delete_string(create_info.asset_alias);
+			create_info.asset_alias = ""
+		}
+
+		// @NOTE: Do NOT free, its an alias to a backing null terminated buffer.
+		// if len(create_info.custom_codepoints) > 0 {
+		// 	delete_string(create_info.custom_codepoints);
+		// 	create_info.custom_codepoints = "";
+		// }
+
+
+	}
+}
+
+
 // @Note: requires editor to be initialized!
-draw_project_browser :: proc(){
+draw_project_browser :: proc(editor : ^IriEditor){
 	
 	if !editor_is_initialized() {
 		return
@@ -47,11 +115,11 @@ draw_project_browser :: proc(){
 	 			disabled_assets := .AssetFile not_in editor.show_file_type_flags;
 	 			im.BeginDisabled(disabled_assets);
 	 			
-	 			enum_flags_checkbox("Universe Assets", iri.AssetType.Universe, &editor.show_asset_type_flags);
-	 			//enum_flags_checkbox("MeshData Assets"    , iri.AssetType.Mesh    , &editor.show_asset_type_flags);
-	 			enum_flags_checkbox("Model    Assets"   , iri.AssetType.Model   , &editor.show_asset_type_flags);
-	 			enum_flags_checkbox("Material Assets", iri.AssetType.Material, &editor.show_asset_type_flags);
-	 			enum_flags_checkbox("Lights   Assets"   , iri.AssetType.Light   , &editor.show_asset_type_flags);
+	 			enum_flags_checkbox("Universe Assets", iri.AssetType.Universe , &editor.show_asset_type_flags);
+	 			enum_flags_checkbox("Font     Assets", iri.AssetType.FontAtlas, &editor.show_asset_type_flags);
+	 			enum_flags_checkbox("Model    Assets", iri.AssetType.Model    , &editor.show_asset_type_flags);
+	 			enum_flags_checkbox("Material Assets", iri.AssetType.Material , &editor.show_asset_type_flags);
+	 			enum_flags_checkbox("Lights   Assets", iri.AssetType.Light    , &editor.show_asset_type_flags);
 
 	 			im.EndDisabled()
 	 		}	
@@ -179,8 +247,8 @@ draw_project_browser :: proc(){
 			case .AssetFile: {
 				
 				switch info.asset_type {
-					case .None 	: im.PushStyleColorImVec4(im.Col.Button, REG_FILE_COL);
-					case ._Unused_1: //im.PushStyleColorImVec4(im.Col.Button, MESH_ASSET_COL);
+					case .None 	    : im.PushStyleColorImVec4(im.Col.Button, REG_FILE_COL);
+					case .FontAtlas : im.PushStyleColorImVec4(im.Col.Button, FONT_ATLAS_ASSET_COL);
 					case .Material 	: im.PushStyleColorImVec4(im.Col.Button, MATERIAL_ASSET_COL);
 					case .Universe 	: im.PushStyleColorImVec4(im.Col.Button, UNIVERSE_ASSET_COL);
 					case .Light     : im.PushStyleColorImVec4(im.Col.Button, LIGHT_ASSET_COL);
@@ -201,6 +269,9 @@ draw_project_browser :: proc(){
 							properties_panel_set_active_asset(editor, info.asset_id);
 						}
 						case .Model: {
+							properties_panel_set_active_asset(editor, info.asset_id);
+						}
+						case .FontAtlas: {
 							properties_panel_set_active_asset(editor, info.asset_id);
 						}
 					}
@@ -302,8 +373,12 @@ draw_project_browser :: proc(){
 
 			if im.BeginMenu("Import") {
 				
-				if im.MenuItem("Import GLTF"){
-					proj_browser_popup_modal_import_gltf(open_modal = true)
+				if im.MenuItem("Import Mesh .gltf"){
+					editor_proj_browser_popup_modal_import_mesh_gltf(open_modal = true)
+				}
+
+				if im.MenuItem("Import Font .ttf"){
+					editor_proj_browser_popup_modal_import_font_ttf(open_modal = true)
 				}
 				
 				im.EndMenu()
@@ -355,90 +430,11 @@ draw_project_browser :: proc(){
 
 	// MODALS & Popups
 	proj_browser_popup_rename_file_entry();
-	proj_browser_popup_modal_import_gltf();
-	proj_browser_popup_modal_ask_delete_really();
-}
 
-// Should be called each frame with no parameter
-// and can be called with paramter true to open it next time its called normally
-// because modals and popups have to be opened in the same scope.
-proj_browser_popup_modal_import_gltf :: proc(open_modal : bool = false) {
-
-	@static do_open : bool = false;
-	@static is_open : bool = false;
+	editor_proj_browser_popup_modal_import_mesh_gltf();
+	editor_proj_browser_popup_modal_import_font_ttf();
 	
-	if open_modal {
-
-		if !is_open {
-			do_open = true;
-		}
-
-		return;
-	}
-
-	if do_open {
-
-		im.OpenPopup("Import Mesh gltf");
-		is_open = true;
-		do_open = false;
-	}
-
-	flags := im.WindowFlags{.AlwaysAutoResize}
-
-	if im.BeginPopupModal("Import Mesh gltf", nil, flags) {
-
-		// import options
-		include_set := iri.AssetImportFlags{.LogErrors, .OverwriteExisting, .MeshImportMaterials, .MeshImportLights, .MeshJoinAllMeshes, .MeshSeparateFiles,
-											.MeshForceVertexLayout, .MeshForceVertexLayoutMinimal, .MeshForceVertexLayoutStandard, .MeshForceVertexLayoutExtended}
-		draw_asset_import_flags_settings(&editor.curr_mesh_import_flags, include_set);
-
-		if im.Button("Open File...") {
-			window := iri.get_window_context();
-			default_dir : cstring = strings.clone_to_cstring(iri.get_project_path(), context.temp_allocator);
-			sdl.ShowOpenFileDialog(callback = proj_browser_set_current_import_path_from_file_dialog_callback, userdata = nil, window = window.handle, filters = nil, nfilters = 0, default_location = default_dir, allow_many = false)
-		}
-
-		im.SameLine();
-
-		if len(editor.curr_import_path) > 0 {
-			im.Text("Path: %s", editor.curr_import_path);
-		} else {
-			im.Text("Path: ---");
-		}
-
-		im.Spacing();
-
-		import_btn: if im.Button("Import"){
-			
-			if len(editor.curr_import_path) <= 0 {
-				log.warnf("No import path set.")
-				break import_btn;
-			}
-
-			import_ok := iri.asset_importer_import_gltf_to_project(editor.curr_import_path, editor.curr_proj_dir, editor.curr_mesh_import_flags);
-			
-
-			proj_browser_reload_curr_proj_dir_file_infos();
-
-			// TODO: make a string error directly in this modal.			
-			if import_ok {
-				is_open = false;
-				do_open = false;
-				im.CloseCurrentPopup();
-			}
-		}
-
-		im.SameLine();
-
-		if im.Button("Cancel"){
-			
-			is_open = false;
-			do_open = false;
-			im.CloseCurrentPopup();
-		}
-
-		im.EndPopup();
-	}
+	proj_browser_popup_modal_ask_delete_really();
 }
 
 proj_browser_popup_rename_file_entry :: proc(file_info : ^FileInfo = nil) {
@@ -625,117 +621,22 @@ proj_browser_set_current_import_path_from_file_dialog_callback :: proc "c" (user
 		return;
 	}
 
-	if len(editor.curr_import_path) == 0 {
-		delete_string(editor.curr_import_path);
+	if len(editor.importer_settings.curr_import_path) == 0 {
+		delete_string(editor.importer_settings.curr_import_path);
 	}
 
-	editor.curr_import_path = strings.clone_from_cstring(path, context.allocator);
+	editor.importer_settings.curr_import_path = strings.clone_from_cstring(path, context.allocator);
 }
 
+editor_proj_browser_get_current_import_directory_path :: proc() -> cstring {
 
-// @Note: import flags will be modified obviously by user interaction
-// specifiy through include set which options to show as we may use this procedure to implement them
-// all but only show those relevant to the specific asset type.
-@(private="package")
-draw_asset_import_flags_settings :: proc(import_flags : ^iri.AssetImportFlags, include_set : iri.AssetImportFlags) {
+	if len(editor.importer_settings.curr_import_path) > 0 {
 
-	// TODO: tooltips..
-
-	update_flag :: proc(import_flags : ^iri.AssetImportFlags, flag : iri.AssetImportFlag, enabled : bool) {
-
-		if enabled {
-			import_flags^ += iri.AssetImportFlags{flag};
-		} else {
-			import_flags^ -= iri.AssetImportFlags{flag};
-		}
+		dir, _ := os.split_path(editor.importer_settings.curr_import_path)
+		return strings.clone_to_cstring(dir, context.temp_allocator);
 	}
 
-	flag_checkbox :: proc(label : cstring, flag : iri.AssetImportFlag,  import_flags : ^iri.AssetImportFlags, include_set : iri.AssetImportFlags) -> bool {
-
-		if flag not_in include_set {
-			return false;
-		}
-
-		is_enabled : bool = flag in import_flags;
-		if im.Checkbox(label, &is_enabled) {
-			update_flag(import_flags, flag,  is_enabled);
-			return true;
-		}
-
-		return false;
-	}
-	
-	flag_checkbox("Log Errors" 				, .LogErrors, import_flags, include_set);
-	flag_checkbox("Overwrite Existing Files", .OverwriteExisting, import_flags, include_set);
-
-	im.Spacing();
-
-	flag_checkbox("Import Materials"		, .MeshImportMaterials, import_flags, include_set);
-	flag_checkbox("Import Lights"			, .MeshImportLights, import_flags, include_set);
-	
-	flag_checkbox("Join Meshes"			, .MeshJoinAllMeshes, import_flags, include_set);
-	
-	//flag_checkbox("Join Same Material"			, .MeshJoinSameMaterial, import_flags, include_set);
-	//im.SetItemTooltip("Not yet implemented");
-	
-	flag_checkbox("Separate Files"			, .MeshSeparateFiles, import_flags, include_set);
-	//im.SetItemTooltip("Non Separate files are not yet implemented");
-
-	//flag_checkbox("Create Collection"		, .MeshCreateCollection, import_flags, include_set);
-	flag_checkbox("Force Vertex Layout"		, .MeshForceVertexLayout, import_flags, include_set);
-	im.SetItemTooltip("Specify a specific Vertex Layout, otherwise Auto Choose per Mesh");
-
-
-
-	if .MeshForceVertexLayout in include_set {
-
-		if .MeshForceVertexLayout in import_flags {
-			im.Text("Force Layout: ")
-			im.SameLine();
-			if flag_checkbox("Minimal", .MeshForceVertexLayoutMinimal, import_flags, include_set) {
-				is_enabled : bool = .MeshForceVertexLayoutMinimal in import_flags;
-				if is_enabled {
-					update_flag(import_flags, .MeshForceVertexLayoutStandard,  false);
-					update_flag(import_flags, .MeshForceVertexLayoutExtended,  false);
-				}else{
-					update_flag(import_flags, .MeshForceVertexLayoutMinimal ,  true);					
-				}
-			}
-			im.SetItemTooltip("qtangent.xyzw + uv0.xy")
-			im.SameLine();
-			if flag_checkbox("Standard", .MeshForceVertexLayoutStandard, import_flags, include_set) {
-				is_enabled : bool = .MeshForceVertexLayoutStandard in import_flags;
-				if is_enabled {
-					update_flag(import_flags, .MeshForceVertexLayoutMinimal ,  false);
-					update_flag(import_flags, .MeshForceVertexLayoutExtended,  false);
-				} else{
-					update_flag(import_flags, .MeshForceVertexLayoutStandard ,  true);
-				}
-			}
-			im.SetItemTooltip("qtangent.xyzw + uv0.xy + color0.rgba")
-			im.SameLine();
-			if flag_checkbox("Extended", .MeshForceVertexLayoutExtended, import_flags, include_set) {
-				is_enabled : bool = .MeshForceVertexLayoutExtended in import_flags;
-				if is_enabled {
-					update_flag(import_flags, .MeshForceVertexLayoutMinimal ,  false);
-					update_flag(import_flags, .MeshForceVertexLayoutStandard,  false);
-				} else{
-					update_flag(import_flags, .MeshForceVertexLayoutExtended ,  true);
-				}
-			}
-			im.SetItemTooltip("qtangent.xyzw + uv0.xy + uv1.xy + color0.rgba + color1.rgba")
-
-		}
-	}
-
-
-	// 	MeshForceVertexLayout,			// enables forcing a vertex layout. specified by setting one of the 3 following flags.
-	// MeshForceVertexLayoutMinimal,
-	// MeshForceVertexLayoutStandard, // ignored if force minimal is set.
-	// MeshForceVertexLayoutExtended, // ignored if force standard or force minimal is set
-
-
-	//
+	return strings.clone_to_cstring(iri.get_project_path(), context.temp_allocator);
 }
 
 

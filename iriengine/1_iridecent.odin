@@ -39,6 +39,8 @@ EngineContext :: struct {
 	debug_draw_manager : ^DebugDrawManager,
 	collision_manager : ^CollisionManager,
 
+	ui_manager : ^UiManager,
+
 	in_init_phase: bool,
 	running : bool,
 	window_is_minimized: bool,
@@ -144,7 +146,6 @@ iri_init :: proc(init_info : EngineInitInfo) -> bool  {
 		validation_layers = true; // force true
 	}
 
-
 	engine.window, success = window_create_context(init_info.window_title, init_info.window_size, init_info.start_fullscreen, validation_layers);
 	if !success {
 
@@ -181,9 +182,15 @@ iri_init :: proc(init_info : EngineInitInfo) -> bool  {
 
 	gpu_device := engine.window.gpu_device;
 
+
+
 	engine.render_context = new(RenderContext);
 	renderer_init(engine.render_context, engine.window.gpu_device, window_draw_size_u);
     
+    engine.ui_manager = new(UiManager)
+    ui_manager_init(engine.ui_manager,engine.render_context.current_frame_size)
+   
+
     engine.material_manager = new(MaterialManager)
 	material_manager_init(engine.material_manager);
 
@@ -208,8 +215,9 @@ iri_init :: proc(init_info : EngineInitInfo) -> bool  {
     engine.collision_manager = new(CollisionManager);
     collision_manager_init(engine.collision_manager);
 
+
     // Initialize ImidiateMode DebugGUI system. (Dear-ImGui )
-	render_pass_info := renderer_get_render_pass_info(engine.render_context, .DebugGui);
+	render_pass_info := renderer_get_render_pass_info(engine.render_context, .Ui);
 	debug_gui_init(&engine.window, render_pass_info.color_target_format, MSAA.OFF);
     
 
@@ -239,8 +247,8 @@ iri_run :: proc() {
 
     	IRI_PROFILE_SCOPE("Iri Engine Frame")
 
-    	fixed_timestep : f64 = clock_get_physics_timestep();
-    	delta_time : f64 = clock_tick_frame();
+    	fixed_timestep  : f64 = clock_get_physics_timestep();
+    	delta_time      : f64 = clock_tick_frame();
     	true_delta_time : f64 = clock_get_true_delta_time();
 
     	// TODO: input system some way to stop broadcasting events when ui wants it..
@@ -256,6 +264,7 @@ iri_run :: proc() {
     	// Input System
     	// poll and broadcast events
     	input_system_update(engine.input_system, &engine.window);
+
 
     	if engine.window_is_minimized {
 
@@ -285,12 +294,23 @@ iri_run :: proc() {
     	// Process debug ui
     	debug_gui_process_frame(engine.universe, &engine.universe_update_callbacks);
 
-    	shader_manager_update(engine.shader_manager, engine.window.gpu_device, true_delta_time);
-    	material_manager_update(engine.material_manager, engine.window.gpu_device);
-    	universe_manager_update_universe(engine.window.gpu_device, engine.universe, engine.render_context.current_frame_size, cast(f32)fixed_alpha_interpolator);
+
+    	frame_size := engine.render_context.current_frame_size;
+    	swapchain_size := engine.render_context.current_swapchain_size;
+    	gpu_device := engine.window.gpu_device;
+
+    	ui_manager_process_clay_layouts(engine.ui_manager, swapchain_size, cast(f32)delta_time, cast(f32)true_delta_time, engine.universe, engine.universe_update_callbacks.ui_draw)
+
+    	// @Note: this can prob quite easily run on another thread and sync before rendering.
+    	ui_manager_prepare_frame_draw_data_for_rendering(engine.ui_manager, gpu_device, swapchain_size)
+
+
+    	shader_manager_update(engine.shader_manager, gpu_device, true_delta_time);
+    	material_manager_update(engine.material_manager, gpu_device);
+    	universe_manager_update_universe(gpu_device, engine.universe, frame_size, cast(f32)fixed_alpha_interpolator);
+    	mesh_manager_frame_update(engine.mesh_manager, gpu_device);
     	
 
-    	mesh_manager_frame_update(engine.mesh_manager, engine.window.gpu_device);
     	// RENDERING
     	if engine.universe != nil {
     		debug_draw_manager_push_universe_components(engine.debug_draw_manager, engine.universe);
@@ -366,6 +386,11 @@ iri_deinit :: proc() {
 
 		event_manager_deinit(engine.event_manager);
 		free(engine.event_manager);
+		engine.event_manager = nil;
+
+		ui_manager_deinit(engine.ui_manager, gpu_device)
+		free(engine.ui_manager);
+		engine.ui_manager = nil;
 
 		asset_manager_deinit(engine.asset_manager);
 		free(engine.asset_manager);

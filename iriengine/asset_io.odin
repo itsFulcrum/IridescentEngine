@@ -20,7 +20,7 @@ import iria   "iriasset"
 // - load  ops: load from asset_id expecting the asset file it belongs to to exist inside the project.
 // - store ops: take a runtime type and an Optional store_filepath. They convert into a Serialisable Asset Type. If the Runtime Type came with an existing AssetID it will overwrite the existing Asset File with the new Data.
 // 	 			If The runtime type does not Have en existing AssetID, it is expected that the store filepath is provided with the function call otherwise it fail, A new AssetID will be Generated.
-// - make ops: create a new asset and store it into the provided directory
+// - make ops: create a new (default) asset and store it into the provided directory
 
 
 asset_io_load_model_asset :: proc(asset_manager : ^AssetManager, mesh_manager : ^MeshManager, asset_id : AssetID) -> (runtime_handle : AssetHandleModel, ok : bool) {
@@ -171,6 +171,42 @@ asset_io_return_material_asset :: proc(asset_manager : ^AssetManager, mat_manage
 			asset_manager.material_handles[asset_id] = load_handle;
 		}
 	}
+}
+
+
+asset_io_load_font_atlas_asset :: proc(asset_id : AssetID) -> (font_id : FontID, ok : bool){
+	return asset_manager_io_load_font_atlas_asset(engine.asset_manager, engine.ui_manager, asset_id)
+}
+
+asset_manager_io_load_font_atlas_asset :: proc(asset_manager : ^AssetManager, ui_manager : ^UiManager, asset_id : AssetID) -> (font_id : FontID, ok : bool) {
+
+	IRI_PROFILE_PROCEDURE()
+
+	if font_load_handle, exists := asset_manager.font_handles[asset_id]; exists {
+
+		font_load_handle.ref_count += 1;
+		asset_manager.font_handles[asset_id] = font_load_handle;
+
+		return font_load_handle.runtime_handle, true;
+	}
+
+	path := asset_manager_get_absolute_filepath(asset_manager, asset_id, expected_type = .FontAtlas) or_return;
+
+	asset_font := iria.asset_font_atlas_read_from_path(path) or_return;
+
+	defer iria.asset_font_atlas_free(asset_font); 
+
+
+	_font_id := ui_manager_add_font(ui_manager, asset_font)or_return;
+
+	load_handle := AssetLoadHandleFontAtlas {
+		runtime_handle = _font_id,
+		ref_count = 1,
+	}
+
+	asset_manager.font_handles[asset_id] = load_handle;
+
+	return load_handle.runtime_handle, true;
 }
 
 asset_io_load_light_asset :: proc(asset_manager : ^AssetManager, asset_id : AssetID) -> (asset : iria.AssetLight, ok : bool) {

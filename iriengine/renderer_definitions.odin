@@ -49,7 +49,7 @@ DepthPreVertexUBO :: struct #align(16) {
     view_proj_mat : matrix[4,4]f32,
 }
 
-GlobalFragmentBuffer :: struct #align(16) {
+GlobalFragmentDataGPU :: struct #align(16) {
 	camera_pos_ws : [3]f32,
 	time_seconds  : f32,
 	camera_dir_ws : [3]f32,
@@ -87,11 +87,9 @@ MatUBO :: struct #align(16) {
 // Mirrors a shader UBO struct must be 16byte aligned
 PostProcessSettingsUBO :: struct #align(16) {
 	exposure: f32,
-	tone_map_mode: u32,
-	convert_to_srgb: b8,
-	padding1 : u8, 
-	padding2 : u8, 
-	padding3 : u8, 
+	tone_map_mode: u32, 
+	_ : u32, 
+	_ : u32, 
 }
 
 DepthStencilFormat :: iricom.DepthStencilFormat
